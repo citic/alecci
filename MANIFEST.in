@@ -1,0 +1,12 @@
+include src/runtime/*.c
+include src/runtime/*.h
+include examples/**/*.ale
+include examples/**/*.alecci
+include tests/**/*.py
+include *.md
+include *.txt
+include LICENSE
+recursive-exclude * __pycache__
+recursive-exclude * *.pyc
+recursive-exclude * *.pyo
+recursive-exclude * .DS_Store

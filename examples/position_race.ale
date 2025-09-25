@@ -1,0 +1,21 @@
+procedure main(argc, argv as array)
+  shared mutable position := 0
+  shared mutable can_access_position := mutex()
+  shared const thread_count := int(argv[1])
+  mutable threads := array(10, thread())
+  for thread_number := 0 to thread_count do
+    threads[thread_number] := create_thread(race, thread_number)
+  end for
+  print "Hello from main thread"
+  for thread_number := 0 to thread_count do
+    join_thread(threads[thread_number])
+  end for
+end procedure
+
+procedure race(thread_number)
+  lock(can_access_position)
+  position := position + 1
+  const my_position := position
+  print `Thread {thread_number} / {thread_count}: I arrived at position  {my_position}`
+  unlock(can_access_position)
+end procedure

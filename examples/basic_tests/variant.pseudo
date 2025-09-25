@@ -1,0 +1,17 @@
+function test_return_variant(val)
+    mutable result := 0 // This will now be a variant by default
+    if val < 5 then
+        result := 5.3
+    else
+        result := "Hello"
+    end if
+    return result
+end function
+
+procedure main(argc, argv)
+    const val2 = 5
+    mutable val1 := test_return_variant(3)
+    print `Test with 3: {val1}`
+    val1 := test_return_variant(7)
+    print `Test with 7: {val1}`
+end procedure

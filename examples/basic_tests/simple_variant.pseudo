@@ -1,0 +1,13 @@
+procedure main(argc, argv)
+    print "Testing basic variant support"
+    
+    mutable test_var as variant := variant_create_int(42)
+    print "Variant created successfully"
+    
+    if variant_is_int(test_var) then
+        mutable value := variant_get_int(test_var)
+        print `Value is: {value}`
+    end if
+    
+    print "Basic variant test complete"
+end procedure

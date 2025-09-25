@@ -1,0 +1,7 @@
+procedure main(argc, argv)
+    print "Enter two integers: "
+    mutable a as int := 0
+    mutable b as int := 0
+    scan ` {a} {b}`
+    print `You entered a={a}, b={b}`
+end procedure

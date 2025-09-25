@@ -1,0 +1,12 @@
+#!/bin/bash
+# Alecci Compiler Script
+# Usage: ./alecci <file.pseudo> [options]
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Change to the script directory
+cd "$SCRIPT_DIR"
+
+# Run the Python compiler with all arguments passed through
+python3 -m src "$@"

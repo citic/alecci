@@ -1,0 +1,8 @@
+function greet()
+    return "Hola"
+end function
+
+procedure main(argc, argv)
+    const message = greet()
+    print `Message: {message}`
+end procedure

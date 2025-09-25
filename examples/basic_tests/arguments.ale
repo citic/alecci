@@ -1,0 +1,28 @@
+procedure main(argc, argv as array)
+    print "Testing argument parsing"
+    print `Number of arguments (argc): {argc}`
+    
+    if argc > 1 then
+        const first_arg = argv[1]
+        print `First argument: {first_arg}`
+        
+        const number_value = int(argv[1])
+        print `Converted to number: {number_value}`
+        
+        const doubled = number_value * 2
+        print `Doubled value: {doubled}`
+    else
+        print "No arguments provided. Try running with: ./arguments 42"
+    end if
+    
+    if argc > 2 then
+        const second_arg = argv[2]
+        print `Second argument: {second_arg}`
+        
+        const second_number = int(argv[2])
+        const sum = int(argv[1]) + second_number
+        print `Sum of first two arguments: {sum}`
+    end if
+    
+    print "Argument parsing test completed"
+end procedure

@@ -1,0 +1,10 @@
+procedure main(argc, argv)
+    print "Sleep test start"
+    sleep(30)
+    print "Slept for 30 seconds"
+    sleep(20, "ms")
+    print "Slept for 20 milliseconds"
+    sleep(1500000, "ns")
+    print "Slept for 1500000 nanoseconds"
+    print "Sleep test end"
+end procedure

@@ -1,0 +1,32 @@
+// Basic floating point test for the test suite
+procedure main(argc, argv)
+    // Test basic float literals and constants
+    const PI = 3.14159
+    mutable x := 10.5
+    mutable y := 3.2
+    
+    print `Float constants and variables work`
+    
+    // Test arithmetic operations
+    mutable result := x + y
+    print `Addition: 10.5 + 3.2 = 13.7`
+    
+    result := x * PI
+    print `Multiplication with constant works`
+    
+    // Test variable-to-variable assignment (previously caused segfault)
+    mutable copied := result
+    print `Variable assignment works`
+    
+    // Test mixed int/float operations
+    mutable num := 5
+    mutable mixed := num * PI
+    print `Mixed int/float operations work`
+    
+    // Test scientific notation
+    const SCIENTIFIC = 1.5e2
+    mutable scientific_result := SCIENTIFIC / 10.0
+    print `Scientific notation works`
+    
+    print `Float test completed successfully`
+end procedure

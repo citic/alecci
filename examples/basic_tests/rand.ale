@@ -1,0 +1,14 @@
+procedure main(argc, argv)
+    print "Rand test start"
+    
+    const r1 = rand()
+    print `Random value: {r1}`
+
+    const r2 = rand(100)
+    print `Random value (0-100): {r2}`
+
+    const r3 = rand(10, 20)
+    print `Random value (10-20): {r3}`
+
+    print "Rand test end"
+end procedure

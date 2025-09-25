@@ -1,0 +1,16 @@
+procedure greet(thread_number as int)
+    wait(can_greet[thread_number])
+    print `Hello from secondary thread {thread_number} of {thread_count}`
+    signal(can_greet[thread_number+1])
+end procedure
+
+procedure main(const argc, argv)
+    shared const thread_count := 5
+    shared mutable can_greet as array := array(6, semaphore(0))
+    
+    signal(can_greet[0])
+    mutable greeters := create_threads(thread_count, greet) 
+    join_threads(greeters)
+
+    print("Hello from main thread")
+end procedure

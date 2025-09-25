@@ -1,0 +1,25 @@
+procedure main(argc, argv as array)
+    print "Testing argument parsing"
+    print `Number of arguments: {argc}`
+    
+    const first_arg = argv[0]
+    print `Program name (argv[0]): {first_arg}`
+    
+    if argc > 1 then
+        const second_arg = argv[1]
+        print `First argument (argv[1]): {second_arg}`
+    end if
+    
+    if argc > 2 then
+        const third_arg = argv[2]
+        print `Second argument (argv[2]): {third_arg}`
+    end if
+    
+    if argc > 3 then
+        const fourth_arg = argv[3]
+        const num_value = int(fourth_arg)
+        print `Third argument as number (argv[3]): {num_value}`
+    end if
+    
+    print "Argument parsing test completed"
+end procedure

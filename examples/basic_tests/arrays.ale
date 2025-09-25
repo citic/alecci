@@ -1,0 +1,23 @@
+procedure main(argc, argv)
+    mutable numbers := array(5, int())
+    mutable index := 0
+    
+    print "Testing array operations"
+    
+    while index < 5 do
+        const value = index * 10
+        numbers[index] := value
+        print `Set numbers[{index}] = {value}`
+        index := index + 1
+    end while
+    
+    index := 0
+    print "Reading array values:"
+    while index < 5 do
+        const stored_value = numbers[index]
+        print `numbers[{index}] = {stored_value}`
+        index := index + 1
+    end while
+    
+    print "Array test completed successfully"
+end procedure

@@ -1,0 +1,9 @@
+procedure main(argc, argv)
+    mutable number as int := 0
+    while number < 5 do
+        print "number is less than 5"
+        number := number + 1
+    end while    
+    print "number is equal to 5"
+end procedure
+

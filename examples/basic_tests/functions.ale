@@ -1,0 +1,31 @@
+procedure main(argc, argv)
+    print "Testing function calls"
+    
+    add_numbers(5, 3)
+    multiply(4, 7)
+    factorial(5)
+    
+    print "Function calls test completed successfully"
+end procedure
+
+procedure add_numbers(a, b)
+    const sum = a + b
+    print `Adding {a} + {b} = {sum}`
+end procedure
+
+procedure multiply(x, y)
+    const product = x * y
+    print `Multiplying {x} * {y} = {product}`
+end procedure
+
+procedure factorial(n)
+    mutable result := 1
+    mutable i := 1
+    
+    while i <= n do
+        result := result * i
+        i := i + 1
+    end while
+    
+    print `Calculated factorial of {n} = {result}`
+end procedure

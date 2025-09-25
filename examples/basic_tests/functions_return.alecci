@@ -1,0 +1,28 @@
+function add(a, b)
+    return a + b
+end function
+
+function factorial(n)
+    mutable result := 1
+    mutable i := 1
+    while i <= n do
+        result := result * i
+        i := i + 1
+    end while
+    return result
+end function
+
+function muladd(a, b, c)
+    return add(a, b) * c
+end function
+
+procedure main(argc, argv)
+    print "Testing function returns"
+    const s = add(5, 7)
+    print `add(5, 7) = {s}`
+    const f = factorial(5)
+    print `factorial(5) = {f}`
+    const m = muladd(2, 3, 4)
+    print `muladd(2, 3, 4) = {m}`
+    print "Function returns test completed successfully"
+end procedure

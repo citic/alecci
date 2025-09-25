@@ -1,0 +1,5 @@
+procedure main()
+    print("Sleep test start")
+    sleep(10, "ms")
+    print("Sleep test end")
+end procedure

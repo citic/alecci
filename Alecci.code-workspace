@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.pseudo": "alecci",
+			"*.alecci": "alecci",
+			"*.ale": "alecci"
+		}
+	}
+}

@@ -1,0 +1,26 @@
+procedure main(argc, argv)
+    // Check if constants are declared with = or :=
+    shared mutable thread_count as int := 6
+    shared mutable can_greet1 as semaphore := semaphore(1)
+    shared mutable can_greet2 := semaphore(0)
+
+    // Create threads and semaphores
+    create_thread(greet1, 0) // Thread 0
+    create_thread(greet2, 1) // Thread 1
+
+    print("Hello from main thread")
+end procedure
+
+procedure greet1(thread_number)
+    wait(can_greet1)
+    thread_count := 1
+    print("Hello from secondary thread 1")
+    signal(can_greet2)
+end procedure
+
+procedure greet2(thread_number)
+    thread_count := 2
+    wait(can_greet2)
+    print("Hello from secondary thread 2")
+    signal(can_greet1)
+end procedure

@@ -1,0 +1,19 @@
+procedure main(argc, argv)
+    // Basic barrier test: 3 worker threads synchronize at a barrier
+    shared const thread_count = 3
+    shared mutable b as barrier := barrier(thread_count)
+
+    print "Starting barrier test"
+
+    // Spawn threads and wait for them to finish
+    mutable workers := create_threads(thread_count, worker)
+    join_threads(workers)
+
+    print "Barrier test completed"
+end procedure
+
+procedure worker(thread_number as int)
+    print `Worker {thread_number} before barrier`
+    barrier_wait(b)
+    print `Worker {thread_number} after barrier`
+end procedure

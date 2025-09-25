@@ -1,0 +1,18 @@
+procedure main(argc, argv)
+    shared mutable counter := 0
+    shared mutable counter_mutex := mutex()
+    
+    print "Testing mutex operations"
+    
+    lock(counter_mutex)
+    counter := counter + 1
+    print `Counter after increment: {counter}`
+    unlock(counter_mutex)
+    
+    lock(counter_mutex)
+    counter := counter * 2
+    print `Counter after doubling: {counter}`
+    unlock(counter_mutex)
+    
+    print "Mutex test completed successfully"
+end procedure
