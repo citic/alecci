@@ -74,7 +74,9 @@ setup(
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Topic :: Software Development :: Compilers",
-        "Topic :: Software Development :: Languages",
+        "Topic :: Software Development :: Code Generators",
+        "Operating System :: OS Independent",
+        "Environment :: Console",
     ],
     
     # Additional metadata

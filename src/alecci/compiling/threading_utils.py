@@ -111,7 +111,11 @@ def create_thread(builder, module, target_func, thread_args=None):
     debug_print(f"[DEBUG] Calling pthread_create with: thread_ptr={thread_ptr}, attr=None, start_routine={start_routine}, arg_struct_as_voidptr={arg_struct_as_voidptr}")
     builder.call(pthread_create, [thread_ptr, ir.Constant(voidptr_ty, None), start_routine, arg_struct_as_voidptr])
     debug_print("[DEBUG] pthread_create call emitted")
-    return thread_ptr
+    
+    # Load the thread handle from the allocated space and return it
+    thread_handle = builder.load(thread_ptr)
+    debug_print(f"[DEBUG] Loaded thread handle: {thread_handle}, type: {thread_handle.type}")
+    return thread_handle
 
 
 def create_threads(builder, module, thread_count, target_func, thread_args=None):

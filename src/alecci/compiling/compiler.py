@@ -502,53 +502,26 @@ class CodeGenerator:
         is_constant = node.get('const', False)  # Get const flag from parser
         
         # Skip shared declarations during the second pass - they were already processed
+        # Exception: semaphores, mutexes, and barriers need runtime initialization in main
         if shared:
-            debug_print(f"DEBUG: visit_declaration - Skipping shared declaration '{name}' (already processed in first pass)")
-            # Special case: if this is a shared thread array, we need to execute the create_threads call
-            if name in self.globals and self.globals[name][1] == 'thread_array':
-                init = node['init']
-                if init.get('value', {}).get('type') == 'function_call' and init['value'].get('name') == 'create_threads':
-                    debug_print(f"DEBUG: visit_declaration - executing create_threads call for shared '{name}'")
-                    threads_ptr = self.visit(init['value'])
-                    # Update the global entry with the actual thread array pointer
-                    self.globals[name] = (threads_ptr, 'thread_array', False)  # Thread arrays are mutable
-                    debug_print(f"DEBUG: visit_declaration - updated shared thread array '{name}' with actual pointer")
-            # Special case: if this is a shared barrier, we need to initialize it in main
-            elif name in self.globals and self.globals[name][1] == 'barrier' and self.current_function_name == 'main':
-                init = node['init']
-                init_value_expr = init.get('value')
-                debug_print(f"DEBUG: visit_declaration - initializing shared barrier '{name}' in main")
-                
-                # Determine participant count from barrier() call
-                barrier_count = ir.Constant(ir.IntType(32), 1)
-                if isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call' and init_value_expr.get('name') == 'barrier':
-                    bargs = init_value_expr.get('arguments', [])
-                    if bargs:
-                        try:
-                            cnt = self.visit(bargs[0])
-                            debug_print(f"DEBUG: visit_declaration - barrier count argument evaluated to: {cnt}, type: {cnt.type}")
-                            if hasattr(cnt, 'type') and isinstance(cnt.type, ir.IntType) and cnt.type.width != 32:
-                                cnt = self.builder.trunc(cnt, ir.IntType(32)) if cnt.type.width > 32 else self.builder.zext(cnt, ir.IntType(32))
-                            barrier_count = cnt
-                        except Exception as e:
-                            debug_print(f"DEBUG: visit_declaration - error evaluating barrier count: {e}")
-                            barrier_count = ir.Constant(ir.IntType(32), 1)
-                
-                # Initialize the barrier
-                barrier_ty = ir.IntType(8).as_pointer()
-                barrier_storage, _, _ = self.globals[name]
-                barrier_ptr = self.builder.bitcast(barrier_storage, barrier_ty)
-                # Don't update globals with the bitcast instruction - keep the original storage
-                # self.globals[name] = (barrier_ptr, 'barrier')  # This was the bug!
-                
-                barrier_init = self.module.globals.get('pthread_barrier_init')
-                if not barrier_init:
-                    barrier_init_ty = ir.FunctionType(ir.IntType(32), [barrier_ty, ir.IntType(8).as_pointer(), ir.IntType(32)])
-                    barrier_init = ir.Function(self.module, barrier_init_ty, name='pthread_barrier_init')
-                null_attr = ir.Constant(ir.IntType(8).as_pointer(), None)
-                debug_print(f"DEBUG: visit_declaration - calling pthread_barrier_init with count: {barrier_count}")
-                self.builder.call(barrier_init, [barrier_ptr, null_attr, barrier_count])
-            return
+            if name in self.globals:
+                _, var_type, _ = self.globals[name]
+                if var_type in ['semaphore', 'mutex', 'barrier'] and self.current_function_name == 'main':
+                    debug_print(f"DEBUG: visit_declaration - Handling shared {var_type} initialization for '{name}' in main")
+                    debug_print(f"DEBUG: visit_declaration - Will continue to process shared {var_type} '{name}' for initialization")
+                    # Continue processing for initialization - don't return here, let it fall through to the initialization code
+                elif var_type == 'thread_array':
+                    debug_print(f"DEBUG: visit_declaration - Handling shared thread array '{name}'")
+                    # Special case: if this is a shared thread array, we need to execute the create_threads call
+                    if name in self.globals and self.globals[name][1] == 'thread_array':
+                        init = node['init']
+                        if init.get('value', {}).get('type') == 'function_call' and init['value'].get('name') == 'create_threads':
+                            debug_print(f"DEBUG: visit_declaration - executing create_threads call for shared '{name}'")
+                            self.visit(init['value'])  # Execute the create_threads call
+                    return
+                else:
+                    debug_print(f"DEBUG: visit_declaration - Skipping shared declaration '{name}' (already processed in first pass)")
+                    return
             
         init = node['init']
         var_type = init.get('var_type', 'int')
@@ -578,6 +551,14 @@ class CodeGenerator:
                     evaluated_value = args[0]['value']
                 else:
                     evaluated_value = 0  # Default semaphore value
+            elif func_name == 'barrier':
+                var_type = 'barrier'
+                # Extract participant count from barrier function arguments
+                args = init_value_expr.get('arguments', [])
+                if args and args[0].get('type') == 'literal':
+                    evaluated_value = args[0]['value']
+                else:
+                    evaluated_value = 1  # Default barrier count
             else:
                 # Regular function call - evaluate it
                 evaluated_value = self.visit(init_value_expr)
@@ -601,14 +582,20 @@ class CodeGenerator:
             return
         
         # Detect semaphore, mutex, or barrier type from function_call
-        if var_type is None and isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call':
+        # Also handle shared semaphores that already have a type but need initial value extraction
+        if isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call':
             fname = init_value_expr.get('name')
             if fname == 'semaphore':
-                var_type = 'semaphore'
+                if var_type is None:
+                    var_type = 'semaphore'
+                    debug_print(f"DEBUG: visit_declaration - Set var_type to 'semaphore' for '{name}'")
+                # Extract initial value for both new and shared semaphores
                 args = init_value_expr.get('arguments', [])
                 raw_value = args[0]['value'] if args and args[0].get('type') == 'literal' else None
+                debug_print(f"DEBUG: visit_declaration - semaphore '{name}' raw_value extracted: {raw_value}, var_type: {var_type}")
             elif fname == 'mutex':
-                var_type = 'mutex'
+                if var_type is None:
+                    var_type = 'mutex'
                 raw_value = None  # Mutexes don't take initial values
             elif fname == 'barrier':
                 var_type = 'barrier'
@@ -619,21 +606,33 @@ class CodeGenerator:
                 # Variants can be initialized with any value
                 raw_value = None
 
+        debug_print(f"DEBUG: visit_declaration - About to check semaphore initialization for '{name}', var_type: {var_type}, shared: {shared}")
         if var_type == 'semaphore':
+            debug_print(f"DEBUG: visit_declaration - Processing semaphore '{name}' (shared: {shared})")
             sem_ty = ir.IntType(8).as_pointer()
             if shared:
                 sem_storage, _, _ = self.globals[name]
-                sem_ptr = self.builder.bitcast(sem_storage, sem_ty)
-                self.globals[name] = (sem_ptr, 'semaphore', False)
+                # Don't store the bitcast in globals - create it fresh each time
+                # Keep the storage pointer in globals
                 if self.current_function_name == 'main':
+                    debug_print(f"DEBUG: Initializing shared semaphore '{name}', evaluated_value: {evaluated_value}, type: {type(evaluated_value)}")
+                    sem_ptr = self.builder.bitcast(sem_storage, sem_ty)
                     sem_init = self.module.globals.get('sem_init')
                     if not sem_init:
                         sem_init_ty = ir.FunctionType(ir.IntType(32), [sem_ty, ir.IntType(32), ir.IntType(32)])
                         sem_init = ir.Function(self.module, sem_init_ty, name='sem_init')
                     pshared = ir.Constant(ir.IntType(32), 0)
-                    init_int = evaluated_value if isinstance(evaluated_value, int) else 0
+                    # For shared semaphores, use raw_value if available, otherwise evaluated_value
+                    if isinstance(raw_value, int):
+                        init_int = raw_value
+                    elif isinstance(evaluated_value, int):
+                        init_int = evaluated_value
+                    else:
+                        init_int = 0
+                    debug_print(f"DEBUG: Semaphore '{name}' init_int: {init_int} (from raw_value: {raw_value}, evaluated_value: {evaluated_value})")
                     initial = ir.Constant(ir.IntType(32), init_int)
                     self.builder.call(sem_init, [sem_ptr, pshared, initial])
+                    debug_print(f"DEBUG: sem_init called for '{name}' with initial value: {init_int}")
                 return
             else:
                 sem_storage_ty = ir.ArrayType(ir.IntType(8), 32)
@@ -654,9 +653,10 @@ class CodeGenerator:
             mutex_ty = ir.IntType(8).as_pointer()
             if shared:
                 mutex_storage, _, _ = self.globals[name]
-                mutex_ptr = self.builder.bitcast(mutex_storage, mutex_ty)
-                self.globals[name] = (mutex_ptr, 'mutex', False)
+                # Don't store the bitcast in globals - create it fresh each time
+                # Keep the storage pointer in globals
                 if self.current_function_name == 'main':
+                    mutex_ptr = self.builder.bitcast(mutex_storage, mutex_ty)
                     pthread_mutex_init = self.module.globals.get('pthread_mutex_init')
                     if not pthread_mutex_init:
                         pthread_mutex_init_ty = ir.FunctionType(ir.IntType(32), [mutex_ty, ir.IntType(8).as_pointer()])
@@ -696,9 +696,10 @@ class CodeGenerator:
                         barrier_count = ir.Constant(ir.IntType(32), 1)
             if shared:
                 barrier_storage, _, _ = self.globals[name]
-                barrier_ptr = self.builder.bitcast(barrier_storage, barrier_ty)
-                self.globals[name] = (barrier_ptr, 'barrier', False)
+                # Don't store the bitcast in globals - create it fresh each time
+                # Keep the storage pointer in globals
                 if self.current_function_name == 'main':
+                    barrier_ptr = self.builder.bitcast(barrier_storage, barrier_ty)
                     barrier_init = self.module.globals.get('pthread_barrier_init')
                     if not barrier_init:
                         barrier_init_ty = ir.FunctionType(ir.IntType(32), [barrier_ty, ir.IntType(8).as_pointer(), ir.IntType(32)])
@@ -1678,10 +1679,30 @@ class CodeGenerator:
 
         # Use dtype to determine how to load or return the value
         if dtype == 'semaphore':
-            # Always return the pointer as-is for semaphores
+            # For semaphores, we need to create a fresh bitcast from storage to i8*
+            # Check if this is a storage pointer that needs bitcasting
+            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
+                pointee = ptr.type.pointee
+                if isinstance(pointee, ir.ArrayType) and pointee.element == ir.IntType(8):
+                    # This is semaphore storage - bitcast to i8*
+                    sem_ty = ir.IntType(8).as_pointer()
+                    sem_ptr = self.builder.bitcast(ptr, sem_ty)
+                    debug_print(f"DEBUG: visit_ID - created fresh bitcast for semaphore '{name}': {sem_ptr}")
+                    return sem_ptr
+            # If already a proper pointer, return as-is
             return ptr
         elif dtype == 'mutex':
-            # Always return the pointer as-is for mutexes
+            # For mutexes, we need to create a fresh bitcast from storage to i8*
+            # Check if this is a storage pointer that needs bitcasting
+            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
+                pointee = ptr.type.pointee
+                if isinstance(pointee, ir.ArrayType) and pointee.element == ir.IntType(8):
+                    # This is mutex storage - bitcast to i8*
+                    mutex_ty = ir.IntType(8).as_pointer()
+                    mutex_ptr = self.builder.bitcast(ptr, mutex_ty)
+                    debug_print(f"DEBUG: visit_ID - created fresh bitcast for mutex '{name}': {mutex_ptr}")
+                    return mutex_ptr
+            # If already a proper pointer, return as-is
             return ptr
         elif dtype == 'barrier':
             # Always return the pointer as-is for barriers
@@ -2393,6 +2414,24 @@ class CodeGenerator:
                 mod64 = self.builder.srem(rand64, safe_rng)
                 res64 = self.builder.add(mod64, lo)
                 return self.builder.trunc(res64, i32)
+        
+        # Handle constructor functions for synchronization primitives
+        elif func_name == 'semaphore':
+            # semaphore(initial_value) - return the initial value for use in declarations
+            if len(node['arguments']) != 1:
+                raise Exception(f"semaphore() constructor requires exactly 1 argument (initial value), got {len(node['arguments'])}")
+            initial_value = self.visit(node['arguments'][0])
+            return initial_value
+        elif func_name == 'mutex':
+            # mutex() - return 0 as a placeholder (mutexes don't have initial values)
+            return ir.Constant(ir.IntType(32), 0)
+        elif func_name == 'barrier':
+            # barrier(participant_count) - return the participant count for use in declarations
+            if len(node['arguments']) != 1:
+                raise Exception(f"barrier() constructor requires exactly 1 argument (participant count), got {len(node['arguments'])}")
+            participant_count = self.visit(node['arguments'][0])
+            return participant_count
+        
         # Default: regular function call
         debug_print(f"DEBUG: default function call: {func_name} with args {[getattr(a, 'type', 'no-type') for a in node['arguments']]}")
         
