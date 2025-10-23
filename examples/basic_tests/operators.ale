@@ -1,0 +1,418 @@
+// Comprehensive operator test covering all arithmetic, logic, and bitwise operators
+// Tests with different data types (int, float, variant) and edge cases
+
+procedure main()
+  print `=== ARITHMETIC OPERATORS TEST ===`
+  test_addition()
+  test_subtraction()
+  test_multiplication()
+  test_division()
+  test_int_division()
+  test_modulo()
+  test_exponent()
+  
+  print `=== COMPARISON OPERATORS TEST ===`
+  test_comparisons()
+  
+  print `=== LOGICAL OPERATORS TEST ===`
+  test_logical()
+  
+  print `=== BITWISE OPERATORS TEST ===`
+  test_bitwise()
+  
+  print `=== MIXED TYPE OPERATIONS TEST ===`
+  test_mixed_types()
+  
+  print `=== VARIANT OPERATIONS TEST ===`
+  test_variants()
+  
+  print `=== All operator tests passed! ===`
+end procedure
+
+procedure test_addition()
+  print `Testing addition (+)`
+  
+  // Integer addition
+  const a = 10
+  const b = 5
+  const sum1 = a + b
+  print `  10 + 5 = {sum1}`
+  
+  // Float addition
+  const x = 10.5
+  const y = 3.2
+  const sum2 = x + y
+  print `  10.5 + 3.2 = {sum2}`
+  
+  // Negative numbers
+  const neg1 = -5
+  const neg2 = -3
+  const sum3 = neg1 + neg2
+  print `  -5 + -3 = {sum3}`
+  
+  // Mixed sign
+  const sum4 = a + neg1
+  print `  10 + -5 = {sum4}`
+end procedure
+
+procedure test_subtraction()
+  print `Testing subtraction (-)`
+  
+  const a = 20
+  const b = 8
+  const diff1 = a - b
+  print `  20 - 8 = {diff1}`
+  
+  const x = 15.7
+  const y = 3.2
+  const diff2 = x - y
+  print `  15.7 - 3.2 = {diff2}`
+  
+  // Result is negative
+  const diff3 = b - a
+  print `  8 - 20 = {diff3}`
+  
+  // Subtract from zero
+  const diff4 = 0 - 10
+  print `  0 - 10 = {diff4}`
+end procedure
+
+procedure test_multiplication()
+  print `Testing multiplication (*)`
+  
+  const a = 7
+  const b = 6
+  const prod1 = a * b
+  print `  7 * 6 = {prod1}`
+  
+  const x = 2.5
+  const y = 4.0
+  const prod2 = x * y
+  print `  2.5 * 4.0 = {prod2}`
+  
+  // Multiply by zero
+  const prod3 = a * 0
+  print `  7 * 0 = {prod3}`
+  
+  // Multiply by negative
+  const prod4 = a * -3
+  print `  7 * -3 = {prod4}`
+  
+  // Two negatives
+  const neg1 = -4
+  const neg2 = -5
+  const prod5 = neg1 * neg2
+  print `  -4 * -5 = {prod5}`
+end procedure
+
+procedure test_division()
+  print `Testing division (/)`
+  
+  const a = 20
+  const b = 4
+  const quot1 = a / b
+  print `  20 / 4 = {quot1}`
+  
+  const x = 15.0
+  const y = 3.0
+  const quot2 = x / y
+  print `  15.0 / 3.0 = {quot2}`
+  
+  // Division with remainder (float result)
+  const quot3 = 10 / 3
+  print `  10 / 3 = {quot3}`
+  
+  // Negative division
+  const quot4 = 20 / -4
+  print `  20 / -4 = {quot4}`
+  
+  const quot5 = -20 / 4
+  print `  -20 / 4 = {quot5}`
+  
+  const quot6 = -20 / -4
+  print `  -20 / -4 = {quot6}`
+end procedure
+
+procedure test_int_division()
+  print `Testing integer division (#)`
+  
+  const a = 20
+  const b = 3
+  const quot1 = a # b
+  print `  20 # 3 = {quot1}`
+  
+  const quot2 = 17 # 5
+  print `  17 # 5 = {quot2}`
+  
+  // Even division
+  const quot3 = 20 # 4
+  print `  20 # 4 = {quot3}`
+  
+  // Negative int division
+  const quot4 = 20 # -3
+  print `  20 # -3 = {quot4}`
+  
+  const quot5 = -20 # 3
+  print `  -20 # 3 = {quot5}`
+end procedure
+
+procedure test_modulo()
+  print `Testing modulo (%)`
+  
+  const a = 20
+  const b = 3
+  const mod1 = a % b
+  print `  20 % 3 = {mod1}`
+  
+  const mod2 = 17 % 5
+  print `  17 % 5 = {mod2}`
+  
+  // No remainder
+  const mod3 = 20 % 4
+  print `  20 % 4 = {mod3}`
+  
+  // Modulo with negative
+  const mod4 = 20 % -3
+  print `  20 % -3 = {mod4}`
+  
+  const mod5 = -20 % 3
+  print `  -20 % 3 = {mod5}`
+end procedure
+
+procedure test_exponent()
+  print `Testing exponentiation (^)`
+  
+  const base1 = 2
+  const exp1 = 3
+  const pow1 = base1 ^ exp1
+  print `  2 ^ 3 = {pow1}`
+  
+  const pow2 = 5 ^ 2
+  print `  5 ^ 2 = {pow2}`
+  
+  // Power of 0
+  const pow3 = 10 ^ 0
+  print `  10 ^ 0 = {pow3}`
+  
+  // Power of 1
+  const pow4 = 10 ^ 1
+  print `  10 ^ 1 = {pow4}`
+  
+  // Float base
+  const base2 = 2.0
+  const pow5 = base2 ^ 3
+  print `  2.0 ^ 3 = {pow5}`
+end procedure
+
+procedure test_comparisons()
+  print `Testing comparison operators`
+  
+  // Equality
+  const eq1 = 5 = 5
+  const eq2 = 5 = 6
+  print `  5 = 5 is {eq1}`
+  print `  5 = 6 is {eq2}`
+  
+  // Inequality
+  const neq1 = 5 != 6
+  const neq2 = 5 != 5
+  print `  5 != 6 is {neq1}`
+  print `  5 != 5 is {neq2}`
+  
+  // Less than
+  const lt1 = 3 < 5
+  const lt2 = 5 < 3
+  const lt3 = 5 < 5
+  print `  3 < 5 is {lt1}`
+  print `  5 < 3 is {lt2}`
+  print `  5 < 5 is {lt3}`
+  
+  // Less than or equal
+  const lte1 = 3 <= 5
+  const lte2 = 5 <= 5
+  const lte3 = 7 <= 5
+  print `  3 <= 5 is {lte1}`
+  print `  5 <= 5 is {lte2}`
+  print `  7 <= 5 is {lte3}`
+  
+  // Greater than
+  const gt1 = 7 > 3
+  const gt2 = 3 > 7
+  const gt3 = 5 > 5
+  print `  7 > 3 is {gt1}`
+  print `  3 > 7 is {gt2}`
+  print `  5 > 5 is {gt3}`
+  
+  // Greater than or equal
+  const gte1 = 7 >= 3
+  const gte2 = 5 >= 5
+  const gte3 = 3 >= 7
+  print `  7 >= 3 is {gte1}`
+  print `  5 >= 5 is {gte2}`
+  print `  3 >= 7 is {gte3}`
+  
+  // Float comparisons
+  const x = 3.14
+  const y = 2.71
+  const fcmp1 = x > y
+  const fcmp2 = y < x
+  print `  3.14 > 2.71 is {fcmp1}`
+  print `  2.71 < 3.14 is {fcmp2}`
+end procedure
+
+procedure test_logical()
+  print `Testing logical operators`
+  
+  // AND operator
+  const and1 = 1 and 1
+  const and2 = 1 and 0
+  const and3 = 0 and 1
+  const and4 = 0 and 0
+  print `  1 and 1 = {and1}`
+  print `  1 and 0 = {and2}`
+  print `  0 and 1 = {and3}`
+  print `  0 and 0 = {and4}`
+  
+  // OR operator
+  const or1 = 1 or 1
+  const or2 = 1 or 0
+  const or3 = 0 or 1
+  const or4 = 0 or 0
+  print `  1 or 1 = {or1}`
+  print `  1 or 0 = {or2}`
+  print `  0 or 1 = {or3}`
+  print `  0 or 0 = {or4}`
+  
+  // NOT operator
+  const not1 = not 1
+  const not2 = not 0
+  print `  not 1 = {not1}`
+  print `  not 0 = {not2}`
+  
+  // Combined logical expressions
+  const comb1 = 1 and 1 or 0
+  const comb2 = 0 or 1 and 1
+  const comb3 = not 0 and 1
+  print `  1 and 1 or 0 = {comb1}`
+  print `  0 or 1 and 1 = {comb2}`
+  print `  not 0 and 1 = {comb3}`
+end procedure
+
+procedure test_bitwise()
+  print `Testing bitwise operators`
+  
+  // Bitwise AND
+  const band1 = 12 & 10
+  print `  12 & 10 = {band1}`
+  
+  const band2 = 15 & 7
+  print `  15 & 7 = {band2}`
+  
+  // Bitwise OR
+  const bor1 = 12 | 10
+  print `  12 | 10 = {bor1}`
+  
+  const bor2 = 8 | 4
+  print `  8 | 4 = {bor2}`
+  
+  // Bitwise XOR
+  const bxor1 = 12 xor 10
+  print `  12 xor 10 = {bxor1}`
+  
+  const bxor2 = 15 xor 15
+  print `  15 xor 15 = {bxor2}`
+  
+  // Bitwise NOT
+  const bnot1 = ~5
+  print `  ~5 = {bnot1}`
+  
+  const bnot2 = ~0
+  print `  ~0 = {bnot2}`
+  
+  // Left shift
+  const lshift1 = 5 << 2
+  print `  5 << 2 = {lshift1}`
+  
+  const lshift2 = 1 << 3
+  print `  1 << 3 = {lshift2}`
+  
+  // Right shift
+  const rshift1 = 20 >> 2
+  print `  20 >> 2 = {rshift1}`
+  
+  const rshift2 = 16 >> 3
+  print `  16 >> 3 = {rshift2}`
+end procedure
+
+procedure test_mixed_types()
+  print `Testing mixed type operations`
+  
+  // Int and float
+  const int_value = 10
+  const float_value = 3.5
+  const mixed1 = int_value + float_value
+  print `  10 + 3.5 = {mixed1}`
+  
+  const mixed2 = int_value * float_value
+  print `  10 * 3.5 = {mixed2}`
+  
+  const mixed3 = float_value / int_value
+  print `  3.5 / 10 = {mixed3}`
+  
+  // Multiple operations
+  const result1 = int_value + float_value * 2
+  print `  10 + 3.5 * 2 = {result1}`
+  
+  const result2 = (int_value + float_value) * 2
+  print `  (10 + 3.5) * 2 = {result2}`
+  
+  // Comparison with mixed types
+  const cmp1 = int_value > float_value
+  const cmp2 = float_value > int_value
+  print `  10 > 3.5 is {cmp1}`
+  print `  3.5 > 10 is {cmp2}`
+end procedure
+
+procedure test_variants()
+  print `Testing operations with variants`
+  
+  // Variant arithmetic
+  mutable v1 := 10
+  mutable v2 := 5
+  mutable vsum := v1 + v2
+  print `  variant: 10 + 5 = {vsum}`
+  
+  mutable vprod := v1 * v2
+  print `  variant: 10 * 5 = {vprod}`
+  
+  // Reassign variant to different type
+  v1 := 3.14
+  v2 := 2.0
+  mutable vdiff := v1 - v2
+  print `  variant: 3.14 - 2.0 = {vdiff}`
+  
+  // Variant comparisons
+  mutable vcmp1 := v1 > v2
+  print `  variant: 3.14 > 2.0 is {vcmp1}`
+  
+  // Mix variant and constant
+  const const_val = 7
+  mutable vmixed := v1 + const_val
+  print `  variant: 3.14 + 7 = {vmixed}`
+  
+  // Variant logical operations
+  mutable bool1 := 1
+  mutable bool2 := 0
+  mutable vand := bool1 and bool2
+  mutable vor := bool1 or bool2
+  print `  variant: 1 and 0 = {vand}`
+  print `  variant: 1 or 0 = {vor}`
+  
+  // Variant bitwise
+  mutable bits1 := 12
+  mutable bits2 := 10
+  mutable vband := bits1 & bits2
+  mutable vbor := bits1 | bits2
+  print `  variant: 12 & 10 = {vband}`
+  print `  variant: 12 | 10 = {vbor}`
+end procedure

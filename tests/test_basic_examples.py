@@ -95,6 +95,52 @@ EXAMPLES = {
             "Float test completed successfully",
         ],
     },
+    "operators": {
+        "file": "operators.ale",
+        "expect": [
+            "ARITHMETIC OPERATORS TEST",
+            "10 + 5 = 15",
+            "10.5 + 3.2 = 13.7",
+            "20 - 8 = 12",
+            "7 * 6 = 42",
+            "20 / 4 = 5",
+            "20 # 3 = 6",
+            "17 # 5 = 3",
+            "20 % 3 = 2",
+            "2 ^ 3 = 8",
+            "2.0 ^ 3 = 8",
+            "COMPARISON OPERATORS TEST",
+            "5 = 5 is 1",
+            "5 != 6 is 1",
+            "3 < 5 is 1",
+            "7 > 3 is 1",
+            "5 <= 5 is 1",
+            "7 >= 3 is 1",
+            "3.14 > 2.71 is 1",
+            "LOGICAL OPERATORS TEST",
+            "1 and 1 = 1",
+            "1 or 0 = 1",
+            "not 1 = 0",
+            "BITWISE OPERATORS TEST",
+            "12 & 10 = 8",
+            "12 | 10 = 14",
+            "12 xor 10 = 6",
+            "~5 = -6",
+            "5 << 2 = 20",
+            "20 >> 2 = 5",
+            "MIXED TYPE OPERATIONS TEST",
+            "10 + 3.5 = 13.5",
+            "10 * 3.5 = 35",
+            "3.5 / 10 = 0.35",
+            "10 > 3.5 is 1",
+            "VARIANT OPERATIONS TEST",
+            "variant: 10 + 5 = 15",
+            "variant: 10 * 5 = 50",
+            "variant: 1 and 0 = 0",
+            "variant: 12 & 10 = 8",
+            "All operator tests passed!",
+        ],
+    },
 }
 
 
@@ -196,3 +242,8 @@ def test_example_functions_return(repo_root: Path, bin_dir: Path, compile_pseudo
 def test_example_float(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
     out = _compile_and_run("float", EXAMPLES["float"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] float")
+
+
+def test_example_operators(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    out = _compile_and_run("operators", EXAMPLES["operators"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] operators")

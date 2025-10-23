@@ -17,6 +17,7 @@ class CodeGenerator:
         self.funcs: Dict[str, ir.Function] = {}
         self.locals = {}  # name -> (pointer, datatype, is_constant)
         self.globals = {}  # name -> (pointer, datatype, is_constant)
+        self.var_types = {}  # name -> 'int'|'float'|'string'|etc. for type tracking
         self.current_function_name = None  # Track current function for context
         self.shared_runtime_inits = []  # List of (name, expression) for shared vars that need runtime evaluation
         # timespec type for nanosleep: struct { i64 tv_sec; i64 tv_nsec; }
@@ -120,7 +121,7 @@ class CodeGenerator:
                         if arg.get('arg_type') == 'int' or arg.get('arg_type') is None:
                             param_types.append(ir.IntType(32))
                         # Add other parameter types as needed
-                    # Functions return values, procedures return void
+                    # Functions return values, procedures can also return values (default to variant)
                     if decl.get('type') == 'function':
                         # Check if function has explicit return type annotation, otherwise default to variant
                         return_type = decl.get('return_type')
@@ -133,7 +134,9 @@ class CodeGenerator:
                             from .base_types import get_variant_type
                             func_ty = ir.FunctionType(get_variant_type(), param_types)
                     else:
-                        func_ty = ir.FunctionType(ir.VoidType(), param_types)
+                        # Procedures also return variant by default (can be used with or without return statements)
+                        from .base_types import get_variant_type
+                        func_ty = ir.FunctionType(get_variant_type(), param_types)
                 func = ir.Function(self.module, func_ty, name=decl['name'])
                 self.funcs[decl['name']] = func
                 # Recursively process shared declarations in the procedure/function body
@@ -226,15 +229,17 @@ class CodeGenerator:
                 # Append default return if none was explicitly emitted
                 if decl['name'] == 'main':
                     self.builder.ret(ir.Constant(ir.IntType(32), 0))  # main returns 0
-                elif decl.get('type') == 'function':
-                    # Functions should have return statements in their body
-                    # If we reach here, it means no explicit return - return 0 as default
+                elif decl.get('type') == 'function' or decl.get('type') == 'procedure':
+                    # Functions and procedures both return variant by default
+                    # If we reach here, it means no explicit return - return null variant as default
                     if not self.builder.block.is_terminated:
-                        self.builder.ret(ir.Constant(ir.IntType(32), 0))
-                else:
-                    # Procedures return void
-                    if not self.builder.block.is_terminated:
-                        self.builder.ret_void()
+                        from .base_types import get_variant_type, get_variant_type_tag_enum
+                        variant_ty = get_variant_type()
+                        type_tags = get_variant_type_tag_enum()
+                        null_tag = ir.Constant(ir.IntType(32), type_tags['null'])
+                        null_data = ir.Constant(ir.ArrayType(ir.IntType(8), 16), [ir.Constant(ir.IntType(8), 0)] * 16)
+                        null_variant = ir.Constant(variant_ty, [null_tag, null_data])
+                        self.builder.ret(null_variant)
 
                 # Restore builder state
                 self.builder = old_builder
@@ -524,7 +529,7 @@ class CodeGenerator:
                     return
             
         init = node['init']
-        var_type = init.get('var_type', 'int')
+        var_type = init.get('var_type', None)  # None means type needs to be inferred
         
         # Validate assignment operator for constants
         assignment_op = init.get('assignment_op')
@@ -574,12 +579,11 @@ class CodeGenerator:
         # Detect thread array type from create_threads function_call
         if var_type is None and isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call' and init_value_expr.get('name') == 'create_threads':
             var_type = 'thread_array'
-            # Execute the function call and get the threads pointer
-            threads_ptr = evaluated_value  # Already evaluated above
-            debug_print(f"DEBUG: visit_declaration - create_threads returned: {threads_ptr}, type: {getattr(threads_ptr, 'type', type(threads_ptr))}")
-            # Store the threads pointer in locals with the correct type
-            self.locals[name] = (threads_ptr, 'thread_array', is_constant)
-            return
+        
+        # Detect thread type from create_thread function_call
+        if var_type is None and isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call' and init_value_expr.get('name') == 'create_thread':
+            var_type = 'thread'
+            debug_print(f"DEBUG: visit_declaration - detected create_thread call, setting type to 'thread'")
         
         # Detect semaphore, mutex, or barrier type from function_call
         # Also handle shared semaphores that already have a type but need initial value extraction
@@ -786,6 +790,16 @@ class CodeGenerator:
             # Store the array pointer in locals with array type
             self.locals[name] = (array_ptr, f'array_{element_type}', is_constant)
             return
+        
+        # Handle thread_array type from create_threads
+        if var_type == 'thread_array':
+            debug_print(f"DEBUG: visit_declaration - handling thread_array for '{name}'")
+            # evaluated_value should be the array pointer from create_threads
+            if evaluated_value is not None:
+                self.locals[name] = (evaluated_value, 'thread_array', is_constant)
+            else:
+                raise Exception(f"thread_array '{name}' must be initialized with create_threads()")
+            return
 
         from .base_types import get_type, is_variant_type, get_variant_type
         
@@ -796,10 +810,12 @@ class CodeGenerator:
         if explicit_type is not None:
             var_type = explicit_type
             debug_print(f"DEBUG: visit_declaration - using explicit type: {var_type}")
-        # If no explicit type, create as variant (dynamic type) regardless of initialization
-        else:
+        # If no explicit type and no inferred type yet, create as variant (dynamic type)
+        elif var_type is None:
             var_type = 'variant'
             debug_print(f"DEBUG: visit_declaration - no explicit type provided, creating as variant for dynamic typing")
+        else:
+            debug_print(f"DEBUG: visit_declaration - using inferred type: {var_type}")
         
         
         # Check if this should be a transparent variant (only for untyped variables)
@@ -809,20 +825,46 @@ class CodeGenerator:
             variant_ty = get_variant_type()
             variable = self.builder.alloca(variant_ty, name=name)
             
+            # Track the actual value type for type inference in binary operations
+            value_type = None
+            
             if evaluated_value is not None:
                 # Create variant with the evaluated value
                 type_tag = get_type_tag_for_value(evaluated_value, var_type)
                 self._store_variant_value(variable, evaluated_value, type_tag, var_type)
+                # Determine the value type from evaluated_value
+                if hasattr(evaluated_value, 'type'):
+                    if isinstance(evaluated_value.type, ir.DoubleType):
+                        value_type = 'float'
+                    elif isinstance(evaluated_value.type, ir.IntType):
+                        value_type = 'int'
+                    elif isinstance(evaluated_value.type, ir.PointerType):
+                        # Check if it's a string (i8*)
+                        if hasattr(evaluated_value.type, 'pointee') and str(evaluated_value.type.pointee) == 'i8':
+                            value_type = 'string'
             elif raw_value is not None:
                 # Create variant with raw value
                 from .base_types import get_raw_type
                 llvm_value = ir.Constant(get_raw_type(var_type), raw_value)
                 type_tag = get_type_tag_for_value(llvm_value, var_type)
                 self._store_variant_value(variable, llvm_value, type_tag, var_type)
+                # Determine value type from raw_value
+                if isinstance(raw_value, float):
+                    value_type = 'float'
+                elif isinstance(raw_value, int):
+                    value_type = 'int'
+                elif isinstance(raw_value, str):
+                    value_type = 'string'
             else:
                 # Create null variant
                 type_tags = get_variant_type_tag_enum()
                 self._store_null_variant(variable)
+                value_type = 'null'
+            
+            # Track the value type for this variable
+            if value_type:
+                self.var_types[name] = value_type
+                debug_print(f"DEBUG: visit_declaration - tracked type for '{name}': {value_type}")
             
             self.locals[name] = (variable, 'variant', is_constant)
         else:
@@ -1038,33 +1080,89 @@ class CodeGenerator:
         raise Exception(f"Unsupported literal type: {type(v)} with value {v}")
 
     def visit_binary_op(self, node: Dict[str, Any]) -> ir.Value:
+        op = node['op']
+        
+        debug_print(f"DEBUG: visit_binary_op - op: {op}")
+        debug_print(f"DEBUG: visit_binary_op - left AST node: {node['left']}")
+        debug_print(f"DEBUG: visit_binary_op - right AST node: {node['right']}")
+
+        # Determine the appropriate type for the operation BEFORE visiting operands
+        from .base_types import get_variant_type
+        variant_ty = get_variant_type()
+        
+        operation_type = 'int'  # default
+        
+        # Bitwise operators always use integers
+        bitwise_ops = {'&', '|', 'xor', '<<', '>>', '~'}
+        
+        if op not in bitwise_ops:
+            # Check if either operand is a float variable based on tracked types
+            # Don't break early - check all operands (if ANY is float, use float operations)
+            for i, ast_node in enumerate([node['left'], node['right']]):
+                debug_print(f"DEBUG: visit_binary_op - checking AST node {i}: {ast_node}")
+                if isinstance(ast_node, dict) and ast_node.get('type') == 'ID':
+                    var_name = ast_node.get('name')
+                    debug_print(f"DEBUG: visit_binary_op - found ID node with name '{var_name}'")
+                    if var_name in self.var_types:
+                        var_type = self.var_types[var_name]
+                        debug_print(f"DEBUG: visit_binary_op - variable '{var_name}' has tracked type: {var_type}")
+                        if var_type == 'float':
+                            operation_type = 'float'
+                            debug_print(f"DEBUG: visit_binary_op - operand {i} variable '{var_name}' is tracked as float, setting operation_type='float'")
+                            # Continue checking - don't break
+                elif isinstance(ast_node, dict) and ast_node.get('type') == 'literal':
+                    # Check if it's a float literal OR a variable reference (parser quirk)
+                    literal_value = ast_node.get('value')
+                    if isinstance(literal_value, float):
+                        operation_type = 'float'
+                        debug_print(f"DEBUG: visit_binary_op - operand {i} is float literal, setting operation_type='float'")
+                        # Continue checking
+                    elif isinstance(literal_value, str) and literal_value in self.var_types:
+                        # This is actually a variable reference, not a literal string
+                        var_type = self.var_types[literal_value]
+                        debug_print(f"DEBUG: visit_binary_op - operand {i} variable '{literal_value}' (from literal) has tracked type: {var_type}")
+                        if var_type == 'float':
+                            operation_type = 'float'
+                            debug_print(f"DEBUG: visit_binary_op - operand {i} variable '{literal_value}' is tracked as float, setting operation_type='float'")
+                            # Continue checking
+        
+        debug_print(f"DEBUG: visit_binary_op - final operation_type: {operation_type}")
+        
+        # Now visit the operands to get LLVM values
         left_raw = self.visit(node['left'])
         right_raw = self.visit(node['right'])
-        op = node['op']
-
-        # Determine the appropriate type for the operation
-        # First, try to extract without forcing type to see what we have
-        left_test = self._auto_extract_value(left_raw, 'auto')  # Don't force type yet
-        right_test = self._auto_extract_value(right_raw, 'auto')  # Don't force type yet
         
-        # Determine operation type based on operand types
-        operation_type = 'int'  # default
-        if (hasattr(left_test, 'type') and isinstance(left_test.type, ir.DoubleType)) or \
-           (hasattr(right_test, 'type') and isinstance(right_test.type, ir.DoubleType)):
+        debug_print(f"DEBUG: visit_binary_op - left_raw: {left_raw}, type: {getattr(left_raw, 'type', 'no-type')}")
+        debug_print(f"DEBUG: visit_binary_op - right_raw: {right_raw}, type: {getattr(right_raw, 'type', 'no-type')}")
+        
+        # Also check if the computed values themselves are floats (for nested expressions)
+        if hasattr(left_raw, 'type') and isinstance(left_raw.type, ir.DoubleType):
             operation_type = 'float'
+            debug_print(f"DEBUG: visit_binary_op - left_raw is already DoubleType, setting operation_type='float'")
+        if hasattr(right_raw, 'type') and isinstance(right_raw.type, ir.DoubleType):
+            operation_type = 'float'
+            debug_print(f"DEBUG: visit_binary_op - right_raw is already DoubleType, setting operation_type='float'")
         
         # Now extract values with the determined type
         left = self._auto_extract_value(left_raw, operation_type)
         right = self._auto_extract_value(right_raw, operation_type)
         
+        debug_print(f"DEBUG: visit_binary_op - after extraction: left={left}, left.type={getattr(left, 'type', 'no-type')}")
+        debug_print(f"DEBUG: visit_binary_op - after extraction: right={right}, right.type={getattr(right, 'type', 'no-type')}")
+        
         # If we're doing float operations, ensure both operands are float type
         if operation_type == 'float':
             if hasattr(left, 'type') and isinstance(left.type, ir.IntType):
+                debug_print(f"DEBUG: visit_binary_op - converting left from int to float")
                 # Convert integer to float
                 left = self.builder.sitofp(left, ir.DoubleType())
             if hasattr(right, 'type') and isinstance(right.type, ir.IntType):
+                debug_print(f"DEBUG: visit_binary_op - converting right from int to float")
                 # Convert integer to float
                 right = self.builder.sitofp(right, ir.DoubleType())
+        
+        debug_print(f"DEBUG: visit_binary_op - final: left={left}, left.type={getattr(left, 'type', 'no-type')}")
+        debug_print(f"DEBUG: visit_binary_op - final: right={right}, right.type={getattr(right, 'type', 'no-type')}")
         
         # For arithmetic operations with floats, use float operations
         if op == '+':
@@ -1087,6 +1185,53 @@ class CodeGenerator:
                 return self.builder.fdiv(left, right)
             else:
                 return self.builder.sdiv(left, right)
+        elif op == '#':
+            # Integer division (always returns integer)
+            if operation_type == 'float':
+                # Convert to integers first
+                left_int = self.builder.fptosi(left, ir.IntType(32))
+                right_int = self.builder.fptosi(right, ir.IntType(32))
+                return self.builder.sdiv(left_int, right_int)
+            else:
+                return self.builder.sdiv(left, right)
+        elif op == '%':
+            # Modulo (remainder)
+            if operation_type == 'float':
+                # For floats, use frem
+                return self.builder.frem(left, right)
+            else:
+                return self.builder.srem(left, right)
+        elif op == '^':
+            # Exponentiation
+            # Use pow function from math library
+            if operation_type == 'float':
+                pow_fn = self.module.globals.get('pow')
+                if not pow_fn:
+                    pow_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType(), ir.DoubleType()])
+                    pow_fn = ir.Function(self.module, pow_ty, name='pow')
+                return self.builder.call(pow_fn, [left, right])
+            else:
+                # For integers, convert to float, use pow, convert back
+                left_float = self.builder.sitofp(left, ir.DoubleType())
+                right_float = self.builder.sitofp(right, ir.DoubleType())
+                pow_fn = self.module.globals.get('pow')
+                if not pow_fn:
+                    pow_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType(), ir.DoubleType()])
+                    pow_fn = ir.Function(self.module, pow_ty, name='pow')
+                result_float = self.builder.call(pow_fn, [left_float, right_float])
+                return self.builder.fptosi(result_float, ir.IntType(32))
+        
+        # Bitwise operators
+        elif op == '&':
+            return self.builder.and_(left, right)
+        elif op == '|':
+            return self.builder.or_(left, right)
+        elif op == 'xor':
+            return self.builder.xor(left, right)
+        elif op == '<<':
+            return self.builder.shl(left, right)
+        elif op == '>>':
+            return self.builder.ashr(left, right)  # Arithmetic right shift
         
         # Comparison operators
         if op in ['=', '!=', '<', '<=', '>', '>=']:
@@ -1106,17 +1251,85 @@ class CodeGenerator:
                     '>': '>',
                     '>=': '>='
                 }
-                return self.builder.icmp_signed(op_map[op], left, right)
+                
+                # Use fcmp for floats, icmp for integers
+                if operation_type == 'float':
+                    result_bool = self.builder.fcmp_ordered(op_map[op], left, right)
+                else:
+                    result_bool = self.builder.icmp_signed(op_map[op], left, right)
+                # Convert i1 result to i32 (0 or 1)
+                return self.builder.zext(result_bool, ir.IntType(32))
         
-        # Logical operators
+        # Logical operators (boolean AND/OR)
+        # Note: 'and' and 'or' are logical operators (short-circuit in most languages)
+        # For Alecci, we treat them as bitwise on integers (simpler implementation)
         elif op == 'and':
-            return self.builder.and_(left, right)
+            # Convert to i1 (boolean), perform logical and, convert back to i32
+            if operation_type == 'float':
+                left_bool = self.builder.fcmp_ordered('!=', left, ir.Constant(ir.DoubleType(), 0.0))
+                right_bool = self.builder.fcmp_ordered('!=', right, ir.Constant(ir.DoubleType(), 0.0))
+            else:
+                left_bool = self.builder.icmp_signed('!=', left, ir.Constant(left.type, 0))
+                right_bool = self.builder.icmp_signed('!=', right, ir.Constant(right.type, 0))
+            result_bool = self.builder.and_(left_bool, right_bool)
+            return self.builder.zext(result_bool, ir.IntType(32))
         elif op == 'or':
-            return self.builder.or_(left, right)
+            # Convert to i1 (boolean), perform logical or, convert back to i32
+            if operation_type == 'float':
+                left_bool = self.builder.fcmp_ordered('!=', left, ir.Constant(ir.DoubleType(), 0.0))
+                right_bool = self.builder.fcmp_ordered('!=', right, ir.Constant(ir.DoubleType(), 0.0))
+            else:
+                left_bool = self.builder.icmp_signed('!=', left, ir.Constant(left.type, 0))
+                right_bool = self.builder.icmp_signed('!=', right, ir.Constant(right.type, 0))
+            result_bool = self.builder.or_(left_bool, right_bool)
+            return self.builder.zext(result_bool, ir.IntType(32))
             
         # Add more operators as needed
         else:
             raise Exception(f"Unsupported operator: {op}")
+
+    def visit_unary_op(self, node: Dict[str, Any]) -> ir.Value:
+        """Handle unary operators like unary minus, logical NOT, bitwise NOT"""
+        operand_raw = self.visit(node['operand'])
+        op = node['op']
+        
+        # Auto-extract the operand value
+        operand = self._auto_extract_value(operand_raw, 'auto')
+        
+        if op == '-':
+            # Unary minus
+            if hasattr(operand, 'type'):
+                if isinstance(operand.type, ir.DoubleType):
+                    # Float negation: -x = 0.0 - x
+                    zero = ir.Constant(ir.DoubleType(), 0.0)
+                    return self.builder.fsub(zero, operand)
+                elif isinstance(operand.type, ir.IntType):
+                    # Integer negation: -x = 0 - x
+                    zero = ir.Constant(operand.type, 0)
+                    return self.builder.sub(zero, operand)
+                else:
+                    raise Exception(f"Unsupported type for unary minus: {operand.type}")
+            else:
+                raise Exception("Operand for unary minus has no type information")
+        elif op == 'not':
+            # Logical NOT: not x = (x == 0)
+            # Returns 1 if operand is 0, returns 0 otherwise
+            if hasattr(operand, 'type') and isinstance(operand.type, ir.IntType):
+                zero = ir.Constant(operand.type, 0)
+                result_bool = self.builder.icmp_signed('==', operand, zero)
+                return self.builder.zext(result_bool, ir.IntType(32))
+            else:
+                raise Exception(f"Unsupported type for logical NOT: {operand.type if hasattr(operand, 'type') else 'unknown'}")
+        elif op == '~':
+            # Bitwise NOT: ~x
+            if hasattr(operand, 'type') and isinstance(operand.type, ir.IntType):
+                # In LLVM, bitwise NOT is done as XOR with all 1s (-1)
+                all_ones = ir.Constant(operand.type, -1)
+                return self.builder.xor(operand, all_ones)
+            else:
+                raise Exception(f"Unsupported type for bitwise NOT: {operand.type if hasattr(operand, 'type') else 'unknown'}")
+        else:
+            raise Exception(f"Unsupported unary operator: {op}")
 
     def visit_body(self, node: List[Dict[str, Any]]) -> None:
         self.visit(node)
@@ -1149,6 +1362,11 @@ class CodeGenerator:
         self.builder.branch(cond_bb)
         self.builder.position_at_start(cond_bb)
         cond_val = self.visit(node['condition'])
+        
+        # Convert condition to i1 if it's i32 (from comparison operators)
+        if hasattr(cond_val, 'type') and isinstance(cond_val.type, ir.IntType) and cond_val.type.width == 32:
+            cond_val = self.builder.icmp_signed('!=', cond_val, ir.Constant(ir.IntType(32), 0))
+        
         self.builder.cbranch(cond_val, body_bb, end_bb)
         self.builder.position_at_start(body_bb)
         self.visit(node['body'])
@@ -1717,6 +1935,13 @@ class CodeGenerator:
                     return barrier_ptr
             debug_print(f"DEBUG: visit_ID - returning barrier pointer: {ptr}")
             return ptr
+        elif dtype == 'thread':
+            # For thread handles, load the i8* value if stored as pointer
+            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
+                loaded = self.builder.load(ptr)
+                debug_print(f"DEBUG: visit_ID - loaded thread handle: {loaded}")
+                return loaded
+            return ptr
         elif dtype == 'variant':
             # For variants, return the pointer to the variant struct
             # Runtime functions will handle extracting values
@@ -1826,6 +2051,25 @@ class CodeGenerator:
             debug_print(f"DEBUG: join_thread function call - raw argument: {node['arguments'][0]}")
             thread_arg = self.visit(node['arguments'][0])
             debug_print(f"DEBUG: join_thread() - thread_arg: {thread_arg}, type: {getattr(thread_arg, 'type', type(thread_arg))}")
+            
+            # Check if thread_arg is a variant and extract the thread handle if needed
+            if hasattr(thread_arg, 'type'):
+                from .base_types import get_variant_type
+                variant_ty = get_variant_type()
+                if thread_arg.type == variant_ty:
+                    # Thread handle is wrapped in a variant - need to extract it
+                    debug_print(f"DEBUG: join_thread() - extracting thread handle from variant")
+                    # Create a temporary variable to store the variant
+                    temp_var = self.builder.alloca(variant_ty, name="temp_thread_variant")
+                    self.builder.store(thread_arg, temp_var)
+                    # Extract as thread type (which is i8*)
+                    thread_arg = self._extract_variant_value(temp_var, 'thread')
+                    debug_print(f"DEBUG: join_thread() - extracted thread_arg: {thread_arg}, type: {getattr(thread_arg, 'type', type(thread_arg))}")
+                elif isinstance(thread_arg.type, ir.PointerType) and thread_arg.type.pointee == variant_ty:
+                    # Thread handle is a pointer to variant - extract directly
+                    debug_print(f"DEBUG: join_thread() - extracting thread handle from variant pointer")
+                    thread_arg = self._extract_variant_value(thread_arg, 'thread')
+                    debug_print(f"DEBUG: join_thread() - extracted thread_arg: {thread_arg}, type: {getattr(thread_arg, 'type', type(thread_arg))}")
             
             # Use the join_thread function from threading_utils
             return join_thread(self.builder, self.module, thread_arg)
@@ -2286,10 +2530,10 @@ class CodeGenerator:
             # Remove explicit seeding API in favor of automatic OS-entropy seeding on first rand() use
             raise Exception("seed() was removed. rand() now auto-seeds from OS entropy on first use.")
         elif func_name == 'rand':
-            # Random integer generator using POSIX random() for wider range than C rand()
-            # Auto-seeds from OS entropy (getrandom) on first use; falls back to time(NULL) if needed.
+            # Thread-safe random integer generator using rand_r() with per-function seed
+            # Auto-seeds from OS entropy (getrandom) on first use; falls back to time(NULL) + thread ID if needed.
             # Usage:
-            #   rand() -> int in [0, RAND_MAX-ish] (truncated from 31/63-bit random)
+            #   rand() -> int in [0, RAND_MAX]
             #   rand(max) -> int in [0, max)
             #   rand(min, max) -> int in [min, max) (order-agnostic, half-open interval)
             args = node.get('arguments', [])
@@ -2299,37 +2543,59 @@ class CodeGenerator:
             i32 = ir.IntType(32)
             i64 = ir.IntType(64)
 
-            # Ensure we seed the PRNG once using OS entropy
-            seeded_g = self.module.globals.get('__alecci_random_seeded')
-            if not seeded_g:
-                seeded_g = ir.GlobalVariable(self.module, i32, name='__alecci_random_seeded')
-                seeded_g.linkage = 'internal'
-                seeded_g.initializer = ir.Constant(i32, 0)
-            seeded_val = self.builder.load(seeded_g)
-            need_seed = self.builder.icmp_signed('==', seeded_val, ir.Constant(i32, 0))
+            # Create a function-local static seed variable (simulated with an alloca at function entry)
+            # Store seed in the function's locals so each function/thread has its own seed
+            func_name = self.current_function_name or 'global'
+            seed_var_name = f'__rand_seed_{func_name}'
+            
+            if seed_var_name not in self.locals:
+                # Create seed variable at function entry
+                # Save current position
+                saved_block = self.builder.block
+                
+                # Find or create the entry block's first position
+                entry_block = self.builder.function.entry_basic_block
+                if len(entry_block.instructions) > 0:
+                    self.builder.position_before(entry_block.instructions[0])
+                else:
+                    self.builder.position_at_end(entry_block)
+                
+                seed_var = self.builder.alloca(i32, name=seed_var_name)
+                # Initialize to 0 (will be set on first use)
+                self.builder.store(ir.Constant(i32, 0), seed_var)
+                self.locals[seed_var_name] = (seed_var, 'int', False)
+                
+                # Restore position
+                self.builder.position_at_end(saved_block)
+            
+            seed_var, _, _ = self.locals[seed_var_name]
+            
+            # Check if we need to seed (seed == 0 means not initialized)
+            seed_val = self.builder.load(seed_var)
+            need_seed = self.builder.icmp_signed('==', seed_val, ir.Constant(i32, 0))
 
             cur_func = self.builder.function
             seed_bb = cur_func.append_basic_block(name='rand_seed')
             cont_bb = cur_func.append_basic_block(name='rand_cont')
             self.builder.cbranch(need_seed, seed_bb, cont_bb)
 
-            # Seed block
+            # Seed block - initialize the seed variable
             self.builder.position_at_end(seed_bb)
             # Try getrandom(void* buf, size_t buflen, unsigned int flags) -> ssize_t
             getrandom_fn = self.module.globals.get('getrandom')
             if not getrandom_fn:
                 getrandom_ty = ir.FunctionType(i64, [ir.IntType(8).as_pointer(), i64, i32])
                 getrandom_fn = ir.Function(self.module, getrandom_ty, name='getrandom')
-            # srandom(unsigned int)
-            srandom_fn = self.module.globals.get('srandom')
-            if not srandom_fn:
-                srandom_ty = ir.FunctionType(ir.VoidType(), [i32])
-                srandom_fn = ir.Function(self.module, srandom_ty, name='srandom')
             # time_t time(time_t*) -> assume i64 time_t
             time_fn = self.module.globals.get('time')
             if not time_fn:
                 time_ty = ir.FunctionType(i64, [i64.as_pointer()])
                 time_fn = ir.Function(self.module, time_ty, name='time')
+            # pthread_self() -> pthread_t (as i8*)
+            pthread_self_fn = self.module.globals.get('pthread_self')
+            if not pthread_self_fn:
+                pthread_self_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [])
+                pthread_self_fn = ir.Function(self.module, pthread_self_ty, name='pthread_self')
 
             seed_tmp = self.builder.alloca(i32, name='seed_tmp')
             seed_buf = self.builder.bitcast(seed_tmp, ir.IntType(8).as_pointer())
@@ -2345,35 +2611,85 @@ class CodeGenerator:
             # OK: use hardware entropy
             self.builder.position_at_end(ok_bb)
             seed_val32 = self.builder.load(seed_tmp)
-            self.builder.call(srandom_fn, [seed_val32])
+            self.builder.store(seed_val32, seed_var)
             self.builder.branch(done_seed_bb)
 
-            # Fallback: use time(NULL)
+            # Fallback: use time(NULL) XOR pthread_self() for uniqueness per thread
             self.builder.position_at_end(fb_bb)
             null_time_ptr = ir.Constant(i64.as_pointer(), None)
             t = self.builder.call(time_fn, [null_time_ptr])
-            t32 = self.builder.trunc(t, i32)
-            self.builder.call(srandom_fn, [t32])
+            # Get thread ID and convert to i32
+            tid = self.builder.call(pthread_self_fn, [])
+            tid_int = self.builder.ptrtoint(tid, i64)
+            # Use more bits of time for better entropy (use full time value)
+            time_xor_tid = self.builder.xor(t, tid_int)
+            # Also add the address of the seed variable for additional uniqueness
+            seed_addr_int = self.builder.ptrtoint(seed_var, i64)
+            combined = self.builder.xor(time_xor_tid, seed_addr_int)
+            # Hash it a bit more by rotating and XORing
+            shifted = self.builder.lshr(combined, ir.Constant(i64, 17))
+            final64 = self.builder.xor(combined, shifted)
+            seed_fallback = self.builder.trunc(final64, i32)
+            # Ensure seed is never 0 (0 is our "uninitialized" marker)
+            seed_is_zero = self.builder.icmp_signed('==', seed_fallback, ir.Constant(i32, 0))
+            final_seed = self.builder.select(seed_is_zero, ir.Constant(i32, 1), seed_fallback)
+            self.builder.store(final_seed, seed_var)
             self.builder.branch(done_seed_bb)
 
-            # Mark seeded and continue
+            # Continue after seeding
             self.builder.position_at_end(done_seed_bb)
-            self.builder.store(ir.Constant(i32, 1), seeded_g)
+            # Warm up the RNG by calling rand_r several times based on thread ID
+            # This ensures different threads get different sequences even with similar seeds
+            tid_warmup = self.builder.call(pthread_self_fn, [])
+            tid_warmup_int = self.builder.ptrtoint(tid_warmup, i64)
+            tid_warmup_32 = self.builder.trunc(tid_warmup_int, i32)
+            # Use lower bits as iteration count (0-15 iterations)
+            warmup_count = self.builder.and_(tid_warmup_32, ir.Constant(i32, 15))
+            
+            # Create warmup loop
+            warmup_loop_bb = cur_func.append_basic_block(name='rand_warmup_loop')
+            warmup_done_bb = cur_func.append_basic_block(name='rand_warmup_done')
+            
+            # Initialize counter
+            warmup_counter = self.builder.alloca(i32, name='warmup_counter')
+            self.builder.store(ir.Constant(i32, 0), warmup_counter)
+            self.builder.branch(warmup_loop_bb)
+            
+            # Warmup loop: call rand_r multiple times
+            self.builder.position_at_end(warmup_loop_bb)
+            counter_val = self.builder.load(warmup_counter)
+            # Declare rand_r here if not already done
+            if 'rand_r' not in [f.name for f in self.module.functions]:
+                rand_r_ty = ir.FunctionType(i32, [i32.as_pointer()])
+                temp_rand_r = ir.Function(self.module, rand_r_ty, name='rand_r')
+            else:
+                temp_rand_r = self.module.get_global('rand_r')
+            # Call rand_r to advance the state
+            self.builder.call(temp_rand_r, [seed_var])
+            # Increment counter
+            next_counter = self.builder.add(counter_val, ir.Constant(i32, 1))
+            self.builder.store(next_counter, warmup_counter)
+            # Check if done
+            done_warmup = self.builder.icmp_signed('>=', next_counter, warmup_count)
+            self.builder.cbranch(done_warmup, warmup_done_bb, warmup_loop_bb)
+            
+            self.builder.position_at_end(warmup_done_bb)
             self.builder.branch(cont_bb)
 
             # Continue after seeding (or if already seeded)
             self.builder.position_at_end(cont_bb)
 
-            # Declare or get POSIX random() -> long
-            random_func = self.module.globals.get('random')
-            if not random_func:
-                random_ty = ir.FunctionType(i64, [])
-                random_func = ir.Function(self.module, random_ty, name='random')
+            # Declare rand_r(unsigned int *seed) -> int
+            rand_r_func = self.module.globals.get('rand_r')
+            if not rand_r_func:
+                rand_r_ty = ir.FunctionType(i32, [i32.as_pointer()])
+                rand_r_func = ir.Function(self.module, rand_r_ty, name='rand_r')
 
-            rand64 = self.builder.call(random_func, [])
+            # Call rand_r with pointer to our seed variable
+            rand_val = self.builder.call(rand_r_func, [seed_var])
 
-            # Helpers to coerce arguments to i64 ints
-            def ensure_i64(val):
+            # Helpers to coerce arguments to i32 ints
+            def ensure_i32(val):
                 v = val
                 if not hasattr(v, 'type'):
                     raise Exception("rand() argument must be an integer expression")
@@ -2381,39 +2697,39 @@ class CodeGenerator:
                     v = self.builder.load(v)
                 if not isinstance(v.type, ir.IntType):
                     raise Exception("rand() argument must be an integer expression")
-                if v.type.width == 64:
+                if v.type.width == 32:
                     return v
-                if v.type.width < 64:
-                    return self.builder.zext(v, i64)
-                return self.builder.trunc(v, i64)
+                if v.type.width < 32:
+                    return self.builder.zext(v, i32)
+                return self.builder.trunc(v, i32)
 
             if len(args) == 0:
-                # Truncate to 32-bit result for language int
-                return self.builder.trunc(rand64, i32)
+                # Return raw rand_r() value (0 to RAND_MAX)
+                return rand_val
             if len(args) == 1:
-                max_v64 = ensure_i64(self.visit(args[0]))
-                zero64 = ir.Constant(i64, 0)
-                one64 = ir.Constant(i64, 1)
+                max_v = ensure_i32(self.visit(args[0]))
+                zero = ir.Constant(i32, 0)
+                one = ir.Constant(i32, 1)
                 # Avoid division by zero at runtime: if max == 0 use 1
-                safe_mod = self.builder.select(self.builder.icmp_signed('==', max_v64, zero64), one64, max_v64)
-                mod64 = self.builder.srem(rand64, safe_mod)
-                return self.builder.trunc(mod64, i32)
+                safe_mod = self.builder.select(self.builder.icmp_signed('==', max_v, zero), one, max_v)
+                mod_val = self.builder.srem(rand_val, safe_mod)
+                return mod_val
             else:  # len(args) == 2
-                min_v64 = ensure_i64(self.visit(args[0]))
-                max_v64 = ensure_i64(self.visit(args[1]))
-                one64 = ir.Constant(i64, 1)
-                zero64 = ir.Constant(i64, 0)
+                min_v = ensure_i32(self.visit(args[0]))
+                max_v = ensure_i32(self.visit(args[1]))
+                one = ir.Constant(i32, 1)
+                zero = ir.Constant(i32, 0)
                 # Normalize order to get lo <= hi
-                ge = self.builder.icmp_signed('>=', max_v64, min_v64)
-                hi = self.builder.select(ge, max_v64, min_v64)
-                lo = self.builder.select(ge, min_v64, max_v64)
+                ge = self.builder.icmp_signed('>=', max_v, min_v)
+                hi = self.builder.select(ge, max_v, min_v)
+                lo = self.builder.select(ge, min_v, max_v)
                 # range = hi - lo (half-open interval [lo, hi))
                 rng = self.builder.sub(hi, lo)
                 # Protect against zero or negative range
-                safe_rng = self.builder.select(self.builder.icmp_signed('<=', rng, zero64), one64, rng)
-                mod64 = self.builder.srem(rand64, safe_rng)
-                res64 = self.builder.add(mod64, lo)
-                return self.builder.trunc(res64, i32)
+                safe_rng = self.builder.select(self.builder.icmp_signed('<=', rng, zero), one, rng)
+                mod_val = self.builder.srem(rand_val, safe_rng)
+                res = self.builder.add(mod_val, lo)
+                return res
         
         # Handle constructor functions for synchronization primitives
         elif func_name == 'semaphore':
@@ -2694,31 +3010,64 @@ class CodeGenerator:
                 self.builder.store(created_variant, variant_ptr)
 
     def _extract_variant_value(self, variant_ptr, expected_type='int'):
-        """Extract a raw value from a variant for operations"""
-        # Load the variant struct first
+        """Extract a raw value from a variant for operations, with automatic type conversion"""
+        # Don't load the variant - pass the pointer directly to avoid struct passing issues
         from .base_types import get_variant_type
         variant_ty = get_variant_type()
-        variant_value = self.builder.load(variant_ptr)
         
-        # Use variant runtime functions to get the value
-        if expected_type == 'int':
-            func_name = 'variant_get_int'
-        elif expected_type == 'float':
-            func_name = 'variant_get_float'
-        elif expected_type == 'string':
-            func_name = 'variant_get_string'
+        # For numeric types, use conversion functions that handle int/float automatically
+        if expected_type == 'float':
+            # Use variant_to_float which converts int to float if needed
+            func_name = 'variant_to_float'
+            func = self.module.globals.get(func_name)
+            if not func:
+                # variant_to_float takes variant pointer, returns variant by value
+                func_ty = ir.FunctionType(variant_ty, [variant_ty.as_pointer()])
+                func = ir.Function(self.module, func_ty, name=func_name)
+            # Pass the pointer directly
+            converted_variant = self.builder.call(func, [variant_ptr])
+            # Now extract the float from the converted variant
+            # Store it temporarily
+            temp_ptr = self.builder.alloca(variant_ty, name="converted_variant")
+            self.builder.store(converted_variant, temp_ptr)
+            # Extract float
+            get_func_name = 'variant_get_float'
+            get_func = self.module.globals.get(get_func_name)
+            if not get_func:
+                get_func_ty = ir.FunctionType(ir.DoubleType(), [variant_ty.as_pointer()])
+                get_func = ir.Function(self.module, get_func_ty, name=get_func_name)
+            return self.builder.call(get_func, [temp_ptr])
+        elif expected_type == 'int':
+            # Use variant_to_int which converts float to int if needed
+            func_name = 'variant_to_int'
+            func = self.module.globals.get(func_name)
+            if not func:
+                func_ty = ir.FunctionType(variant_ty, [variant_ty.as_pointer()])
+                func = ir.Function(self.module, func_ty, name=func_name)
+            converted_variant = self.builder.call(func, [variant_ptr])
+            temp_ptr = self.builder.alloca(variant_ty, name="converted_variant")
+            self.builder.store(converted_variant, temp_ptr)
+            get_func_name = 'variant_get_int'
+            get_func = self.module.globals.get(get_func_name)
+            if not get_func:
+                get_func_ty = ir.FunctionType(ir.IntType(32), [variant_ty.as_pointer()])
+                get_func = ir.Function(self.module, get_func_ty, name=get_func_name)
+            return self.builder.call(get_func, [temp_ptr])
         else:
-            func_name = 'variant_get_int'  # Default
-        
-        # Get or declare the runtime function
-        func = self.module.globals.get(func_name)
-        if not func:
-            from .base_types import get_raw_type
-            return_ty = get_raw_type(expected_type)
-            func_ty = ir.FunctionType(return_ty, [variant_ty])
-            func = ir.Function(self.module, func_ty, name=func_name)
-        
-        return self.builder.call(func, [variant_value])
+            # For non-numeric types, use direct extraction
+            if expected_type == 'string' or expected_type == 'thread':
+                func_name = 'variant_get_string'
+            else:
+                func_name = 'variant_get_int'  # Default
+            
+            func = self.module.globals.get(func_name)
+            if not func:
+                from .base_types import get_raw_type
+                return_ty = get_raw_type(expected_type)
+                func_ty = ir.FunctionType(return_ty, [variant_ty.as_pointer()])
+                func = ir.Function(self.module, func_ty, name=func_name)
+            
+            return self.builder.call(func, [variant_ptr])
 
     def _auto_extract_value(self, value, prefer_type='int'):
         """Automatically extract value from variant if needed"""

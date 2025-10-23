@@ -47,6 +47,12 @@ reserved = {
     'barrier' : 'BARRIER',
     # Dynamic typing
     'variant' : 'VARIANT',
+    # Logical operators (keywords)
+    'and' : 'AND',
+    'or' : 'OR',
+    'not' : 'NOT',
+    # Bitwise operators (keywords)
+    'xor' : 'BITWISE_XOR',
     # 'wait' : 'WAIT',     
     # 'signal' : 'SIGNAL',
     # 'join_thread' : 'JOIN_THREAD',
@@ -68,13 +74,9 @@ tokens = [
     'LESS_EQ',
     'GREATER',
     'GREATER_EQ',
-    'NOT',
-    'AND',
-    'OR',
     'BITWISE_NOT',
     'BITWISE_AND',
     'BITWISE_OR',
-    'BITWISE_XOR',
     'BITWISE_LSHIFT',
     'BITWISE_RSHIFT',
     'COMMA',
@@ -110,23 +112,19 @@ t_EXPONENT = r'\^'
 t_MOD      = r'\%'
 
 
-# Logic operators
+# Logic operators (comparison operators only, AND/OR/NOT are reserved words)
 t_EQUALS   = r'='
 t_NEQUALS  = r'!='
 t_LESS     = r'<'
 t_LESS_EQ  = r'<='
 t_GREATER  = r'>'
 t_GREATER_EQ = r'>='
-t_NOT     = r'not'
-t_AND     = r'and'
-t_OR      = r'or'
 
 
-# Bitwise operators
+# Bitwise operators (XOR is a reserved word)
 t_BITWISE_NOT = r'~'
 t_BITWISE_AND = r'&'
 t_BITWISE_OR  = r'\|'
-t_BITWISE_XOR = r'xor'
 t_BITWISE_LSHIFT = r'<<'
 t_BITWISE_RSHIFT = r'>>'
 
@@ -142,8 +140,9 @@ t_STRING   = r'\"[^\n\"]*\"'
 t_FORMATTED_STRING   = r'\`[^\n\`]*\`'
 
 # Create complex type rule. Move there thread, semaphore, etc
+# Use word boundaries to ensure we don't match partial words like 'int' in 'int_value'
 def t_TYPE( t:lex.LexToken):
-    r'int|float|bool|char|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|f128|string'
+    r'\b(int|float|bool|char|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|f128|string)\b'
     return t
 
 def t_COMMENT(t:lex.LexToken) :

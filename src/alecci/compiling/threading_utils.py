@@ -86,11 +86,61 @@ def create_thread(builder, module, target_func, thread_args=None):
         debug_print(f"[DEBUG] create_thread wrapper: final call_args length: {len(call_args)}")
         
         # Call the original function with the provided arguments
-        wrapper_builder.call(target_func, call_args)
+        result = wrapper_builder.call(target_func, call_args)
         
-        # Return NULL
-        null_ret = ir.Constant(voidptr_ty, None)
-        wrapper_builder.ret(null_ret)
+        # If the function returns a value (not void), we need to box it as void*
+        # For now, we'll store it in a heap-allocated variant structure
+        if target_func.return_value.type != ir.VoidType():
+            # Import variant type
+            from .base_types import get_variant_type
+            variant_ty = get_variant_type()
+            
+            # Allocate variant on heap using malloc
+            malloc_func = module.globals.get('malloc')
+            if not malloc_func:
+                malloc_ty = ir.FunctionType(voidptr_ty, [ir.IntType(64)])
+                malloc_func = ir.Function(module, malloc_ty, name='malloc')
+            
+            # Use a fixed size for the variant structure (20 bytes is sufficient for the variant type)
+            variant_size = ir.Constant(ir.IntType(64), 20)
+            variant_ptr_void = wrapper_builder.call(malloc_func, [variant_size])
+            variant_ptr = wrapper_builder.bitcast(variant_ptr_void, variant_ty.as_pointer())
+            
+            # Store the return value into the variant
+            # Determine type tag based on return type
+            type_tag_ptr = wrapper_builder.gep(variant_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+            data_ptr = wrapper_builder.gep(variant_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+            
+            if isinstance(result.type, ir.IntType) and result.type.width == 32:
+                # Integer type
+                wrapper_builder.store(ir.Constant(ir.IntType(32), 0), type_tag_ptr)  # Type tag 0 = int
+                data_as_int_ptr = wrapper_builder.bitcast(data_ptr, ir.IntType(32).as_pointer())
+                wrapper_builder.store(result, data_as_int_ptr)
+            elif isinstance(result.type, ir.DoubleType):
+                # Float type
+                wrapper_builder.store(ir.Constant(ir.IntType(32), 1), type_tag_ptr)  # Type tag 1 = float
+                data_as_float_ptr = wrapper_builder.bitcast(data_ptr, ir.DoubleType().as_pointer())
+                wrapper_builder.store(result, data_as_float_ptr)
+            elif isinstance(result.type, ir.PointerType):
+                # String/pointer type
+                wrapper_builder.store(ir.Constant(ir.IntType(32), 2), type_tag_ptr)  # Type tag 2 = string
+                data_as_ptr_ptr = wrapper_builder.bitcast(data_ptr, ir.IntType(8).as_pointer().as_pointer())
+                casted_result = wrapper_builder.bitcast(result, ir.IntType(8).as_pointer())
+                wrapper_builder.store(casted_result, data_as_ptr_ptr)
+            else:
+                # Variant or unknown - just store the variant as-is if it's already a variant
+                if result.type == variant_ty:
+                    wrapper_builder.store(result, variant_ptr)
+                else:
+                    # Unknown type - store NULL
+                    wrapper_builder.store(ir.Constant(ir.IntType(32), 8), type_tag_ptr)  # Type tag 8 = null
+            
+            # Return the variant pointer as void*
+            wrapper_builder.ret(variant_ptr_void)
+        else:
+            # Return NULL for void functions
+            null_ret = ir.Constant(voidptr_ty, None)
+            wrapper_builder.ret(null_ret)
     
     start_routine = wrapper_func
     debug_print(f"[DEBUG] start_routine wrapper: {start_routine}")
@@ -180,11 +230,60 @@ def create_threads(builder, module, thread_count, target_func, thread_args=None)
         call_args.reverse()
         
         # Call the original function with the extracted arguments
-        wrapper_builder.call(target_func, call_args)
+        result = wrapper_builder.call(target_func, call_args)
         
-        # Return NULL
-        null_ret = ir.Constant(voidptr_ty, None)
-        wrapper_builder.ret(null_ret)
+        # If the function returns a value (not void), we need to box it as void*
+        if target_func.return_value.type != ir.VoidType():
+            # Import variant type
+            from .base_types import get_variant_type
+            variant_ty = get_variant_type()
+            
+            # Allocate variant on heap using malloc
+            malloc_func = module.globals.get('malloc')
+            if not malloc_func:
+                malloc_ty = ir.FunctionType(voidptr_ty, [ir.IntType(64)])
+                malloc_func = ir.Function(module, malloc_ty, name='malloc')
+            
+            # Use a fixed size for the variant structure (20 bytes is sufficient for the variant type)
+            variant_size = ir.Constant(ir.IntType(64), 20)
+            variant_ptr_void = wrapper_builder.call(malloc_func, [variant_size])
+            variant_ptr = wrapper_builder.bitcast(variant_ptr_void, variant_ty.as_pointer())
+            
+            # Store the return value into the variant
+            # Determine type tag based on return type
+            type_tag_ptr = wrapper_builder.gep(variant_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+            data_ptr = wrapper_builder.gep(variant_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+            
+            if isinstance(result.type, ir.IntType) and result.type.width == 32:
+                # Integer type
+                wrapper_builder.store(ir.Constant(ir.IntType(32), 0), type_tag_ptr)  # Type tag 0 = int
+                data_as_int_ptr = wrapper_builder.bitcast(data_ptr, ir.IntType(32).as_pointer())
+                wrapper_builder.store(result, data_as_int_ptr)
+            elif isinstance(result.type, ir.DoubleType):
+                # Float type
+                wrapper_builder.store(ir.Constant(ir.IntType(32), 1), type_tag_ptr)  # Type tag 1 = float
+                data_as_float_ptr = wrapper_builder.bitcast(data_ptr, ir.DoubleType().as_pointer())
+                wrapper_builder.store(result, data_as_float_ptr)
+            elif isinstance(result.type, ir.PointerType):
+                # String/pointer type
+                wrapper_builder.store(ir.Constant(ir.IntType(32), 2), type_tag_ptr)  # Type tag 2 = string
+                data_as_ptr_ptr = wrapper_builder.bitcast(data_ptr, ir.IntType(8).as_pointer().as_pointer())
+                casted_result = wrapper_builder.bitcast(result, ir.IntType(8).as_pointer())
+                wrapper_builder.store(casted_result, data_as_ptr_ptr)
+            else:
+                # Variant or unknown - just store the variant as-is if it's already a variant
+                if result.type == variant_ty:
+                    wrapper_builder.store(result, variant_ptr)
+                else:
+                    # Unknown type - store NULL
+                    wrapper_builder.store(ir.Constant(ir.IntType(32), 8), type_tag_ptr)  # Type tag 8 = null
+            
+            # Return the variant pointer as void*
+            wrapper_builder.ret(variant_ptr_void)
+        else:
+            # Return NULL for void functions
+            null_ret = ir.Constant(voidptr_ty, None)
+            wrapper_builder.ret(null_ret)
     
     start_routine = wrapper_func
     
@@ -263,13 +362,13 @@ def _get_pthread_join(module):
 
 def join_thread(builder, module, thread_handle):
     """
-    Join a single thread using pthread_join.
+    Join a single thread using pthread_join and return its return value.
     Args:
         builder: The IRBuilder instance.
         module: The LLVM module.
         thread_handle: The thread handle to join (LLVM value).
     Returns:
-        None
+        The return value from the thread (as a variant)
     """
     debug_print("[DEBUG] Entering join_thread")
     debug_print(f"[DEBUG] join_thread received thread_handle: {thread_handle}, type: {getattr(thread_handle, 'type', type(thread_handle))}")
@@ -280,11 +379,40 @@ def join_thread(builder, module, thread_handle):
     
     pthread_join, thread_type = _get_pthread_join(module)
     voidptr_ty = ir.IntType(8).as_pointer()
-    null_retval = ir.Constant(voidptr_ty.as_pointer(), None)
     
-    # Call pthread_join with the thread handle
-    builder.call(pthread_join, [thread_handle, null_retval])
-    debug_print("[DEBUG] join_thread completed")
+    # Allocate space to receive the return value pointer
+    retval_ptr_storage = builder.alloca(voidptr_ty, name="thread_retval_ptr")
+    
+    # Debug: Print types before calling pthread_join
+    debug_print(f"[DEBUG] join_thread - thread_handle type: {thread_handle.type}")
+    debug_print(f"[DEBUG] join_thread - retval_ptr_storage type: {retval_ptr_storage.type}")
+    debug_print(f"[DEBUG] join_thread - pthread_join expected types: {pthread_join.function_type.args}")
+    
+    # Call pthread_join with the thread handle and retval pointer
+    builder.call(pthread_join, [thread_handle, retval_ptr_storage])
+    
+    # Load the return value pointer
+    retval_void_ptr = builder.load(retval_ptr_storage)
+    
+    # Import variant type
+    from .base_types import get_variant_type
+    variant_ty = get_variant_type()
+    
+    # Cast void* to variant*
+    variant_ptr = builder.bitcast(retval_void_ptr, variant_ty.as_pointer())
+    
+    # Load the variant value
+    variant_value = builder.load(variant_ptr)
+    
+    # Free the heap-allocated variant
+    free_func = module.globals.get('free')
+    if not free_func:
+        free_ty = ir.FunctionType(ir.VoidType(), [voidptr_ty])
+        free_func = ir.Function(module, free_ty, name='free')
+    builder.call(free_func, [retval_void_ptr])
+    
+    debug_print("[DEBUG] join_thread completed, returning variant value")
+    return variant_value
 
 
 def join_threads(builder, module, threads_ptr, thread_count):

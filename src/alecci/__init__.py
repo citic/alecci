@@ -116,6 +116,8 @@ def main():
         variant_runtime_path = os.path.join(os.path.dirname(__file__), 'runtime', 'variant_support.c')
         if os.path.exists(variant_runtime_path):
             clang_cmd.append(variant_runtime_path)
+        # Link math library for pow() and other math functions
+        clang_cmd.append('-lm')
     else:
         # Linux (including WSL): use standard pthread
         clang_cmd.extend(['-lpthread'])
@@ -124,6 +126,8 @@ def main():
         variant_runtime_path = os.path.join(os.path.dirname(__file__), 'runtime', 'variant_support.c')
         if os.path.exists(variant_runtime_path):
             clang_cmd.append(variant_runtime_path)
+        # Link math library for pow() and other math functions
+        clang_cmd.append('-lm')
     
     try:
         result = subprocess.run(clang_cmd, capture_output=True, text=True)

@@ -58,6 +58,8 @@ precedence = (
     # Multiplicative operators
     ('left', 'TIMES', 'DIVIDE', 'INT_DIVIDE', 'MOD'),
     
+    # Unary operators (higher precedence than binary)
+    ('right', 'UMINUS'),  # Unary minus
     ('right', 'BITWISE_NOT', 'NOT'),  # Unary operators
     
     ('right', 'EXPONENT'),  # Exponentiation is right-associative
@@ -338,15 +340,16 @@ def p_expression(p):
             | expression LESS_EQ expression
             | expression GREATER expression
             | expression GREATER_EQ expression
-            | expression NOT expression
             | expression AND expression
             | expression OR expression
-            | expression BITWISE_NOT expression
             | expression BITWISE_AND expression
             | expression BITWISE_OR expression
             | expression BITWISE_XOR expression
             | expression BITWISE_LSHIFT expression
             | expression BITWISE_RSHIFT expression
+            | MINUS expression %prec UMINUS
+            | NOT expression
+            | BITWISE_NOT expression
             | LPAREN expression RPAREN
             | ID LBRACKET expression RBRACKET
             | func_call          
@@ -360,6 +363,9 @@ def p_expression(p):
             p[0] = p[1]
         else:
             p[0] = {'type': 'literal', 'value': p[1]}
+    elif len(p) == 3 and p[1] in ['-', 'not', '~']:
+        # Unary operators: unary minus, logical NOT, bitwise NOT
+        p[0] = {'type': 'unary_op', 'op': p[1], 'operand': p[2]}
     elif len(p) == 3 and p[1] == 'pointed_by_sequence' :
         p[0] = {'type': 'dereference', 'depth': p[1], 'id': p[2]}
     elif len(p) == 3 and p[1] == 'pointer_to_sequence':

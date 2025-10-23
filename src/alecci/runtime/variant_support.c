@@ -134,7 +134,8 @@ int variant_is_null(alecci_variant var) {
 }
 
 // Value extraction functions
-int variant_get_int(alecci_variant var) {
+int variant_get_int(alecci_variant* var_ptr) {
+    alecci_variant var = *var_ptr;  // Dereference
     if (var.type_tag != ALECCI_TYPE_INT) {
         fprintf(stderr, "Error: variant_get_int called on non-int variant (type: %s)\n", variant_type(var));
         return 0;
@@ -144,7 +145,8 @@ int variant_get_int(alecci_variant var) {
     return value;
 }
 
-double variant_get_float(alecci_variant var) {
+double variant_get_float(alecci_variant* var_ptr) {
+    alecci_variant var = *var_ptr;  // Dereference
     if (var.type_tag != ALECCI_TYPE_FLOAT) {
         fprintf(stderr, "Error: variant_get_float called on non-float variant (type: %s)\n", variant_type(var));
         return 0.0;
@@ -154,7 +156,8 @@ double variant_get_float(alecci_variant var) {
     return value;
 }
 
-char* variant_get_string(alecci_variant var) {
+char* variant_get_string(alecci_variant* var_ptr) {
+    alecci_variant var = *var_ptr;  // Dereference
     if (var.type_tag != ALECCI_TYPE_STRING) {
         fprintf(stderr, "Error: variant_get_string called on non-string variant (type: %s)\n", variant_type(var));
         return NULL;
@@ -164,7 +167,8 @@ char* variant_get_string(alecci_variant var) {
     return value;
 }
 
-void* variant_get_pointer(alecci_variant var) {
+void* variant_get_pointer(alecci_variant* var_ptr) {
+    alecci_variant var = *var_ptr;  // Dereference
     if (var.type_tag < ALECCI_TYPE_STRING || var.type_tag > ALECCI_TYPE_ARRAY) {
         fprintf(stderr, "Error: variant_get_pointer called on non-pointer variant (type: %s)\n", variant_type(var));
         return NULL;
@@ -190,62 +194,70 @@ int variant_equals(alecci_variant a, alecci_variant b) {
 }
 
 char* variant_to_string(alecci_variant* var_ptr) {
-    static char buffer[256];
+    // Allocate a new buffer for each call to avoid issues when multiple conversions
+    // happen in the same expression (e.g., print with multiple variant arguments)
+    char* buffer = (char*)malloc(256);
+    if (!buffer) {
+        return "(out of memory)";
+    }
+    
     alecci_variant var = *var_ptr;  // Dereference the pointer
     
     switch (var.type_tag) {
         case ALECCI_TYPE_INT:
-            snprintf(buffer, sizeof(buffer), "%d", variant_get_int(var));
+            snprintf(buffer, 256, "%d", variant_get_int(&var));
             break;
         case ALECCI_TYPE_FLOAT:
-            snprintf(buffer, sizeof(buffer), "%f", variant_get_float(var));
+            snprintf(buffer, 256, "%f", variant_get_float(&var));
             break;
         case ALECCI_TYPE_STRING:
-            snprintf(buffer, sizeof(buffer), "%s", variant_get_string(var));
+            snprintf(buffer, 256, "%s", variant_get_string(&var));
             break;
         case ALECCI_TYPE_SEMAPHORE:
-            snprintf(buffer, sizeof(buffer), "semaphore@%p", variant_get_pointer(var));
+            snprintf(buffer, 256, "semaphore@%p", variant_get_pointer(&var));
             break;
         case ALECCI_TYPE_MUTEX:
-            snprintf(buffer, sizeof(buffer), "mutex@%p", variant_get_pointer(var));
+            snprintf(buffer, 256, "mutex@%p", variant_get_pointer(&var));
             break;
         case ALECCI_TYPE_BARRIER:
-            snprintf(buffer, sizeof(buffer), "barrier@%p", variant_get_pointer(var));
+            snprintf(buffer, 256, "barrier@%p", variant_get_pointer(&var));
             break;
         case ALECCI_TYPE_THREAD:
-            snprintf(buffer, sizeof(buffer), "thread@%p", variant_get_pointer(var));
+            snprintf(buffer, 256, "thread@%p", variant_get_pointer(&var));
             break;
         case ALECCI_TYPE_ARRAY:
-            snprintf(buffer, sizeof(buffer), "array@%p", variant_get_pointer(var));
+            snprintf(buffer, 256, "array@%p", variant_get_pointer(&var));
             break;
         case ALECCI_TYPE_NULL:
-            snprintf(buffer, sizeof(buffer), "null");
+            snprintf(buffer, 256, "null");
             break;
         default:
-            snprintf(buffer, sizeof(buffer), "unknown(tag=%d)", var.type_tag);
+            snprintf(buffer, 256, "unknown(tag=%d)", var.type_tag);
     }
     return buffer;
 }
 
 // Type conversion functions with safety checks
-alecci_variant variant_to_int(alecci_variant var) {
+alecci_variant variant_to_int(alecci_variant* var_ptr) {
+    alecci_variant var = *var_ptr;  // Dereference
     switch (var.type_tag) {
         case ALECCI_TYPE_INT:
             return var;
         case ALECCI_TYPE_FLOAT:
-            return variant_create_int((int)variant_get_float(var));
+            return variant_create_int((int)variant_get_float(var_ptr));
         default:
             fprintf(stderr, "Error: Cannot convert %s to int\n", variant_type(var));
             return variant_create_null();
     }
 }
 
-alecci_variant variant_to_float(alecci_variant var) {
+alecci_variant variant_to_float(alecci_variant* var_ptr) {
+    alecci_variant var = *var_ptr;  // Dereference
     switch (var.type_tag) {
         case ALECCI_TYPE_FLOAT:
             return var;
         case ALECCI_TYPE_INT:
-            return variant_create_float((double)variant_get_int(var));
+            return variant_create_float((double)variant_get_int(var_ptr));
         default:
             fprintf(stderr, "Error: Cannot convert %s to float\n", variant_type(var));
             return variant_create_null();
