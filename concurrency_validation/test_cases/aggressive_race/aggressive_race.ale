@@ -1,0 +1,32 @@
+// Example test case: More aggressive data race
+// Multiple threads racing on the same memory location more frequently
+
+procedure race_worker(thread_number as int)
+    // Many more iterations to increase chance of race detection
+    const iterations = 10000
+    mutable i := 0
+    
+    while i < iterations do
+        // Read-modify-write without synchronization
+        counter := counter + 1
+        i := i + 1
+    end while
+    
+    print `Thread {thread_number} finished`
+end procedure
+
+procedure main(argc, argv)
+    shared mutable counter := 0
+    shared const num_threads = 8  // More threads = more contention
+    
+    print "Starting aggressive data race test"
+    print `Creating {num_threads} threads to race on shared counter...`
+    
+    mutable threads := create_threads(num_threads, race_worker)
+    join_threads(threads)
+    
+    print `Final counter value: {counter}`
+    print `Expected if no races: {num_threads * 10000}`
+    
+    // Counter will be significantly less than expected due to lost updates
+end procedure

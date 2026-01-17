@@ -1,0 +1,8 @@
+# Test case: Mutex destruction while locked
+# Expected: ThreadSanitizer should detect mutex being destroyed while locked
+# This is undefined behavior that can lead to deadlocks or crashes
+
+source: mutex_destruction.ale
+expected_issues:
+  - mutex_destruction
+timeout: 10

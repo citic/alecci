@@ -1,0 +1,9 @@
+# Test case: Data race on shared counter
+# Expected: ThreadSanitizer should detect data race
+# Note: Races are non-deterministic, so we run multiple times
+
+source: data_race_counter.ale
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20  # Run up to 20 times to catch the race

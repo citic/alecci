@@ -42,7 +42,12 @@ def main():
         compiler.set_debug(True)
     
     # Generate LLVM IR code
-    compiled_ir = compiler.CodeGenerator().compile(ast)
+    # Pass performance_mode flag (enabled by default, disabled if --no-tsan)
+    performance_mode_enabled = not args.no_tsan and not args.use_asan
+    compiled_ir = compiler.CodeGenerator(
+        performance_mode=performance_mode_enabled,
+        source_filename=globals.filename
+    ).compile(ast)
     
     # Write the compiled IR code to a temporary .ll file
     output_ir_file = globals.filename.rsplit('.', 1)[0] + '.ll'
@@ -92,6 +97,11 @@ def main():
         if is_linux:
             clang_cmd.extend(['-fsanitize=thread', '-g'])
             print("Compiling with thread sanitizer support")
+            
+            # Link TSan options file for enhanced race detection
+            tsan_options_path = os.path.join(os.path.dirname(__file__), 'runtime', 'tsan_options.c')
+            if os.path.exists(tsan_options_path):
+                clang_cmd.append(tsan_options_path)
         else:
             print("Note: Thread sanitizer not supported on Windows MSVC, compiling without it")
     

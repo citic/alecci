@@ -1,0 +1,33 @@
+// Example test case: Unprotected shared counter (data race)
+// This program intentionally creates a data race by having multiple
+// threads increment a shared counter without proper synchronization.
+
+procedure increment(thread_number as int)
+    // Intentionally NO mutex protection here - creates data race!
+    const iterations = 1000
+    mutable i := 0
+    
+    while i < iterations do
+        counter := counter + 1
+        i := i + 1
+    end while
+    
+    print `Thread {thread_number} completed {iterations} increments`
+end procedure
+
+procedure main(argc, argv)
+    shared mutable counter := 0
+    shared const thread_count = 4
+    
+    print "Starting data race test with unprotected counter"
+    print `Creating {thread_count} threads...`
+    
+    mutable threads := create_threads(thread_count, increment)
+    join_threads(threads)
+    
+    print `Final counter value: {counter}`
+    print `Expected value: {thread_count * 1000}`
+    
+    // Due to race condition, counter will likely be less than expected
+    // and ThreadSanitizer should detect the race
+end procedure

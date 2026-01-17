@@ -1,0 +1,9 @@
+# Test case: Thread leak demonstration
+# Threads are created but join_threads may not wait for all properly
+# Also has unprotected shared counter access (data race)
+
+source: aggressive_race.ale
+expected_issues:
+  - data_race
+  - thread_leak
+timeout: 15

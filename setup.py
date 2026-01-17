@@ -29,7 +29,7 @@ def read_requirements():
 setup(
     # Basic package information
     name="alecci",
-    version="1.0.0",
+    version="1.1.0",
     author="Bryan Ulate",
     author_email="bryan.ulate@ucr.ac.cr",
     description="A compiler for the Alecci programming language",

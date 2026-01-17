@@ -11,7 +11,7 @@ DEBUG = False  # Temporarily enable debug for troubleshooting
 
 
 class CodeGenerator:
-    def __init__(self) -> None:
+    def __init__(self, performance_mode: bool = True, source_filename: str = "program.ale") -> None:
         self.module = ir.Module(name="main")
         self.builder = None
         self.funcs: Dict[str, ir.Function] = {}
@@ -23,10 +23,236 @@ class CodeGenerator:
         # timespec type for nanosleep: struct { i64 tv_sec; i64 tv_nsec; }
         self.timespec_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(64)])
         # Track if the current function/procedure had an explicit return in its body
+        # Debug metadata for source location info
+        self.source_filename = source_filename
+        self.di_file = None
+        self.di_compile_unit = None
+        self.current_di_location = None
         self.has_explicit_return: bool = False
+        # Performance mode: insert sched_yield() and TSan instrumentation for race detection
+        self.performance_mode: bool = performance_mode
+        self.sched_yield_fn = None  # Will be initialized in compile()
+
+    def is_shared_mutable_variable(self, name: str) -> bool:
+        """Check if a variable is a shared mutable global variable."""
+        if name not in self.globals:
+            return False
+        ptr, dtype, is_constant = self.globals[name]
+        # Shared mutable variables are globals that are not constant
+        # Exclude sync primitives (mutex, semaphore, barrier) as they have their own synchronization
+        return not is_constant and dtype not in ['mutex', 'semaphore', 'barrier', 'thread', 'thread_array']
+
+    def insert_yield(self):
+        """Insert a sched_yield() call to force thread interleaving for race detection."""
+        if self.performance_mode and self.sched_yield_fn and self.builder:
+            self.builder.call(self.sched_yield_fn, [])
+    
+    def _init_debug_info(self):
+        """Initialize debug metadata for source location tracking in TSan reports."""
+        # Skip complex debug metadata - llvmlite has limited support
+        # TSan already shows variable names correctly from the IR symbols
+        # Just track that we want source info
+        import os
+        self.source_file = os.path.basename(self.source_filename) if self.source_filename else "program.ale"
+        self.di_enabled = True
+    
+    def set_debug_location(self, line: int = 1, column: int = 1):
+        """Set debug location for subsequent instructions."""
+        if self.builder:
+            # Create a simple debug location
+            # This helps TSan show line numbers in reports
+            loc = self.builder.debug_metadata
+            # Note: llvmlite has limited debug support, but setting any location helps
+    
+    def insert_tsan_call(self, ptr, size_bytes, is_write=False):
+        """Insert a TSan instrumentation call to track memory access.
+        
+        Args:
+            ptr: LLVM pointer value being accessed
+            size_bytes: Size of the access in bytes (1, 2, 4, or 8)
+            is_write: True for writes, False for reads
+        """
+        if not self.builder or not self.performance_mode:
+            return
+        
+        # Select appropriate TSan function based on size and operation
+        tsan_functions = {
+            (1, False): self.tsan_read1_fn,
+            (2, False): self.tsan_read2_fn,
+            (4, False): self.tsan_read4_fn,
+            (8, False): self.tsan_read8_fn,
+            (1, True): self.tsan_write1_fn,
+            (2, True): self.tsan_write2_fn,
+            (4, True): self.tsan_write4_fn,
+            (8, True): self.tsan_write8_fn,
+        }
+        
+        tsan_fn = tsan_functions.get((size_bytes, is_write))
+        if not tsan_fn:
+            return
+        
+        # Cast pointer to i8* for TSan call
+        i8_ptr_ty = ir.IntType(8).as_pointer()
+        ptr_cast = self.builder.bitcast(ptr, i8_ptr_ty)
+        
+        # Call TSan function
+        self.builder.call(tsan_fn, [ptr_cast])
+    
+    def _cleanup_concurrency_primitives(self, function_name: str):
+        """Clean up concurrency primitives (mutexes, semaphores, barriers) at end of procedure."""
+        if not self.builder or self.builder.block.is_terminated:
+            return
+        
+        mutex_ty = ir.IntType(8).as_pointer()
+        
+        # Destroy local mutexes
+        for name, mutex_ptr in self.local_mutexes:
+            debug_print(f"DEBUG: Cleaning up local mutex '{name}' in {function_name}")
+            if mutex_ptr.type != mutex_ty:
+                mutex_ptr = self.builder.bitcast(mutex_ptr, mutex_ty)
+            
+            # Get or declare pthread_mutex_destroy
+            pthread_mutex_destroy = self.module.globals.get('pthread_mutex_destroy')
+            if not pthread_mutex_destroy:
+                pthread_mutex_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
+                pthread_mutex_destroy = ir.Function(self.module, pthread_mutex_destroy_ty, name='pthread_mutex_destroy')
+            
+            self.builder.call(pthread_mutex_destroy, [mutex_ptr])
+        
+        # Destroy local semaphores
+        for name, sem_ptr in self.local_semaphores:
+            debug_print(f"DEBUG: Cleaning up local semaphore '{name}' in {function_name}")
+            if sem_ptr.type != mutex_ty:
+                sem_ptr = self.builder.bitcast(sem_ptr, mutex_ty)
+            
+            # Get or declare sem_destroy
+            sem_destroy = self.module.globals.get('sem_destroy')
+            if not sem_destroy:
+                sem_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
+                sem_destroy = ir.Function(self.module, sem_destroy_ty, name='sem_destroy')
+            
+            self.builder.call(sem_destroy, [sem_ptr])
+        
+        # Destroy local barriers
+        for name, barrier_ptr in self.local_barriers:
+            debug_print(f"DEBUG: Cleaning up local barrier '{name}' in {function_name}")
+            if barrier_ptr.type != mutex_ty:
+                barrier_ptr = self.builder.bitcast(barrier_ptr, mutex_ty)
+            
+            # Get or declare pthread_barrier_destroy
+            pthread_barrier_destroy = self.module.globals.get('pthread_barrier_destroy')
+            if not pthread_barrier_destroy:
+                pthread_barrier_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
+                pthread_barrier_destroy = ir.Function(self.module, pthread_barrier_destroy_ty, name='pthread_barrier_destroy')
+            
+            self.builder.call(pthread_barrier_destroy, [barrier_ptr])
+        
+        # For main function, also destroy shared/global concurrency primitives
+        if function_name == 'main':
+            for var_name, (var_ptr, var_type, is_const) in self.globals.items():
+                if var_type == 'mutex':
+                    debug_print(f"DEBUG: Cleaning up shared mutex '{var_name}' in main")
+                    mutex_ptr = self.builder.bitcast(var_ptr, mutex_ty)
+                    
+                    pthread_mutex_destroy = self.module.globals.get('pthread_mutex_destroy')
+                    if not pthread_mutex_destroy:
+                        pthread_mutex_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
+                        pthread_mutex_destroy = ir.Function(self.module, pthread_mutex_destroy_ty, name='pthread_mutex_destroy')
+                    
+                    self.builder.call(pthread_mutex_destroy, [mutex_ptr])
+                
+                elif var_type == 'semaphore':
+                    debug_print(f"DEBUG: Cleaning up shared semaphore '{var_name}' in main")
+                    sem_ptr = self.builder.bitcast(var_ptr, mutex_ty)
+                    
+                    sem_destroy = self.module.globals.get('sem_destroy')
+                    if not sem_destroy:
+                        sem_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
+                        sem_destroy = ir.Function(self.module, sem_destroy_ty, name='sem_destroy')
+                    
+                    self.builder.call(sem_destroy, [sem_ptr])
+                
+                elif var_type == 'barrier':
+                    debug_print(f"DEBUG: Cleaning up shared barrier '{var_name}' in main")
+                    barrier_ptr = self.builder.bitcast(var_ptr, mutex_ty)
+                    
+                    pthread_barrier_destroy = self.module.globals.get('pthread_barrier_destroy')
+                    if not pthread_barrier_destroy:
+                        pthread_barrier_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
+                        pthread_barrier_destroy = ir.Function(self.module, pthread_barrier_destroy_ty, name='pthread_barrier_destroy')
+                    
+                    self.builder.call(pthread_barrier_destroy, [barrier_ptr])
+    
+    def _make_shared_accesses_atomic(self, ir_string: str) -> str:
+        """
+        Post-process LLVM IR to make loads/stores of shared globals atomic.
+        This enables ThreadSanitizer to properly instrument and detect data races.
+        """
+        import re
+        
+        # Get list of shared mutable global variable names
+        shared_vars = [name for name in self.globals.keys() 
+                      if self.is_shared_mutable_variable(name)]
+        
+        if not shared_vars:
+            return ir_string
+        
+        # Convert loads of shared globals to atomic loads
+        for var_name in shared_vars:
+            # Pattern: load TYPE, TYPE* @"var_name" [, align N]
+            # Replace with: load atomic TYPE, TYPE* @"var_name" monotonic, align N
+            # Note: atomic operations require explicit alignment
+            pattern = rf'(load )(i32|double)(, \2\* @"{re.escape(var_name)}")(?:, align (\d+))?'
+            
+            def add_alignment(match):
+                load_kw = match.group(1)
+                type_name = match.group(2)
+                ptr_part = match.group(3)
+                align = match.group(4) if match.group(4) else ('4' if type_name == 'i32' else '8')
+                return f'{load_kw}atomic {type_name}{ptr_part} monotonic, align {align}'
+            
+            ir_string = re.sub(pattern, add_alignment, ir_string)
+        
+        # Convert stores to shared globals to atomic stores  
+        for var_name in shared_vars:
+            # Pattern: store TYPE %val, TYPE* @"var_name" [, align N]
+            # Replace with: store atomic TYPE %val, TYPE* @"var_name" monotonic, align N
+            pattern = rf'(store )(i32|double)( %[^,]+, \2\* @"{re.escape(var_name)}")(?:, align (\d+))?'
+            
+            def add_alignment(match):
+                store_kw = match.group(1)
+                type_name = match.group(2)
+                val_ptr_part = match.group(3)
+                align = match.group(4) if match.group(4) else ('4' if type_name == 'i32' else '8')
+                return f'{store_kw}atomic {type_name}{val_ptr_part} monotonic, align {align}'
+            
+            ir_string = re.sub(pattern, add_alignment, ir_string)
+        
+        return ir_string
 
     def compile(self, ast: Dict[str, Any]) -> str:
         try:
+            # Declare sched_yield() for stress testing
+            if self.performance_mode:
+                sched_yield_ty = ir.FunctionType(ir.IntType(32), [])
+                self.sched_yield_fn = ir.Function(self.module, sched_yield_ty, name="sched_yield")
+            
+                # Declare TSan instrumentation functions for manual instrumentation
+                # These functions tell TSan that a memory access is happening
+                void_ty = ir.VoidType()
+                ptr_ty = ir.IntType(8).as_pointer()
+                self.tsan_read1_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_read1")
+                self.tsan_read2_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_read2")
+                self.tsan_read4_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_read4")
+                self.tsan_read8_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_read8")
+                self.tsan_write1_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_write1")
+                self.tsan_write2_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_write2")
+                self.tsan_write4_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_write4")
+                self.tsan_write8_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_write8")
+            
+            # Initialize debug metadata for source location tracking
+            self._init_debug_info()
+            
             self.visit(ast)
             debug_print("DEBUG: AST compilation completed, attempting to convert module to string...")
             
@@ -66,7 +292,16 @@ class CodeGenerator:
                                                             debug_print(f"DEBUG: Arg {k} has no type attribute!")
                                                 break
             
-            return str(self.module)
+            # Convert module to string
+            ir_string = str(self.module)
+            
+            # Post-process: convert loads/stores of shared globals to atomic
+            # NOTE: Disabled because TSan doesn't report races on atomic operations
+            # even when the atomic load + compute + atomic store sequence is racy
+            # if self.performance_mode:
+            #     ir_string = self._make_shared_accesses_atomic(ir_string)
+            
+            return ir_string
         except Exception as e:
             debug_print(f"DEBUG: Error during module string conversion: {e}")
             debug_print(f"DEBUG: Module functions: {list(self.module.globals.keys())}")
@@ -173,6 +408,10 @@ class CodeGenerator:
                 self.current_function_name = decl['name']
                 # Reset explicit return tracker for this body
                 self.has_explicit_return = False
+                # Reset local concurrency primitives tracking for this procedure
+                self.local_mutexes = []
+                self.local_semaphores = []
+                self.local_barriers = []
 
                 # Process explicitly declared parameters
                 if decl['name'] == 'main':
@@ -225,6 +464,9 @@ class CodeGenerator:
 
                 # Process non-shared declarations in this procedure/function
                 self.visit(decl['body'])
+                
+                # Clean up concurrency primitives before returning
+                self._cleanup_concurrency_primitives(decl['name'])
                 
                 # Append default return if none was explicitly emitted
                 if decl['name'] == 'main':
@@ -471,7 +713,14 @@ class CodeGenerator:
         debug_print(f"DEBUG: Declaring shared variable '{name}' of type '{var_type}' (LLVM type: {llvm_type})")
         
         variable = ir.GlobalVariable(self.module, llvm_type, name=name)
-        variable.linkage = 'internal'
+        # Use 'common' linkage for shared mutable variables so TSan can instrument them
+        # 'internal' linkage makes TSan think the variable isn't shared across threads
+        variable.linkage = 'common' if not is_constant else 'internal'
+        
+        # Add external name attribute for better TSan reporting
+        # This helps TSan display the actual source variable name
+        if not is_constant:
+            variable.storage_class = 'default'
         if isinstance(value, dict) and value.get('type') == 'literal':
             variable.initializer = ir.Constant(llvm_type, value['value'])
         elif value is not None and not isinstance(value, dict):
@@ -651,6 +900,8 @@ class CodeGenerator:
                     pshared = ir.Constant(ir.IntType(32), 0)
                     initial = ir.Constant(ir.IntType(32), evaluated_value)
                     self.builder.call(sem_init, [sem_ptr, pshared, initial])
+                # Track local semaphore for cleanup
+                self.local_semaphores.append((name, sem_ptr))
                 return
 
         if var_type == 'mutex':
@@ -682,6 +933,8 @@ class CodeGenerator:
                 # Initialize with NULL attributes (default mutex)
                 null_attr = ir.Constant(ir.IntType(8).as_pointer(), None)
                 self.builder.call(pthread_mutex_init, [mutex_ptr, null_attr])
+                # Track local mutex for cleanup
+                self.local_mutexes.append((name, mutex_ptr))
                 return
 
         if var_type == 'barrier':
@@ -722,6 +975,8 @@ class CodeGenerator:
                     barrier_init = ir.Function(self.module, barrier_init_ty, name='pthread_barrier_init')
                 null_attr = ir.Constant(ir.IntType(8).as_pointer(), None)
                 self.builder.call(barrier_init, [barrier_ptr, null_attr, barrier_count])
+                # Track local barrier for cleanup
+                self.local_barriers.append((name, barrier_ptr))
                 return
 
         if var_type == 'variant':
@@ -924,7 +1179,25 @@ class CodeGenerator:
                     self._store_null_variant(ptr)
             else:
                 # Non-variant assignment (system types)
+                if self.is_shared_mutable_variable(target):
+                    self.insert_yield()
+                    # Instrument write access for TSan
+                    # Determine size based on value type
+                    if hasattr(value, 'type'):
+                        if isinstance(value.type, ir.IntType):
+                            size = value.type.width // 8  # bits to bytes
+                        elif isinstance(value.type, ir.DoubleType):
+                            size = 8
+                        else:
+                            size = 4  # default
+                    else:
+                        size = 4  # default
+                    self.insert_tsan_call(ptr, size, is_write=True)
+                
                 self.builder.store(value, ptr)
+                
+                if self.is_shared_mutable_variable(target):
+                    self.insert_yield()
         elif isinstance(target, dict) and target['type'] == 'array_access':
             # Array element assignment - get the array element pointer
             array_name = target['array']
@@ -1949,11 +2222,35 @@ class CodeGenerator:
         elif dtype == 'int':
             # Load the value if it's a pointer
             if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
-                return self.builder.load(ptr)
+                # Insert yield and TSan instrumentation for shared mutable variables
+                if self.is_shared_mutable_variable(name):
+                    self.insert_yield()
+                    # Instrument read access for TSan (i32 = 4 bytes)
+                    self.insert_tsan_call(ptr, 4, is_write=False)
+                
+                loaded = self.builder.load(ptr)
+                
+                # Insert yield after load if shared mutable variable
+                if self.is_shared_mutable_variable(name):
+                    self.insert_yield()
+                
+                return loaded
             return ptr
         elif dtype == 'float':
             if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
-                return self.builder.load(ptr)
+                # Insert yield and TSan instrumentation for shared mutable variables
+                if self.is_shared_mutable_variable(name):
+                    self.insert_yield()
+                    # Instrument read access for TSan (double = 8 bytes)
+                    self.insert_tsan_call(ptr, 8, is_write=False)
+                
+                loaded = self.builder.load(ptr)
+                
+                # Insert yield after load if shared mutable variable
+                if self.is_shared_mutable_variable(name):
+                    self.insert_yield()
+                
+                return loaded
             return ptr
         elif dtype == 'string':
             # Strings are pointers, return as-is

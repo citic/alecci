@@ -1,0 +1,27 @@
+// Test case: Mutex destruction while locked
+// This demonstrates destroying a mutex that is still locked,
+// which is undefined behavior and detected by ThreadSanitizer
+
+procedure worker(thread_id as int)
+    lock(counter_mutex)
+    counter := counter + 1
+    // Deliberately forget to unlock before thread exits
+end procedure
+
+procedure main(argc, argv)
+    shared mutable counter := 0
+    shared mutable counter_mutex := mutex()
+    
+    print "Testing mutex destruction while locked..."
+    
+    // Create a single thread that locks the mutex but doesn't unlock
+    mutable threads := create_threads(1, worker)
+    
+    // Wait for thread to complete (thread still holds the lock!)
+    join_threads(threads)
+    
+    print `Counter value: {counter}`
+    print "Test completed"
+    // Mutex will be automatically destroyed at end of main
+    // But it's still locked by the thread, which is an error!
+end procedure

@@ -1,0 +1,21 @@
+# Ignore compiled binaries
+bin/*
+!bin/.gitkeep
+
+# Ignore test results
+results/*.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# LLVM IR files generated during compilation
+test_cases/*.ll
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

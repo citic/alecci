@@ -1,0 +1,33 @@
+// Example test case: Properly synchronized counter (no race)
+// This program uses a mutex to protect the shared counter
+
+procedure safe_increment(thread_number as int)
+    const iterations = 1000
+    mutable i := 0
+    
+    while i < iterations do
+        lock(counter_mutex)
+        counter := counter + 1
+        unlock(counter_mutex)
+        i := i + 1
+    end while
+    
+    print `Thread {thread_number} completed {iterations} increments safely`
+end procedure
+
+procedure main(argc, argv)
+    shared mutable counter := 0
+    shared mutable counter_mutex := mutex()
+    shared const thread_count = 4
+    
+    print "Starting safe counter test with mutex protection"
+    print `Creating {thread_count} threads...`
+    
+    mutable threads := create_threads(thread_count, safe_increment)
+    join_threads(threads)
+    
+    print `Final counter value: {counter}`
+    print `Expected value: {thread_count * 1000}`
+    
+    // With proper synchronization, counter should equal expected value
+end procedure
