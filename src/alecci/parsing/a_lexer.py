@@ -47,6 +47,9 @@ reserved = {
     'barrier' : 'BARRIER',
     # Dynamic typing
     'variant' : 'VARIANT',
+    # Boolean literals
+    'true' : 'TRUE',
+    'false' : 'FALSE',
     # Logical operators (keywords)
     'and' : 'AND',
     'or' : 'OR',

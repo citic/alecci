@@ -151,7 +151,7 @@ def p_statement(p):
         else:
             p[0] = {'type': 'print', 'expression': p[2]}
     elif p[1] == 'scan':
-        p[0] = {'type': 'scan', 'format': p[2]}
+        p[0] = {'type': 'scan', 'format': p[2], 'lineno': p.lineno(1)}
     else:
         p[0] = p[1]  # For declaration, assignment, funcCall, if_condition, for_loop, while_loop
 
@@ -300,14 +300,15 @@ def p_assignment(p):
             | ID ASSIGN REFERENCE expression
             | ID LBRACKET expression RBRACKET ASSIGN expression
     ''' 
+    lineno = p.lineno(1)
     if len(p) == 4:
-        p[0] = {'type': 'assignment', 'target': p[1], 'value': p[3]}
+        p[0] = {'type': 'assignment', 'target': p[1], 'value': p[3], 'lineno': lineno}
     elif len(p) == 5 and p[3] == '@':
-        p[0] = {'type': 'assignment', 'target': p[1], 'value': {'type': 'reference', 'expr': p[4]}}
+        p[0] = {'type': 'assignment', 'target': p[1], 'value': {'type': 'reference', 'expr': p[4]}, 'lineno': lineno}
     elif len(p) == 5 and p[1] == 'pointed_by_sequence':
-        p[0] = {'type': 'assignment', 'target': {'type': 'dereference', 'depth': p[1], 'id': p[2]}, 'value': p[4]}
+        p[0] = {'type': 'assignment', 'target': {'type': 'dereference', 'depth': p[1], 'id': p[2]}, 'value': p[4], 'lineno': lineno}
     elif len(p) == 7:  # Array assignment: ID LBRACKET expression RBRACKET ASSIGN expression
-        p[0] = {'type': 'assignment', 'target': {'type': 'array_access', 'array': p[1], 'index': p[3]}, 'value': p[6]}
+        p[0] = {'type': 'assignment', 'target': {'type': 'array_access', 'array': p[1], 'index': p[3]}, 'value': p[6], 'lineno': lineno}
 
 # Fix for signal token
 # Preguntar cómo funcionan las variables atómicas a nivel de CPU
@@ -327,6 +328,8 @@ def p_expression(p):
     '''expression : INTEGER
             | STRING
             | FLOAT
+            | TRUE
+            | FALSE
             | expression PLUS expression
             | expression MINUS expression
             | expression TIMES expression
@@ -361,6 +364,12 @@ def p_expression(p):
     if len(p) == 2:
         if type(p[1]) == dict:  # It's already a structured node like funcCall or record_initializer
             p[0] = p[1]
+        elif p.slice[1].type == 'TRUE':
+            p[0] = {'type': 'literal', 'value': 1}
+        elif p.slice[1].type == 'FALSE':
+            p[0] = {'type': 'literal', 'value': 0}
+        elif p.slice[1].type == 'ID':  # It's an identifier (variable reference)
+            p[0] = {'type': 'ID', 'value': p[1], 'lineno': p.lineno(1)}
         else:
             p[0] = {'type': 'literal', 'value': p[1]}
     elif len(p) == 3 and p[1] in ['-', 'not', '~']:
@@ -442,20 +451,40 @@ def p_parameters(p):
 def p_procedure(p):
     ''' procedure : PROCEDURE ID LPAREN arguments RPAREN body END PROCEDURE
                     | PROCEDURE ID LPAREN RPAREN body END PROCEDURE
+                    | PROCEDURE ID LPAREN arguments RPAREN END PROCEDURE
+                    | PROCEDURE ID LPAREN RPAREN END PROCEDURE
     '''
     if len(p) == 9:
+        # PROCEDURE ID ( arguments ) body END PROCEDURE
         p[0] = {'type': 'procedure', 'name': p[2], 'arguments': p[4], 'body': p[6]}
-    else:
+    elif len(p) == 8 and isinstance(p[4], list):
+        # PROCEDURE ID ( arguments ) END PROCEDURE  — empty body with args
+        p[0] = {'type': 'procedure', 'name': p[2], 'arguments': p[4], 'body': []}
+    elif len(p) == 8:
+        # PROCEDURE ID ( ) body END PROCEDURE
         p[0] = {'type': 'procedure', 'name': p[2], 'arguments': [], 'body': p[5]}
+    else:
+        # PROCEDURE ID ( ) END PROCEDURE  — empty body, no args
+        p[0] = {'type': 'procedure', 'name': p[2], 'arguments': [], 'body': []}
 
 def p_function(p):
     ''' function : FUNCTION ID LPAREN arguments RPAREN body END FUNCTION
                 | FUNCTION ID LPAREN RPAREN body END FUNCTION
+                | FUNCTION ID LPAREN arguments RPAREN END FUNCTION
+                | FUNCTION ID LPAREN RPAREN END FUNCTION
     '''
     if len(p) == 9:
+        # FUNCTION ID ( arguments ) body END FUNCTION
         p[0] = {'type': 'function', 'name': p[2], 'arguments': p[4], 'body': p[6]}
-    else:
+    elif len(p) == 8 and isinstance(p[4], list):
+        # FUNCTION ID ( arguments ) END FUNCTION  — empty body with args
+        p[0] = {'type': 'function', 'name': p[2], 'arguments': p[4], 'body': []}
+    elif len(p) == 8:
+        # FUNCTION ID ( ) body END FUNCTION
         p[0] = {'type': 'function', 'name': p[2], 'arguments': [], 'body': p[5]}
+    else:
+        # FUNCTION ID ( ) END FUNCTION  — empty body, no args
+        p[0] = {'type': 'function', 'name': p[2], 'arguments': [], 'body': []}
 
 def p_error(p):
     if p:
@@ -481,9 +510,10 @@ def p_error(p):
         print(f"\n{globals.filename}:{p.lineno}:{column+1}: syntax error: unexpected token '{p.value}'")
         print(f"{error_line}")
         print(pointer)
+        sys.exit(1)
     else:
         print("Syntax error at EOF")
-        
+        sys.exit(1)
 
 
 def appendByKey(dictonary, key, value):

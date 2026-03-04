@@ -4,4 +4,16 @@ procedure main(argc, argv)
     mutable b as int := 0
     scan ` {a} {b}`
     print `You entered a={a}, b={b}`
+
+    print "Enter two floating point numbers: "
+    mutable x as float := 0.0
+    mutable y as float := 0.0
+    scan ` {x} {y}`
+    print `You entered x={x}, y={y}`
+    
+    print "Enter a first and last name: "
+    mutable first_name as string := ""
+    mutable last_name as string := ""
+    scan ` {first_name} {last_name}`
+    print `The full name would be {first_name} {last_name}`
 end procedure

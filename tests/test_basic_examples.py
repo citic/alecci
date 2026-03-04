@@ -8,6 +8,10 @@ EXAMPLES = {
         "file": "hello.pseudo",
         "expect": ["Hello from main thread"],
     },
+    "undefined_variable_scan": {
+        "file": "undefined_variable_scan.ale",
+        "expect": ["ERROR: Undefined variable 'a' in scan statement"],
+    },
     "arrays": {
         "file": "arrays.pseudo",
         "expect": ["Reading array values:", "Array test completed successfully"],
@@ -52,9 +56,16 @@ EXAMPLES = {
         "expect": ["Argument parsing test completed"],
     },
     "scan": {
-        "file": "scan.pseudo",
-        "stdin": "7 9\n",
-        "expect": ["Enter two integers:", "You entered a=7, b=9"],
+        "file": "scan.ale",
+        "stdin": "7 9\n3.14 2.71\nJohn Doe\n",
+        "expect": [
+            "Enter two integers:",
+            "You entered a=7, b=9",
+            "Enter two floating point numbers:",
+            "You entered x=3.140000, y=2.710000",
+            "Enter a first and last name:",
+            "The full name would be John Doe",
+        ],
     },
     "variant": {
         "file": "variant.pseudo",
@@ -69,9 +80,16 @@ EXAMPLES = {
         "expect": ["Rand test start", "Rand test end"],
     },
     "input_scan": {
-        "file": "scan.pseudo",
-        "stdin": "7 9\n",
-        "expect": ["Enter two integers:", "You entered a=7, b=9"],
+        "file": "scan.ale",
+        "stdin": "7 9\n3.14 2.71\nJohn Doe\n",
+        "expect": [
+            "Enter two integers:",
+            "You entered a=7, b=9",
+            "Enter two floating point numbers:",
+            "You entered x=3.140000, y=2.710000",
+            "Enter a first and last name:",
+            "The full name would be John Doe",
+        ],
     },
     "functions_return": {
         "file": "functions_return.alecci",
@@ -247,3 +265,24 @@ def test_example_float(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_ex
 def test_example_operators(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
     out = _compile_and_run("operators", EXAMPLES["operators"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] operators")
+
+
+def test_example_undefined_variable_scan(repo_root: Path, bin_dir: Path, compile_pseudo_fn, capsys):
+    """Test that undefined variables in scan statements produce proper semantic errors."""
+    example = EXAMPLES["undefined_variable_scan"]
+    src = repo_root / "examples" / "basic_tests" / example["file"]
+    out = bin_dir / Path(example["file"]).with_suffix("").name
+    
+    # This should fail to compile
+    rc, build_out = compile_pseudo_fn(src, out, debug=False, tsan=False)
+    assert rc != 0, f"[BUILD FAIL] undefined_variable_scan should have failed compilation but succeeded\n{build_out}"
+    
+    # Check that the error message contains the expected semantic error with line number
+    assert "semantic error: undefined variable 'a' in scan statement" in build_out, \
+        f"[ASSERT FAIL] undefined_variable_scan missing expected error message\nFull output:\n{build_out}"
+    
+    # Verify it includes a line number
+    assert ":2:1:" in build_out or ":2:" in build_out, \
+        f"[ASSERT FAIL] undefined_variable_scan missing line number in error\nFull output:\n{build_out}"
+    
+    print("[PASS] undefined_variable_scan")

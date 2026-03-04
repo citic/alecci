@@ -56,6 +56,8 @@ def get_type(type_str : str):
             return ir.IntType(32)
         elif type_str == "float":
             return ir.DoubleType()
+        elif type_str == "char":
+            return ir.IntType(8)
         elif type_str == "string":
             return ir.IntType(8).as_pointer()
         elif type_str == "variant":
@@ -70,6 +72,8 @@ def get_raw_type(type_str : str):
         return ir.IntType(32)
     elif type_str == "float":
         return ir.DoubleType()
+    elif type_str == "char":
+        return ir.IntType(8)
     elif type_str == "string":
         return ir.IntType(8).as_pointer()
     elif type_str == "semaphore":

@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 from typing import Dict, Any, List, Union
 from llvmlite import ir
+import sys
 
 from .base_types import get_type
 from .threading_utils import create_threads, create_thread, join_threads, join_thread
@@ -29,9 +30,25 @@ class CodeGenerator:
         self.di_compile_unit = None
         self.current_di_location = None
         self.has_explicit_return: bool = False
+        self.loop_exit_stack: List[ir.Block] = []  # stack of loop-exit blocks for break
         # Performance mode: insert sched_yield() and TSan instrumentation for race detection
         self.performance_mode: bool = performance_mode
         self.sched_yield_fn = None  # Will be initialized in compile()
+
+    def semantic_error(self, message: str, node: Optional[Dict[str, Any]] = None) -> None:
+        """Report a semantic error and exit.
+        
+        Args:
+            message: The error message to display
+            node: Optional AST node containing location information
+        """
+        # Format: filename:line:column: semantic error: message (matching syntax error format)
+        if node and 'lineno' in node:
+            # Use 1 for column since we don't track column numbers in semantic analysis
+            print(f"\n{self.source_filename}:{node['lineno']}:1: semantic error: {message}", file=sys.stderr)
+        else:
+            print(f"\n{self.source_filename}: semantic error: {message}", file=sys.stderr)
+        sys.exit(1)
 
     def is_shared_mutable_variable(self, name: str) -> bool:
         """Check if a variable is a shared mutable global variable."""
@@ -1146,7 +1163,7 @@ class CodeGenerator:
             debug_print(f"DEBUG: visit_assignment - Assigning to variable: {target}")
             entry = self.get_variable(target)
             if entry is None:
-                raise Exception(f"Undefined variable in assignment: {target}")
+                self.semantic_error(f"undefined variable '{target}' in assignment", node)
             ptr, dtype, is_constant = entry
             debug_print(f"DEBUG: visit_assignment - Variable {target} has dtype: {dtype}, is_constant: {is_constant}")
             
@@ -1287,7 +1304,7 @@ class CodeGenerator:
             name = node['target']
             entry = self.get_variable(name)
             if entry is None:
-                raise Exception(f"Undefined variable in assignment: {name}")
+                self.semantic_error(f"undefined variable '{name}' in assignment", node)
             ptr, dtype, is_constant = entry
             self.builder.store(value, ptr)
         else:
@@ -1374,8 +1391,8 @@ class CodeGenerator:
             for i, ast_node in enumerate([node['left'], node['right']]):
                 debug_print(f"DEBUG: visit_binary_op - checking AST node {i}: {ast_node}")
                 if isinstance(ast_node, dict) and ast_node.get('type') == 'ID':
-                    var_name = ast_node.get('name')
-                    debug_print(f"DEBUG: visit_binary_op - found ID node with name '{var_name}'")
+                    var_name = ast_node.get('value')  # ID nodes use 'value', not 'name'
+                    debug_print(f"DEBUG: visit_binary_op - found ID node with value '{var_name}'")
                     if var_name in self.var_types:
                         var_type = self.var_types[var_name]
                         debug_print(f"DEBUG: visit_binary_op - variable '{var_name}' has tracked type: {var_type}")
@@ -1509,6 +1526,11 @@ class CodeGenerator:
         # Comparison operators
         if op in ['=', '!=', '<', '<=', '>', '>=']:
             if hasattr(left, 'type') and hasattr(right, 'type'):
+                # Promote i8/i16 operands to i32 so mixed char/int comparisons work
+                if isinstance(left.type, ir.IntType) and left.type.width < 32:
+                    left = self.builder.sext(left, ir.IntType(32))
+                if isinstance(right.type, ir.IntType) and right.type.width < 32:
+                    right = self.builder.sext(right, ir.IntType(32))
                 if left.type != right.type:
                     raise Exception(f"Type mismatch in comparison: {left.type} vs {right.type}")
                 if isinstance(left.type, ir.PointerType):
@@ -1609,6 +1631,9 @@ class CodeGenerator:
 
     def visit_if(self, node: Dict[str, Any]) -> None:
         cond_val = self.visit(node['condition'])
+        # Convert i32/i8 condition to i1
+        if hasattr(cond_val, 'type') and isinstance(cond_val.type, ir.IntType) and cond_val.type.width != 1:
+            cond_val = self.builder.icmp_signed('!=', cond_val, ir.Constant(cond_val.type, 0))
         then_bb = self.builder.append_basic_block('then')
         else_bb = self.builder.append_basic_block('else') if 'else_body' in node else None
         end_bb = self.builder.append_basic_block('endif')
@@ -1619,14 +1644,25 @@ class CodeGenerator:
         # Then block
         self.builder.position_at_start(then_bb)
         self.visit(node['then_body'])
-        self.builder.branch(end_bb)
+        if not self.builder.block.is_terminated:
+            self.builder.branch(end_bb)
         # Else block
         if else_bb:
             self.builder.position_at_start(else_bb)
             self.visit(node['else_body'])
-            self.builder.branch(end_bb)
+            if not self.builder.block.is_terminated:
+                self.builder.branch(end_bb)
         # End block
         self.builder.position_at_start(end_bb)
+
+    def visit_break(self, node: Dict[str, Any]) -> None:
+        if not self.loop_exit_stack:
+            raise Exception("'break' used outside of a loop")
+        self.builder.branch(self.loop_exit_stack[-1])
+        # Append an unreachable block so the builder has somewhere to emit
+        # any subsequent instructions without corrupting the IR
+        dead_bb = self.builder.append_basic_block('break.dead')
+        self.builder.position_at_start(dead_bb)
 
     def visit_while(self, node: Dict[str, Any]) -> None:
         cond_bb = self.builder.append_basic_block('while.cond')
@@ -1642,8 +1678,11 @@ class CodeGenerator:
         
         self.builder.cbranch(cond_val, body_bb, end_bb)
         self.builder.position_at_start(body_bb)
+        self.loop_exit_stack.append(end_bb)
         self.visit(node['body'])
-        self.builder.branch(cond_bb)
+        self.loop_exit_stack.pop()
+        if not self.builder.block.is_terminated:
+            self.builder.branch(cond_bb)
         self.builder.position_at_start(end_bb)
 
     def visit_for(self, node: Dict[str, Any]) -> None:
@@ -1663,11 +1702,14 @@ class CodeGenerator:
         cond = self.builder.icmp_signed('<', idx, end)
         self.builder.cbranch(cond, body_bb, end_bb)
         self.builder.position_at_start(body_bb)
+        self.loop_exit_stack.append(end_bb)
         self.visit(node['body'])
-        idx = self.builder.load(ptr)
-        next_idx = self.builder.add(idx, ir.Constant(ir.IntType(32), 1))
-        self.builder.store(next_idx, ptr)
-        self.builder.branch(cond_bb)
+        self.loop_exit_stack.pop()
+        if not self.builder.block.is_terminated:
+            idx = self.builder.load(ptr)
+            next_idx = self.builder.add(idx, ir.Constant(ir.IntType(32), 1))
+            self.builder.store(next_idx, ptr)
+            self.builder.branch(cond_bb)
         self.builder.position_at_start(end_bb)
 
     def visit_print(self, node: Dict[str, Any]) -> None:
@@ -1706,30 +1748,35 @@ class CodeGenerator:
                         # Check if this is a variant
                         entry = self.get_variable(var_name)
                         if entry and entry[1] == 'variant':
-                            # For variants, use %s format and call variant_to_string runtime function
-                            format_string = format_string.replace(f'{{{var_name}}}', '%s')
-                            
-                            # Get or create the variant_to_string runtime function
-                            from .base_types import get_variant_type
-                            variant_ty = get_variant_type()
-                            variant_to_string = self.module.globals.get('variant_to_string')
-                            if not variant_to_string:
-                                func_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [variant_ty.as_pointer()])
-                                variant_to_string = ir.Function(self.module, func_ty, name='variant_to_string')
-                            
-                            # Pass the variant pointer directly (no loading needed)
-                            if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
-                                variant_ptr = var_value
+                            # Check var_types to determine actual format needed
+                            variant_ptr = entry[0]  # Get the pointer to the variant
+                            if var_name in self.var_types and self.var_types[var_name] == 'float':
+                                # For float variants, extract as float and use %f
+                                format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                                var_value = self._extract_variant_value(variant_ptr, 'float')
+                                format_args.append(var_value)
+                            elif var_name in self.var_types and self.var_types[var_name] in ['int']:
+                                # For int variants, extract as int and use %d
+                                format_string = format_string.replace(f'{{{var_name}}}', '%d')
+                                var_value = self._extract_variant_value(variant_ptr, 'int')
+                                format_args.append(var_value)
                             else:
-                                # If it's not a pointer, we need to create one
-                                temp_ptr = self.builder.alloca(variant_ty, name=f"temp_{var_name}")
-                                self.builder.store(var_value, temp_ptr)
-                                variant_ptr = temp_ptr
-                            
-                            # Call variant_to_string to get the string representation
-                            string_result = self.builder.call(variant_to_string, [variant_ptr])
-                            format_args.append(string_result)
-                            debug_print(f"DEBUG: visit_print - added variant {var_name} using variant_to_string")
+                                # For variants without type tracking or with other types, use variant_to_string
+                                # This ensures proper handling of floats that aren't tracked in var_types
+                                format_string = format_string.replace(f'{{{var_name}}}', '%s')
+                                
+                                # Get or create the variant_to_string runtime function
+                                from .base_types import get_variant_type
+                                variant_ty = get_variant_type()
+                                variant_to_string = self.module.globals.get('variant_to_string')
+                                if not variant_to_string:
+                                    func_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [variant_ty.as_pointer()])
+                                    variant_to_string = ir.Function(self.module, func_ty, name='variant_to_string')
+                                
+                                # Call variant_to_string to get the string representation
+                                string_result = self.builder.call(variant_to_string, [variant_ptr])
+                                format_args.append(string_result)
+                            debug_print(f"DEBUG: visit_print - handled variant {var_name}")
                         else:
                             # For non-variants, determine format based on variable type
                             entry = self.get_variable(var_name)
@@ -1737,13 +1784,34 @@ class CodeGenerator:
                                 dtype = entry[1]
                                 if dtype == 'float':
                                     format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                                    if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
+                                        var_value = self.builder.load(var_value)
+                                elif dtype == 'variant':
+                                    # Check var_types to see if this variant holds a float
+                                    # Get the variant pointer (entry[0] is the pointer)
+                                    variant_ptr = entry[0]
+                                    if var_name in self.var_types and self.var_types[var_name] == 'float':
+                                        format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                                        # Extract the float value from the variant
+                                        var_value = self._extract_variant_value(variant_ptr, 'float')
+                                    else:
+                                        format_string = format_string.replace(f'{{{var_name}}}', '%d')
+                                        # Extract the int value from the variant
+                                        var_value = self._extract_variant_value(variant_ptr, 'int')
+                                elif dtype == 'string':
+                                    format_string = format_string.replace(f'{{{var_name}}}', '%s')
+                                    if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
+                                        var_value = self.builder.load(var_value)
                                 else:
                                     format_string = format_string.replace(f'{{{var_name}}}', '%d')
+                                    if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
+                                        var_value = self.builder.load(var_value)
                             else:
                                 format_string = format_string.replace(f'{{{var_name}}}', '%d')
+                                if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
+                                    var_value = self.builder.load(var_value)
                             
-                            if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
-                                var_value = self.builder.load(var_value)
+                            # var_value is now the extracted/loaded value
                             format_args.append(var_value)
                             debug_print(f"DEBUG: visit_print - added {var_name} = {var_value} to format args")
                     except Exception as e:
@@ -1833,6 +1901,12 @@ class CodeGenerator:
                         dtype = entry[1]
                         if dtype == 'float':
                             format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                        elif dtype == 'variant':
+                            # Check var_types to see if this variant holds a float
+                            if var_name in self.var_types and self.var_types[var_name] == 'float':
+                                format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                            else:
+                                format_string = format_string.replace(f'{{{var_name}}}', '%d')
                         else:
                             format_string = format_string.replace(f'{{{var_name}}}', '%d')
                     else:
@@ -1841,7 +1915,14 @@ class CodeGenerator:
                     # Get the variable value
                     try:
                         var_value = self.visit_ID({'type': 'ID', 'value': var_name})
-                        if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
+                        # If it's a variant, extract the appropriate value using the pointer
+                        if entry and entry[1] == 'variant':
+                            variant_ptr = entry[0]  # Get the pointer to the variant
+                            if var_name in self.var_types and self.var_types[var_name] == 'float':
+                                var_value = self._extract_variant_value(variant_ptr, 'float')
+                            else:
+                                var_value = self._extract_variant_value(variant_ptr, 'int')
+                        elif hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
                             var_value = self.builder.load(var_value)
                         format_args.append(var_value)
                         debug_print(f"DEBUG: visit_print - added {var_name} = {var_value} to format args")
@@ -1949,6 +2030,12 @@ class CodeGenerator:
                         dtype = entry[1]
                         if dtype == 'float':
                             format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                        elif dtype == 'variant':
+                            # Check var_types to see if this variant holds a float
+                            if var_name in self.var_types and self.var_types[var_name] == 'float':
+                                format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                            else:
+                                format_string = format_string.replace(f'{{{var_name}}}', '%d')
                         else:
                             format_string = format_string.replace(f'{{{var_name}}}', '%d')
                     else:
@@ -1957,7 +2044,14 @@ class CodeGenerator:
                     # Get the variable value
                     try:
                         var_value = self.visit_ID({'type': 'ID', 'value': var_name})
-                        if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
+                        # If it's a variant, extract the appropriate value using the pointer
+                        if entry and entry[1] == 'variant':
+                            variant_ptr = entry[0]  # Get the pointer to the variant
+                            if var_name in self.var_types and self.var_types[var_name] == 'float':
+                                var_value = self._extract_variant_value(variant_ptr, 'float')
+                            else:
+                                var_value = self._extract_variant_value(variant_ptr, 'int')
+                        elif hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
                             var_value = self.builder.load(var_value)
                         format_args.append(var_value)
                         debug_print(f"DEBUG: visit_print - added {var_name} = {var_value} to format args")
@@ -2115,8 +2209,29 @@ class CodeGenerator:
         if not var_names:
             return
 
-        # Build scanf format string: one %d per variable, separated by spaces
-        scanf_format = ' '.join(['%d'] * len(var_names)) + '\0'
+        # Determine per-variable scanf format specifiers and validate types
+        format_specs = []
+        for var_name in var_names:
+            entry = self.get_variable(var_name, prefer_globals=True)
+            if entry is None:
+                self.semantic_error(f"undefined variable '{var_name}' in scan statement", node)
+            var_ptr, dtype, is_constant = entry
+            debug_print(f"DEBUG: visit_scan - var '{var_name}' ptr type: {getattr(var_ptr, 'type', None)}, dtype: {dtype}")
+            if not hasattr(var_ptr, 'type') or not isinstance(var_ptr.type, ir.PointerType):
+                self.semantic_error(f"variable '{var_name}' is not addressable for scan statement", node)
+            if dtype == 'int':
+                format_specs.append('%d')
+            elif dtype == 'float':
+                format_specs.append('%lf')
+            elif dtype == 'char':
+                format_specs.append(' %c')
+            elif dtype == 'string':
+                format_specs.append('%255s')
+            else:
+                self.semantic_error(f"scan does not support type '{dtype}' for variable '{var_name}'", node)
+
+        # Build scanf format string
+        scanf_format = ' '.join(format_specs) + '\0'
         fmt_name = f"str_{abs(hash('scan_format:' + scanf_format))}"
         fmt_bytes = bytearray(scanf_format.encode("utf8"))
         fmt_type = ir.ArrayType(ir.IntType(8), len(fmt_bytes))
@@ -2131,19 +2246,23 @@ class CodeGenerator:
 
         # Resolve variable pointers for scanf arguments
         scanf_args: List[ir.Value] = [fmt_ptr]
+        string_buffers = {}  # var_name -> (var_ptr, buf_ptr) for post-scan pointer update
         for var_name in var_names:
             entry = self.get_variable(var_name, prefer_globals=True)
-            if entry is None:
-                raise Exception(f"Undefined variable in SCAN: {var_name}")
             var_ptr, dtype, is_constant = entry
-            debug_print(f"DEBUG: visit_scan - var '{var_name}' ptr type: {getattr(var_ptr, 'type', None)}, dtype: {dtype}")
-
-            # Ensure we pass a pointer to i32 for %d
-            if not hasattr(var_ptr, 'type') or not isinstance(var_ptr.type, ir.PointerType):
-                raise Exception(f"Variable '{var_name}' is not addressable for SCAN")
-            if not isinstance(var_ptr.type.pointee, ir.IntType) or var_ptr.type.pointee.width != 32:
-                raise Exception(f"SCAN currently supports only int variables. '{var_name}' has type: {var_ptr.type}")
-            scanf_args.append(var_ptr)
+            if dtype == 'int':
+                scanf_args.append(var_ptr)
+            elif dtype == 'float':
+                scanf_args.append(var_ptr)
+            elif dtype == 'char':
+                scanf_args.append(var_ptr)
+            elif dtype == 'string':
+                # Allocate a mutable buffer for scanf, then store its pointer in the variable
+                buf_ty = ir.ArrayType(ir.IntType(8), 256)
+                buf = self.builder.alloca(buf_ty, name=f"scan_buf_{var_name}")
+                buf_ptr = self.builder.bitcast(buf, ir.IntType(8).as_pointer())
+                string_buffers[var_name] = (var_ptr, buf_ptr)
+                scanf_args.append(buf_ptr)
 
         # Declare or get scanf
         scanf = self.module.globals.get('scanf')
@@ -2155,6 +2274,10 @@ class CodeGenerator:
         debug_print(f"DEBUG: visit_scan - calling scanf with {len(scanf_args)-1} variables")
         self.builder.call(scanf, scanf_args)
 
+        # Update string variable pointers to point at the scanned buffers
+        for var_name, (var_ptr, buf_ptr) in string_buffers.items():
+            self.builder.store(buf_ptr, var_ptr)
+
     def visit_ID(self, node: Dict[str, Any], prefer_globals: bool = False) -> ir.Value:
         name = node['value']
         debug_print(f"DEBUG: visit_ID searching for '{name}', prefer_globals={prefer_globals}")
@@ -2162,7 +2285,7 @@ class CodeGenerator:
         debug_print(f"DEBUG: visit_ID - current globals: {list(self.globals.keys())}")
         entry = self.get_variable(name, prefer_globals)
         if entry is None:
-            raise Exception(f"Undefined variable: {name}")
+            self.semantic_error(f"undefined variable '{name}'", node)
         
         ptr, dtype, is_constant = entry
         debug_print(f"DEBUG: visit_ID for '{name}', dtype={dtype}, ptr type={getattr(ptr, 'type', None)}")
@@ -2301,7 +2424,7 @@ class CodeGenerator:
                         var_ptr, var_type, _ = self.locals[thread_count_value]
                         thread_count = self.builder.load(var_ptr) if var_type in ('int', 'float') or var_type is None else var_ptr
                     else:
-                        raise Exception(f"Undefined variable in create_threads: {thread_count_value}")
+                        self.semantic_error(f"undefined variable '{thread_count_value}' in create_threads", node)
                 else:
                     # It's a numeric literal
                     thread_count = ir.Constant(ir.IntType(32), thread_count_value)
