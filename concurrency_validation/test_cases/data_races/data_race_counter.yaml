@@ -2,7 +2,6 @@
 # Expected: ThreadSanitizer should detect data race
 # Note: Races are non-deterministic, so we run multiple times
 
-source: data_race_counter.ale
 expected_issues:
   - data_race
 timeout: 10

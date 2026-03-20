@@ -1,0 +1,8 @@
+# Edge case: program has a real data race but it is NOT declared here.
+# Expected: no concurrency issues.
+# Actual: TSan will detect a data_race → runner reports UNEXPECTED.
+
+expected_issues:
+  - none
+timeout: 10
+max_runs: 20

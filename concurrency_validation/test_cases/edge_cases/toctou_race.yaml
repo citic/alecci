@@ -1,0 +1,15 @@
+# Edge case: TOCTOU (time-of-check-time-of-use) logical race.
+# Every access to `counter` is individually mutex-protected, so TSan
+# sees no data race on counter and stays silent about the logical bug.
+# The logical race is declared here so the runner reports it as MISS —
+# demonstrating that a clean TSan report does not guarantee correctness.
+#
+# Note: the Alecci runtime's thread joining emits an incidental data_race
+# on the mutex storage and a thread_leak; both are listed here as expected
+# so they do not obscure the key finding (missed toctou).
+
+expected_issues:
+  - toctou
+  - data_race
+  - thread_leak
+timeout: 10

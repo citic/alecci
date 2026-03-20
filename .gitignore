@@ -191,3 +191,6 @@ Thumbs.db
 
 #binaries
 bin/
+
+# Test output
+results/

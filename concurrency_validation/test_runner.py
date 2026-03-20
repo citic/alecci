@@ -32,7 +32,6 @@ class TestCase:
         with open(yaml_path, 'r') as f:
             config = yaml.safe_load(f)
         
-        self.source = config.get('source', '')
         self.expected_issues = config.get('expected_issues', ['none'])
         self.args = config.get('args', [])
         self.stdin_file = config.get('stdin_file', None)
@@ -41,14 +40,25 @@ class TestCase:
         
         # Resolve paths relative to YAML file location
         test_dir = yaml_path.parent
-        self.source_path = test_dir / self.source
+        # Auto-discover source file: same stem as yaml, .ale or .pseudo extension
+        source_path = None
+        for ext in ('.ale', '.pseudo'):
+            candidate = test_dir / (yaml_path.stem + ext)
+            if candidate.exists():
+                source_path = candidate
+                break
+        if source_path is None:
+            raise FileNotFoundError(
+                f"No .ale or .pseudo source file found for {yaml_path}"
+            )
+        self.source_path = source_path
         if self.stdin_file:
             self.stdin_path = test_dir / self.stdin_file
         else:
             self.stdin_path = None
     
     def __repr__(self):
-        return f"TestCase({self.name}, source={self.source})"
+        return f"TestCase({self.name}, source={self.source_path.name})"
 
 
 class TestResult:
@@ -65,6 +75,8 @@ class TestResult:
         self.tsan_details = ""
         self.notes = ""
         self.compile_success = False
+        self.missed_issues = []      # expected but not detected
+        self.unexpected_issues = []  # detected but not expected
     
     def to_csv_row(self) -> Dict[str, str]:
         """Convert result to CSV row dictionary"""
@@ -73,6 +85,8 @@ class TestResult:
             'source_file': self.source_file,
             'expected_issues': '|'.join(self.expected_issues),
             'detected_issues': '|'.join(self.detected_issues),
+            'missed_issues': '|'.join(self.missed_issues) if self.missed_issues else 'none',
+            'unexpected_issues': '|'.join(self.unexpected_issues) if self.unexpected_issues else 'none',
             'status': self.status,
             'timeout_occurred': 'yes' if self.timeout_occurred else 'no',
             'execution_time_ms': str(self.execution_time_ms),
@@ -215,53 +229,54 @@ def run_test(test_case: TestCase, exe_path: Path, verbose: bool = False) -> Tupl
         return -1, f"Execution error: {str(e)}", execution_time, False
 
 
-def validate_results(test_case: TestCase, tsan_result: Dict, timeout_occurred: bool) -> Tuple[str, str]:
+def validate_results(
+    test_case: TestCase, tsan_result: Dict, timeout_occurred: bool
+) -> Tuple[str, str, List[str], List[str]]:
     """
     Validate test results against expected issues.
-    
-    Args:
-        test_case: TestCase being validated
-        tsan_result: Parsed TSan output
-        timeout_occurred: Whether execution timed out
-        
+
+    Status values:
+      PASS             – all expected found, nothing unexpected
+      UNEXPECTED       – all expected found, but extra issues detected
+      MISS             – some expected issues not found, nothing unexpected
+      MISS+UNEXPECTED  – some expected not found AND extra issues detected
+
     Returns:
-        Tuple of (status: str, notes: str)
+        Tuple of (status, notes, missed_issues, unexpected_issues)
     """
     detected = get_detected_issue_list(tsan_result)
     expected = test_case.expected_issues
-    
-    # Normalize expected issues
-    if not expected or expected == ['none']:
-        expected_set = set(['none'])
-    else:
-        expected_set = set(expected)
-    
-    detected_set = set(detected)
-    
-    notes = []
-    
-    # Check for matches
-    if expected_set == detected_set:
+
+    # Strip the 'none' sentinel so we work with real issue types only
+    real_expected = set(expected) - {'none'}
+    real_detected = set(detected) - {'none'}
+
+    missed     = sorted(real_expected - real_detected)
+    unexpected = sorted(real_detected - real_expected)
+
+    has_missing    = bool(missed)
+    has_unexpected = bool(unexpected)
+
+    if not has_missing and not has_unexpected:
         status = "PASS"
+    elif not has_missing and has_unexpected:
+        status = "UNEXPECTED"
+    elif has_missing and not has_unexpected:
+        status = "MISS"
     else:
-        status = "FAIL"
-        
-        # Add details about mismatch
-        missing = expected_set - detected_set
-        unexpected = detected_set - expected_set
-        
-        if missing:
-            notes.append(f"Missing expected issues: {', '.join(missing)}")
-        if unexpected:
-            notes.append(f"Unexpected issues detected: {', '.join(unexpected)}")
-    
-    # Handle timeout
+        status = "MISS+UNEXPECTED"
+
+    notes = []
+    if missed:
+        notes.append(f"Missing expected issues: {', '.join(missed)}")
+    if unexpected:
+        notes.append(f"Unexpected issues detected: {', '.join(unexpected)}")
     if timeout_occurred:
         notes.append(f"Execution timed out after {test_case.timeout}s")
         if 'deadlock' not in expected and 'deadlock' not in detected:
             notes.append("Timeout may indicate undetected deadlock")
-    
-    return status, "; ".join(notes)
+
+    return status, "; ".join(notes), missed, unexpected
 
 
 def run_single_test(test_case: TestCase, bin_dir: Path, verbose: bool = False) -> TestResult:
@@ -348,9 +363,11 @@ def run_single_test(test_case: TestCase, bin_dir: Path, verbose: bool = False) -
         print(f"  Detected issues: {result.detected_issues}")
     
     # Step 4: Validate
-    status, notes = validate_results(test_case, tsan_result, timeout_occurred)
+    status, notes, missed, unexpected = validate_results(test_case, tsan_result, timeout_occurred)
     result.status = status
     result.notes = notes
+    result.missed_issues = missed
+    result.unexpected_issues = unexpected
     
     if verbose:
         print(f"  Status: {status}")
@@ -362,32 +379,83 @@ def run_single_test(test_case: TestCase, bin_dir: Path, verbose: bool = False) -
 
 def write_csv_report(results: List[TestResult], output_path: Path):
     """
-    Write test results to CSV file.
-    
-    Args:
-        results: List of TestResult objects
-        output_path: Path for output CSV file
+    Write per-test results to CSV file.
     """
     fieldnames = [
         'test_name',
         'source_file',
         'expected_issues',
         'detected_issues',
+        'missed_issues',
+        'unexpected_issues',
         'status',
         'timeout_occurred',
         'execution_time_ms',
         'tsan_details',
         'notes'
     ]
-    
+
     with open(output_path, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
-        
         for result in results:
             writer.writerow(result.to_csv_row())
-    
-    print(f"\nResults written to: {output_path}")
+
+    print(f"Results written to:           {output_path}")
+
+
+def write_detailed_csv_report(results: List[TestResult], output_path: Path):
+    """
+    Write a per-(test, issue_type) breakdown CSV.
+
+    Each row represents one concurrency issue type that was either expected or
+    detected in a given test.  Rows where the issue was neither expected nor
+    detected are omitted.
+
+    Outcome values:
+      correct_detection  – expected and detected
+      false_negative     – expected but NOT detected (tool missed it)
+      unexpected         – NOT expected but detected (unlisted issue)
+    """
+    fieldnames = [
+        'test_name',
+        'issue_type',
+        'was_expected',
+        'was_detected',
+        'outcome',
+    ]
+
+    with open(output_path, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for result in results:
+            if result.status == 'COMPILE_FAIL':
+                continue
+
+            real_expected = set(result.expected_issues) - {'none'}
+            real_detected = set(result.detected_issues) - {'none'}
+            all_types = sorted(real_expected | real_detected)
+
+            for issue_type in all_types:
+                exp = issue_type in real_expected
+                det = issue_type in real_detected
+                if exp and det:
+                    outcome = 'correct_detection'
+                elif exp:
+                    outcome = 'false_negative'
+                else:
+                    outcome = 'unexpected'
+
+                writer.writerow({
+                    'test_name':   result.test_name,
+                    'issue_type':  issue_type,
+                    'was_expected': 'yes' if exp else 'no',
+                    'was_detected': 'yes' if det else 'no',
+                    'outcome':     outcome,
+                })
+
+    print(f"Issue breakdown written to:   {output_path}")
 
 
 def main():
@@ -447,26 +515,71 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_csv = results_dir / f"concurrency_test_results_{timestamp}.csv"
     
-    # Write CSV report
+    # Write main CSV report
     write_csv_report(results, output_csv)
-    
-    # Print summary
-    print("\n" + "="*60)
+
+    # Write detailed issue-breakdown CSV alongside the main report
+    breakdown_csv = output_csv.parent / output_csv.name.replace(
+        'concurrency_test_results', 'issue_breakdown'
+    )
+    write_detailed_csv_report(results, breakdown_csv)
+
+    # ------------------------------------------------------------------ summary
+    print("\n" + "=" * 60)
     print("TEST SUMMARY")
-    print("="*60)
-    
-    passed = sum(1 for r in results if r.status == "PASS")
-    failed = sum(1 for r in results if r.status == "FAIL")
-    compile_failed = sum(1 for r in results if r.status == "COMPILE_FAIL")
-    
-    print(f"Total:          {len(results)}")
-    print(f"Passed:         {passed}")
-    print(f"Failed:         {failed}")
-    print(f"Compile Failed: {compile_failed}")
-    print("="*60)
-    
-    # Exit with error code if any tests failed
-    if failed > 0 or compile_failed > 0:
+    print("=" * 60)
+
+    total         = len(results)
+    compile_fail  = sum(1 for r in results if r.status == "COMPILE_FAIL")
+    passed        = sum(1 for r in results if r.status == "PASS")
+    unexpected    = sum(1 for r in results if r.status == "UNEXPECTED")
+    miss          = sum(1 for r in results if r.status == "MISS")
+    miss_unexp    = sum(1 for r in results if r.status == "MISS+UNEXPECTED")
+
+    print(f"Total:          {total}")
+    print(f"Compile failed: {compile_fail}")
+    print()
+    print("Detection outcomes:")
+    w = 45
+    print(f"  {'All expected found, none unexpected [PASS]':<{w}} {passed}")
+    print(f"  {'All expected found + extra detected  [UNEXPECTED]':<{w}} {unexpected}")
+    print(f"  {'Missed expected issues               [MISS]':<{w}} {miss}")
+    print(f"  {'Missed expected + extras detected    [MISS+UNEXPECTED]':<{w}} {miss_unexp}")
+
+    # Per-issue-type breakdown
+    from collections import defaultdict
+    issue_stats: Dict[str, Dict[str, int]] = defaultdict(
+        lambda: {'expected': 0, 'detected': 0, 'missed': 0, 'unexpected': 0}
+    )
+    for r in results:
+        if r.status == 'COMPILE_FAIL':
+            continue
+        for t in (set(r.expected_issues) - {'none'}):
+            issue_stats[t]['expected'] += 1
+        for t in (set(r.detected_issues) - {'none'}):
+            issue_stats[t]['detected'] += 1
+        for t in r.missed_issues:
+            issue_stats[t]['missed'] += 1
+        for t in r.unexpected_issues:
+            issue_stats[t]['unexpected'] += 1
+
+    if issue_stats:
+        print()
+        print("Breakdown by concurrency issue type:")
+        col = max(len(t) for t in issue_stats) + 2
+        print(f"  {'Issue type':<{col}}  {'Expected':>8}  {'Detected':>8}  {'Missed':>6}  {'Unexp.':>6}")
+        print(f"  {'-'*col}  {'--------':>8}  {'--------':>8}  {'------':>6}  {'------':>6}")
+        for issue_type in sorted(issue_stats):
+            s = issue_stats[issue_type]
+            print(
+                f"  {issue_type:<{col}}  {s['expected']:>8}  {s['detected']:>8}"
+                f"  {s['missed']:>6}  {s['unexpected']:>6}"
+            )
+
+    print("=" * 60)
+
+    # Non-zero exit if any test did not fully pass
+    if compile_fail > 0 or miss > 0 or miss_unexp > 0 or unexpected > 0:
         sys.exit(1)
     else:
         sys.exit(0)

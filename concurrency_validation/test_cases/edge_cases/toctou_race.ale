@@ -1,0 +1,42 @@
+// Edge case: TOCTOU (time-of-check-time-of-use) logical race.
+//
+// Every individual access to `counter` is protected by a mutex, so
+// ThreadSanitizer sees no data race and stays silent.
+// Yet the program has a real concurrency bug: the check and the act
+// happen in two separate critical sections, leaving a window where
+// another thread can change `counter` in between.
+//
+// Result: counter can go negative even though the yaml declares `toctou`
+// as the expected issue — TSan will never report it → MISS.
+
+procedure consumer(thread_id as int)
+    // First critical section: read current count (the CHECK)
+    lock(counter_mutex)
+    mutable stale_count := counter
+    unlock(counter_mutex)
+
+    // *** Race window: other threads may decrement counter here ***
+
+    if stale_count > 0 then
+        // Second critical section: decrement (the ACT) without re-checking!
+        lock(counter_mutex)
+        counter := counter - 1
+        unlock(counter_mutex)
+        print `Thread {thread_id}: consumed an item`
+    end if
+end procedure
+
+procedure main(argc, argv)
+    shared mutable counter := 3        // only 3 items available
+    shared mutable counter_mutex := mutex()
+
+    print "TOCTOU race demonstration: check and act in separate critical sections."
+    print "TSan cannot detect this — each memory access is properly protected."
+
+    // 8 consumers compete for 3 items; stale reads let counter go negative
+    mutable threads := create_threads(8, consumer)
+    join_threads(threads)
+
+    print `Final counter: {counter}`
+    print "If counter is negative, the TOCTOU race manifested."
+end procedure

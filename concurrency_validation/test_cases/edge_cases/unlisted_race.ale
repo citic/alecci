@@ -1,0 +1,21 @@
+// Edge case: real data race that is NOT listed in the yaml
+// The yaml claims no concurrency issues are expected, but this program
+// intentionally races on a shared counter without synchronization.
+// The runner should flag this test as UNEXPECTED.
+
+procedure bump(thread_id as int)
+    mutable i := 0
+    while i < 500 do
+        counter := counter + 1
+        i := i + 1
+    end while
+end procedure
+
+procedure main(argc, argv)
+    shared mutable counter := 0
+
+    print "Running unlisted-race test (race exists but not declared in yaml)..."
+    mutable threads := create_threads(4, bump)
+    join_threads(threads)
+    print `Final counter: {counter}`
+end procedure

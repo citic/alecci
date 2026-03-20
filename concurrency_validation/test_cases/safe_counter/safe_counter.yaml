@@ -1,7 +1,6 @@
 # Test case: Properly synchronized counter
 # Expected: No concurrency issues (mutex protects shared data)
 
-source: safe_counter.ale
 expected_issues:
   - none
 timeout: 10
