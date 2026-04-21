@@ -1,0 +1,32 @@
+procedure main()
+  shared mutable device_barrier as barrier := barrier(3)
+  shared mutable hydrogen_multiplex as semaphore := semaphore(2)
+  shared mutable oxigen_multiplex as semaphore := semaphore(1)  // mutex
+  mutable atom as char
+  while scan `{atom}` do
+    case atom of
+      'H': create_thread(hydrogen)
+      'O': create_thread(oxygen)
+    end case
+  end while
+end procedure
+
+procedure bond()
+  print `bond()`
+end procedure
+
+procedure hydrogen()
+  wait(hydrogen_multiplex)
+  barrier_wait(device_barrier)
+  bond()
+  barrier_wait(device_barrier)
+  signal(hydrogen_multiplex)
+end procedure
+
+procedure oxygen()
+  wait(oxigen_multiplex)
+  barrier_wait(device_barrier)
+  bond()
+  barrier_wait(device_barrier)
+  signal(oxigen_multiplex)
+end procedure

@@ -1,0 +1,7 @@
+# No concurrency errors, but old notation
+source: 0001.ale
+expected_issues:
+  - syntax_error
+  - none
+timeout: 10
+max_runs: 20

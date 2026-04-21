@@ -35,6 +35,7 @@ reserved = {
     'do' : 'DO',
     'for' : 'FOR',
     'break' : 'BREAK',
+    'case' : 'CASE',
     # Variable declarations
     'shared' : 'SHARED',
     'mutable' : 'MUTABLE',
@@ -90,7 +91,9 @@ tokens = [
     'LBRACE',
     'RBRACE',
     'INTEGER',
-    'ASSIGN', 
+    'ASSIGN',
+    'COLON',
+    'CHAR_LITERAL',
     'STRING',
     'FORMATTED_STRING',
     'TYPE',
@@ -139,8 +142,14 @@ t_RBRACKET = r'\]'
 t_LBRACE = r'\{'
 t_RBRACE = r'\}'
 t_ASSIGN   = r':='
-t_STRING   = r'\"[^\n\"]*\"'
+t_COLON    = r':'
+t_STRING   = r'"[^\n"]*"'
 t_FORMATTED_STRING   = r'\`[^\n\`]*\`'
+
+def t_CHAR_LITERAL(t):
+    r"'[^'\\n]'"
+    t.value = ord(t.value[1])
+    return t
 
 # Create complex type rule. Move there thread, semaphore, etc
 # Use word boundaries to ensure we don't match partial words like 'int' in 'int_value'

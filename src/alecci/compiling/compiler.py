@@ -404,10 +404,14 @@ class CodeGenerator:
         elif isinstance(body, dict):
             if body.get('type') == 'declaration' and body.get('shared'):
                 self.process_shared_declaration(body)
-            # Recurse into nested blocks (e.g., if, while, for, etc.)
-            for key in ['body', 'then_body', 'else_body']:
+            # Recurse into nested blocks (e.g., if, while, for, case, etc.)
+            for key in ['body', 'then_body', 'else_body', 'default_body']:
                 if key in body:
                     self._collect_shared_in_body(body[key])
+            # Recurse into case arms (each arm has a 'body' key)
+            if body.get('type') == 'case' and 'arms' in body:
+                for arm in body['arms']:
+                    self._collect_shared_in_body(arm.get('body', []))
 
     def compile_procedure_bodies(self, declarations: List[Dict[str, Any]]) -> None:
         """Second pass: compile procedure/function bodies"""
@@ -1655,6 +1659,63 @@ class CodeGenerator:
         # End block
         self.builder.position_at_start(end_bb)
 
+    def visit_case(self, node: Dict[str, Any]) -> None:
+        from .base_types import get_variant_type
+
+        # Evaluate the switch expression
+        val = self.visit(node['expression'])
+        if not hasattr(val, 'type'):
+            self.semantic_error("case expression must evaluate to an integer or char value", node)
+
+        variant_ty = get_variant_type()
+
+        # If the value is a pointer to a variant struct, extract its integer value
+        if isinstance(val.type, ir.PointerType) and val.type.pointee == variant_ty:
+            val = self._extract_variant_value(val, 'int')
+        # If the value IS a variant struct (returned by value), store then extract
+        elif val.type == variant_ty:
+            temp_ptr = self.builder.alloca(variant_ty, name='case_variant_tmp')
+            self.builder.store(val, temp_ptr)
+            val = self._extract_variant_value(temp_ptr, 'int')
+
+        # Coerce to i32 for the LLVM switch instruction
+        if isinstance(val.type, ir.IntType) and val.type.width != 32:
+            val = self.builder.zext(val, ir.IntType(32)) if val.type.width < 32 else self.builder.trunc(val, ir.IntType(32))
+
+        arms = node.get('arms', [])
+        default_body = node.get('default_body')
+
+        end_bb = self.builder.append_basic_block('case.end')
+        default_bb = self.builder.append_basic_block('case.default') if default_body else end_bb
+
+        # Build arm blocks
+        arm_bbs = [self.builder.append_basic_block(f'case.arm.{i}') for i in range(len(arms))]
+
+        # Emit LLVM switch instruction
+        sw = self.builder.switch(val, default_bb)
+        for i, arm in enumerate(arms):
+            arm_val = self.visit(arm['value'])
+            if not isinstance(arm_val, ir.Constant):
+                self.semantic_error("case arm value must be a compile-time constant (literal)", node)
+            arm_const = ir.Constant(ir.IntType(32), arm_val.constant)
+            sw.add_case(arm_const, arm_bbs[i])
+
+        # Emit arm bodies
+        for i, arm in enumerate(arms):
+            self.builder.position_at_start(arm_bbs[i])
+            self.visit(arm['body'])
+            if not self.builder.block.is_terminated:
+                self.builder.branch(end_bb)
+
+        # Emit default body
+        if default_body:
+            self.builder.position_at_start(default_bb)
+            self.visit(default_body)
+            if not self.builder.block.is_terminated:
+                self.builder.branch(end_bb)
+
+        self.builder.position_at_start(end_bb)
+
     def visit_break(self, node: Dict[str, Any]) -> None:
         if not self.loop_exit_stack:
             raise Exception("'break' used outside of a loop")
@@ -2270,13 +2331,19 @@ class CodeGenerator:
             scanf_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()], var_arg=True)
             scanf = ir.Function(self.module, scanf_ty, name="scanf")
 
-        # Call scanf
+        # Call scanf and capture the return value (number of items successfully read)
         debug_print(f"DEBUG: visit_scan - calling scanf with {len(scanf_args)-1} variables")
-        self.builder.call(scanf, scanf_args)
+        scan_result = self.builder.call(scanf, scanf_args)
 
         # Update string variable pointers to point at the scanned buffers
         for var_name, (var_ptr, buf_ptr) in string_buffers.items():
             self.builder.store(buf_ptr, var_ptr)
+
+        # Return (result > 0) as i32 so scan can be used as a while-loop condition.
+        # scanf returns the number of items read (>0 = success, 0 = no match, -1 = EOF).
+        # Returning 1 on success and 0 otherwise makes it safe to use in a boolean context.
+        pos = self.builder.icmp_signed('>', scan_result, ir.Constant(ir.IntType(32), 0))
+        return self.builder.zext(pos, ir.IntType(32))
 
     def visit_ID(self, node: Dict[str, Any], prefer_globals: bool = False) -> ir.Value:
         name = node['value']

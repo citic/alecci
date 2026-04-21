@@ -113,6 +113,19 @@ EXAMPLES = {
             "Float test completed successfully",
         ],
     },
+    "case": {
+        "file": "case.ale",
+        "stdin": "H\nO\nN\nX\n",
+        "expect": [
+            "Testing case statements",
+            "code is two",
+            "hydrogen",
+            "oxygen",
+            "nitrogen",
+            "other",
+            "Case test completed successfully",
+        ],
+    },
     "operators": {
         "file": "operators.ale",
         "expect": [
@@ -265,6 +278,11 @@ def test_example_float(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_ex
 def test_example_operators(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
     out = _compile_and_run("operators", EXAMPLES["operators"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] operators")
+
+
+def test_example_case(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    out = _compile_and_run("case", EXAMPLES["case"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] case")
 
 
 def test_example_undefined_variable_scan(repo_root: Path, bin_dir: Path, compile_pseudo_fn, capsys):

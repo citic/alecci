@@ -5,12 +5,19 @@ from .parsing import globals
 import sys
 import subprocess
 import argparse
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("alecci")
+except PackageNotFoundError:
+    __version__ = "unknown"
 
 def main():
     #TODO Add support for passing arguments to the compiler
     #TODO: Add support for asan if no thread creation is detected
     parser_arg = argparse.ArgumentParser(description="Alecci Compiler")
     parser_arg.add_argument('filename', nargs='?', help='Source file to compile')
+    parser_arg.add_argument('--version', action='version', version=f'alecci {__version__}')
     parser_arg.add_argument('--print-ast', action='store_true', help='Print the AST')
     parser_arg.add_argument('--no-tsan', action='store_true', help='Disable thread sanitizer')
     parser_arg.add_argument('--use-asan', action='store_true', help='Use AddressSanitizer instead of ThreadSanitizer')

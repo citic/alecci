@@ -134,6 +134,7 @@ def p_statement(p):
                 |  if_condition
                 |  for_loop
                 |  while_loop
+                |  case_statement
                 |  BREAK WHILE
                 |  BREAK FOR
                 |  PRINT FORMATTED_STRING
@@ -179,6 +180,32 @@ def p_while_loop(p):
     ''' while_loop : WHILE expression DO body END WHILE
     '''
     p[0] = {'type': 'while', 'condition': p[2], 'body': p[4]}
+
+
+def p_case_statement(p):
+    ''' case_statement : CASE expression OF case_arms END CASE
+                       | CASE expression OF case_arms ELSE COLON body END CASE
+    '''
+    if len(p) == 7:
+        p[0] = {'type': 'case', 'expression': p[2], 'arms': p[4], 'default_body': None}
+    else:
+        p[0] = {'type': 'case', 'expression': p[2], 'arms': p[4], 'default_body': p[7]}
+
+
+def p_case_arms(p):
+    ''' case_arms : case_arm
+                  | case_arms case_arm
+    '''
+    if len(p) == 2:
+        p[0] = [p[1]]
+    else:
+        p[0] = p[1] + [p[2]]
+
+
+def p_case_arm(p):
+    ''' case_arm : expression COLON body
+    '''
+    p[0] = {'value': p[1], 'body': p[3]}
 
 
 def p_init(p):
@@ -326,10 +353,12 @@ def p_func_call(p):
 # TODO: Move function-style operators to library functions. Remove from grammar
 def p_expression(p):
     '''expression : INTEGER
+            | CHAR_LITERAL
             | STRING
             | FLOAT
             | TRUE
             | FALSE
+            | SCAN FORMATTED_STRING
             | expression PLUS expression
             | expression MINUS expression
             | expression TIMES expression
@@ -372,6 +401,8 @@ def p_expression(p):
             p[0] = {'type': 'ID', 'value': p[1], 'lineno': p.lineno(1)}
         else:
             p[0] = {'type': 'literal', 'value': p[1]}
+    elif len(p) == 3 and p.slice[1].type == 'SCAN':
+        p[0] = {'type': 'scan', 'format': p[2], 'lineno': p.lineno(1)}
     elif len(p) == 3 and p[1] in ['-', 'not', '~']:
         # Unary operators: unary minus, logical NOT, bitwise NOT
         p[0] = {'type': 'unary_op', 'op': p[1], 'operand': p[2]}

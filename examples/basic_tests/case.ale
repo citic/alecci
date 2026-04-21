@@ -1,0 +1,33 @@
+procedure main()
+    print "Testing case statements"
+
+    // Integer case with default arm
+    const code = 2
+    case code of
+        1:
+            print "code is one"
+        2:
+            print "code is two"
+        3:
+            print "code is three"
+    else:
+        print "code is unknown"
+    end case
+
+    // Char case using scan; read one char per line until EOF
+    mutable atom as char
+    while scan `{atom}` do
+        case atom of
+            'H':
+                print "hydrogen"
+            'O':
+                print "oxygen"
+            'N':
+                print "nitrogen"
+        else:
+            print "other"
+        end case
+    end while
+
+    print "Case test completed successfully"
+end procedure
