@@ -1,0 +1,33 @@
+procedure main()
+  shared mutable hydrogen_in := semaphore(2)
+  shared mutable oxygen_in := semaphore(1)
+  shared mutable oxygen_ready := semaphore(0)
+  shared mutable hydrogen_ready := semaphore(0)
+  mutable atom as char
+  while scan `{atom}` do
+    case atom of
+      'H': create_thread(hydrogen)
+      'O': create_thread(oxygen)
+    end case
+  end while
+end procedure
+
+procedure bond()
+  print `bond()`
+end procedure
+
+procedure hydrogen()
+  wait(hydrogen_in)
+  signal(hydrogen_ready)
+  wait(oxygen_ready)
+  bond()
+  signal(hydrogen_in, 2)
+end procedure
+
+procedure oxygen()
+  wait(oxygen_in)
+  signal(oxygen_ready, 2)
+  wait(hydrogen_ready, 2)
+  bond()
+  signal(oxygen_in)
+end procedure

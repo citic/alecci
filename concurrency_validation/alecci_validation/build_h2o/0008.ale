@@ -1,0 +1,42 @@
+procedure main()
+  shared mutable can_bond := barrier(3)
+  shared mutable oxygen_queue := semaphore(1)
+  shared mutable hydrogen_queue := semaphore(2)
+  mutable oxygen_count := 0
+  mutable hydrogen_count := 0
+  mutable atom as char
+  while scan `{atom}` do
+    case atom of
+      'H':
+        create_thread(hydrogen, hydrogen_count)
+        hydrogen_count := hydrogen_count + 1
+      'O':
+        create_thread(oxygen, oxygen_count)
+        oxygen_count := oxygen_count + 1
+    end case
+  end while
+end procedure
+
+procedure hydrogen(id)
+  wait(hydrogen_queue)
+  wait(can_bond)
+  bond(false, id)
+  signal(hydrogen_queue)
+end procedure
+
+procedure oxygen(id)
+  wait(oxygen_queue)
+  wait(can_bond)
+  bond(true, id)
+  signal(oxygen_queue)
+end procedure
+
+procedure bond(is_oxygen, id)
+  mutable atom_type := " "
+  if is_oxygen then
+    atom_type := "O"
+  else
+    atom_type := "H"
+  end if
+  print `bonded {atom_type} {id}`
+end procedure

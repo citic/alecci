@@ -1,0 +1,10 @@
+# Uses semaphore(3) instead of barrier(3) for the rendezvous point. The
+# semaphore starts at 3 and is consumed but never signaled back, so after the
+# first H2O molecule the semaphore reaches 0 and all subsequent threads
+# block forever.
+source: 0009.ale
+expected_issues:
+  - deadlock
+stdin_file: input.txt
+timeout: 10
+max_runs: 3

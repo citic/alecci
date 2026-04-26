@@ -1,0 +1,9 @@
+# No synchronization at all: hydrogen() and oxygen() call bond() immediately
+# with no semaphores or barriers. All threads run freely and call bond()
+# concurrently with no protection, producing incorrect H2O groupings.
+source: 0005.ale
+expected_issues:
+  - data_race
+stdin_file: input.txt
+timeout: 10
+max_runs: 20

@@ -2526,6 +2526,33 @@ class CodeGenerator:
             if len(target_func_obj.args) != len(args):
                 raise Exception(f"Function '{target_func}' expects {len(target_func_obj.args)} arguments, but got {len(args)}")
             
+            # Coerce variant args to match the expected parameter types of the target function
+            from .base_types import get_variant_type
+            variant_ty = get_variant_type()
+            coerced_args = []
+            for i, (arg, param) in enumerate(zip(args, target_func_obj.args)):
+                if hasattr(arg, 'type') and isinstance(arg.type, ir.PointerType) and arg.type.pointee == variant_ty:
+                    # arg is a variant pointer; extract the value the param expects
+                    if isinstance(param.type, ir.IntType):
+                        arg = self._extract_variant_value(arg, 'int')
+                    elif isinstance(param.type, ir.DoubleType):
+                        arg = self._extract_variant_value(arg, 'float')
+                    elif isinstance(param.type, ir.PointerType):
+                        arg = self._extract_variant_value(arg, 'string')
+                    # else: leave as-is (e.g. already variant)
+                elif hasattr(arg, 'type') and arg.type == variant_ty:
+                    # arg is a variant value (not pointer); store it then extract
+                    temp_ptr = self.builder.alloca(variant_ty, name=f"thread_arg_{i}_tmp")
+                    self.builder.store(arg, temp_ptr)
+                    if isinstance(param.type, ir.IntType):
+                        arg = self._extract_variant_value(temp_ptr, 'int')
+                    elif isinstance(param.type, ir.DoubleType):
+                        arg = self._extract_variant_value(temp_ptr, 'float')
+                    elif isinstance(param.type, ir.PointerType):
+                        arg = self._extract_variant_value(temp_ptr, 'string')
+                coerced_args.append(arg)
+            args = coerced_args
+
             debug_print(f"DEBUG: create_thread - calling create_thread with target_func: {target_func}, args: {args}")
             result = create_thread(self.builder, self.module, target_func_obj, thread_args=args)
             debug_print(f"DEBUG: create_thread - returned: {result}, type: {getattr(result, 'type', type(result))}")
@@ -3416,6 +3443,26 @@ class CodeGenerator:
         self.has_explicit_return = True
         if 'value' in node and node['value'] is not None:
             val = self.visit(node['value'])
+            from .base_types import get_variant_type
+            variant_ty = get_variant_type()
+            func_return_type = self.builder.function.type.pointee.return_type
+
+            # If the function returns variant by value, coerce val to match
+            if func_return_type == variant_ty:
+                if hasattr(val, 'type') and isinstance(val.type, ir.PointerType) and val.type.pointee == variant_ty:
+                    # val is a variant pointer — load it
+                    val = self.builder.load(val)
+                elif hasattr(val, 'type') and val.type != variant_ty:
+                    # val is a non-variant (e.g. i32, double) — wrap in variant
+                    temp_ptr = self.builder.alloca(variant_ty, name="ret_variant_tmp")
+                    from .base_types import get_type_tag_for_value
+                    type_tag = get_type_tag_for_value(val, None)
+                    self._store_variant_value(temp_ptr, val, type_tag)
+                    val = self.builder.load(temp_ptr)
+            elif hasattr(val, 'type') and isinstance(val.type, ir.PointerType) and val.type.pointee == func_return_type:
+                # val is a pointer to the expected type — load it
+                val = self.builder.load(val)
+
             self.builder.ret(val)
         else:
             self.builder.ret_void()

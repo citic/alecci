@@ -1,0 +1,9 @@
+# Uses two separate barriers (can_enter_device and can_exit_device) instead of
+# the same barrier twice. Both barriers are barrier(3), so the 2H+1O group must
+# rendezvous at each barrier. Semantically equivalent to 0001 and correct.
+source: 0006.ale
+expected_issues:
+  - none
+stdin_file: input.txt
+timeout: 10
+max_runs: 5

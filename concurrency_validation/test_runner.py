@@ -21,6 +21,22 @@ from typing import Dict, List, Tuple, Optional
 from tsan_parser import parse_tsan_output, get_detected_issue_list, format_issues_for_csv
 
 
+def parse_alecci_warnings(compile_output: str) -> Dict:
+    """
+    Parse static warnings emitted by the alecci compiler itself.
+
+    Currently detects:
+      - deadlock : "deadlock warning: semaphore '...' ... never signalled"
+
+    Returns a dict with boolean flags mirroring the tsan_result structure
+    so it can be merged with TSan output easily.
+    """
+    import re
+    return {
+        'deadlock': bool(re.search(r'deadlock warning:', compile_output)),
+    }
+
+
 class TestCase:
     """Represents a single concurrency test case"""
     
@@ -301,7 +317,10 @@ def run_single_test(test_case: TestCase, bin_dir: Path, verbose: bool = False) -
     # Step 1: Compile
     compile_success, compile_output = compile_test(test_case, bin_dir, verbose)
     result.compile_success = compile_success
-    
+
+    # Parse static warnings from compiler output regardless of compile success
+    static_result = parse_alecci_warnings(compile_output)
+
     if not compile_success:
         result.status = "COMPILE_FAIL"
         result.notes = "Compilation failed"
@@ -354,8 +373,13 @@ def run_single_test(test_case: TestCase, bin_dir: Path, verbose: bool = False) -
                 if line.strip():
                     print(f"    {line}")
     
-    # Step 3: Parse TSan output
+    # Step 3: Parse TSan output and merge with static compiler warnings
     tsan_result = parse_tsan_output(final_output)
+
+    # Merge static detections into tsan_result
+    if static_result['deadlock']:
+        tsan_result['deadlock'] = True
+
     result.detected_issues = get_detected_issue_list(tsan_result)
     result.tsan_details = format_issues_for_csv(tsan_result['issues'])
     

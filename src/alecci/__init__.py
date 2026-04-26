@@ -23,6 +23,8 @@ def main():
     parser_arg.add_argument('--use-asan', action='store_true', help='Use AddressSanitizer instead of ThreadSanitizer')
     parser_arg.add_argument('--debug', action='store_true', help='Enable debug output')
     parser_arg.add_argument('-o', '--output', help='Name of the output executable')
+    parser_arg.add_argument('--no-deadlock-check', action='store_true',
+                            help='Disable static semaphore deadlock analysis')
     args = parser_arg.parse_args()
 
     # Validate arguments
@@ -43,11 +45,16 @@ def main():
     ast = parser.toAst(data)
     if args.print_ast:
         parser.pretty_print_ast(ast)
-    
+
+    # Static deadlock analysis (runs before IR generation, non-fatal)
+    if not args.no_deadlock_check:
+        from .compiling.deadlock_analyzer import analyze as deadlock_analyze
+        deadlock_analyze(ast, globals.filename)
+
     # Set debug mode if requested
     if args.debug:
         compiler.set_debug(True)
-    
+
     # Generate LLVM IR code
     # Pass performance_mode flag (enabled by default, disabled if --no-tsan)
     performance_mode_enabled = not args.no_tsan and not args.use_asan
@@ -56,25 +63,35 @@ def main():
         source_filename=globals.filename
     ).compile(ast)
     
-    # Write the compiled IR code to a temporary .ll file
-    output_ir_file = globals.filename.rsplit('.', 1)[0] + '.ll'
+    import os
+    import tempfile
+
     if args.output:
         executable = args.output
     else:
         # Extract just the filename without path and extension for the executable
-        import os
         base_filename = os.path.basename(globals.filename).rsplit('.', 1)[0]
         executable = base_filename
-    
-    with open(output_ir_file, 'w') as f:
-        f.write(compiled_ir)
+
+    if args.debug:
+        # Write .ll file next to the source file for inspection
+        output_ir_file = globals.filename.rsplit('.', 1)[0] + '.ll'
+        with open(output_ir_file, 'w') as f:
+            f.write(compiled_ir)
+        ir_file_path = output_ir_file
+        tmp_ir = None
+    else:
+        # Use a temporary file that is deleted after compilation
+        tmp_ir = tempfile.NamedTemporaryFile(suffix='.ll', mode='w', delete=False)
+        tmp_ir.write(compiled_ir)
+        tmp_ir.close()
+        ir_file_path = tmp_ir.name
     
     # Call clang to compile the LLVM IR code into an executable
-    clang_cmd = ['clang', output_ir_file, '-o', executable]
+    clang_cmd = ['clang', ir_file_path, '-o', executable]
     
     # Detect if we're in WSL
     import platform
-    import os
     is_wsl = False
     try:
         # Check for WSL in /proc/version or environment
@@ -155,13 +172,16 @@ def main():
             print("Compilation failed:")
             print(result.stderr)
     except FileNotFoundError:
-        print(f"LLVM IR generated successfully: {output_ir_file}")
+        print(f"LLVM IR generated successfully: {ir_file_path}")
         print("Note: Clang not found. To create executable, install Clang and run:")
-        print(f"  clang {output_ir_file} -o {executable}")
+        print(f"  clang {ir_file_path} -o {executable}")
         if args.use_asan:
-            print(f"  (with AddressSanitizer: clang -fsanitize=address {output_ir_file} -o {executable})")
+            print(f"  (with AddressSanitizer: clang -fsanitize=address {ir_file_path} -o {executable})")
         elif not args.no_tsan:
-            print(f"  (with thread sanitizer: clang -fsanitize=thread {output_ir_file} -o {executable})")
+            print(f"  (with thread sanitizer: clang -fsanitize=thread {ir_file_path} -o {executable})")
+    finally:
+        if tmp_ir is not None:
+            os.unlink(ir_file_path)
 
 
 

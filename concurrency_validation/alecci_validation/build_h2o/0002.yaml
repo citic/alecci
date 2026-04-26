@@ -1,0 +1,8 @@
+# Different main loop structure: uses 'while true + scan + if/else' instead of
+# 'while read atom + case'. Also uses 'shared mutable', 'mutable atom as char',
+# compares atom to integer literals (not chars), and has a dangling 'end if'.
+source: 0002.ale
+expected_issues:
+  - none
+timeout: 10
+max_runs: 1
