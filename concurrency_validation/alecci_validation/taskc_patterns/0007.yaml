@@ -1,0 +1,6 @@
+# Single barrier ensures Statement A completes before Statement B
+source: 0007.ale
+expected_issues:
+  - none
+timeout: 10
+max_runs: 20

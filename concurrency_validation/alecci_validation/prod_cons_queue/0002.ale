@@ -1,0 +1,60 @@
+// Correct: sentinel value (-1) used as stop signal for consumers
+// Producers signal can_consume; main enqueues one sentinel per consumer after producers finish
+procedure main(argc, argv)
+  shared mutable unit_count := 8
+  shared mutable next_unit := 0
+  shared mutable consumer_count := 2
+  shared mutable q as queue := queue(64)
+  shared mutable can_access_queue as mutex := mutex()
+  shared mutable can_access_next as mutex := mutex()
+  shared mutable can_consume as semaphore := semaphore(0)
+  mutable producers as thread_array := create_threads(2, produce)
+  mutable consumers as thread_array := create_threads(2, consume)
+  join_threads(producers)
+  // Enqueue one sentinel per consumer so each consumer exits
+  for i := 0 to 2 do
+    lock(can_access_queue)
+    enqueue(q, -1)
+    unlock(can_access_queue)
+    signal(can_consume)
+  end for
+  join_threads(consumers)
+end procedure
+
+procedure produce(thread_number as int)
+  mutable running := 1
+  while running = 1 do
+    mutable my_unit := 0
+    lock(can_access_next)
+    if next_unit < unit_count then
+      next_unit := next_unit + 1
+      my_unit := next_unit
+      unlock(can_access_next)
+      sleep(rand() % 30)
+      lock(can_access_queue)
+      enqueue(q, my_unit)
+      unlock(can_access_queue)
+      print("Produced")
+      signal(can_consume)
+    else
+      unlock(can_access_next)
+      running := 0
+    end if
+  end while
+end procedure
+
+procedure consume(thread_number as int)
+  mutable running := 1
+  while running = 1 do
+    wait(can_consume)
+    lock(can_access_queue)
+    mutable item := dequeue(q)
+    unlock(can_access_queue)
+    if item = -1 then
+      running := 0
+    else
+      sleep(rand() % 20)
+      print("Consumed")
+    end if
+  end while
+end procedure

@@ -1,0 +1,50 @@
+// Bounded producer-consumer with random delays: two semaphores bound capacity, mutex protects queue
+// can_produce tracks available slots; can_consume tracks available items
+procedure main(argc, argv)
+  shared mutable buffer_capacity := 4
+  shared mutable rounds := 2
+  shared mutable count := 0
+  shared mutable q as queue := queue(4)
+  shared mutable can_access_queue as mutex := mutex()
+  shared mutable can_produce as semaphore := semaphore(4)
+  shared mutable can_consume as semaphore := semaphore(0)
+  create_threads(1, produce)
+  create_threads(1, consume)
+end procedure
+
+procedure produce(thread_number as int)
+  mutable round := 0
+  while round < rounds do
+    mutable index := 0
+    while index < buffer_capacity do
+      wait(can_produce)
+      sleep(rand() % 50)
+      count := count + 1
+      lock(can_access_queue)
+      enqueue(q, count)
+      unlock(can_access_queue)
+      print("Produced")
+      signal(can_consume)
+      index := index + 1
+    end while
+    round := round + 1
+  end while
+end procedure
+
+procedure consume(thread_number as int)
+  mutable round := 0
+  while round < rounds do
+    mutable index := 0
+    while index < buffer_capacity do
+      wait(can_consume)
+      sleep(rand() % 40)
+      lock(can_access_queue)
+      mutable item := dequeue(q)
+      unlock(can_access_queue)
+      print("Consumed")
+      signal(can_produce)
+      index := index + 1
+    end while
+    round := round + 1
+  end while
+end procedure

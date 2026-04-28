@@ -1,0 +1,32 @@
+// Double barrier loop: threads alternate between A and B in sync across multiple rounds
+procedure main(argc, argv)
+  shared mutable thread_count := 4
+  shared mutable count := 0
+  shared mutable can_access_count as semaphore := semaphore(1)
+  shared mutable barrier_sem as semaphore := semaphore(0)
+  shared mutable barrier2_sem as semaphore := semaphore(0)
+  create_threads(thread_count, secondary)
+end procedure
+
+procedure secondary(thread_number as int)
+  for i := 0 to 3 do
+    print("Statement A")
+    wait(can_access_count)
+    count := count + 1
+    if count = thread_count then
+      count := 0
+      signal(barrier_sem, thread_count)
+    end if
+    signal(can_access_count)
+    wait(barrier_sem)
+    print("Statement B")
+    wait(can_access_count)
+    count := count + 1
+    if count = thread_count then
+      count := 0
+      signal(barrier2_sem, thread_count)
+    end if
+    signal(can_access_count)
+    wait(barrier2_sem)
+  end for
+end procedure

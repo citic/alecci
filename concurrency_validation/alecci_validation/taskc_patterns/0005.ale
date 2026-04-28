@@ -1,0 +1,19 @@
+// Two-thread mutex: semaphore(1) used as mutex to protect shared counter
+procedure main(argc, argv)
+  shared mutable count := 0
+  shared mutable can_count as semaphore := semaphore(1)
+  create_thread(thread_a)
+  create_thread(thread_b)
+end procedure
+
+procedure thread_a()
+  wait(can_count)
+  count := count + 1
+  signal(can_count)
+end procedure
+
+procedure thread_b()
+  wait(can_count)
+  count := count + 1
+  signal(can_count)
+end procedure

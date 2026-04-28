@@ -1,0 +1,6 @@
+# Asymmetric + quota: deadlock-free
+source: 0002.ale
+expected_issues:
+  - none
+timeout: 10
+max_runs: 5

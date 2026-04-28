@@ -1,0 +1,6 @@
+# Unsynchronized shared variable write: data race
+source: 0004.ale
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

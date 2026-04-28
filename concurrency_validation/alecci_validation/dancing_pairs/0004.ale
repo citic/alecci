@@ -1,0 +1,32 @@
+// Barrier(4) + dual semaphores(2) + room multiplex
+procedure main(argc, argv)
+  shared mutable can_male as semaphore := semaphore(2)
+  shared mutable can_fem as semaphore := semaphore(2)
+  shared mutable room_barrier as barrier := barrier(4)
+  shared mutable multiplex as semaphore := semaphore(16)
+  mutable genre as char
+  while scan `{genre}` do
+    case genre of
+      'M': create_thread(male)
+      'W': create_thread(female)
+    end case
+  end while
+end procedure
+
+procedure male()
+  wait(can_male)
+  wait(multiplex)
+  barrier_wait(room_barrier)
+  signal(can_male)
+  print("male dancing")
+  signal(multiplex)
+end procedure
+
+procedure female()
+  wait(can_fem)
+  wait(multiplex)
+  barrier_wait(room_barrier)
+  signal(can_fem)
+  print("female dancing")
+  signal(multiplex)
+end procedure

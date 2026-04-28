@@ -1,0 +1,6 @@
+# Race condition: queue accessed without mutex — data race on queue's head/tail/count fields
+source: 0003.ale
+expected_issues:
+  - data_race
+timeout: 15
+max_runs: 5

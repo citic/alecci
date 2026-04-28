@@ -1,0 +1,18 @@
+// Three independent parallel threads with no shared state
+procedure main(argc, argv)
+  create_thread(thread_a)
+  create_thread(thread_b)
+  create_thread(thread_c)
+end procedure
+
+procedure thread_a()
+  print("a1")
+end procedure
+
+procedure thread_b()
+  print("b1")
+end procedure
+
+procedure thread_c()
+  print("c1")
+end procedure

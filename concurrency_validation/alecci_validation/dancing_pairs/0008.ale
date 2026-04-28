@@ -1,0 +1,18 @@
+// No synchronization: threads may race (no shared data, no race in this case)
+procedure main(argc, argv)
+  mutable genre as char
+  while scan `{genre}` do
+    case genre of
+      'M': create_thread(male)
+      'W': create_thread(female)
+    end case
+  end while
+end procedure
+
+procedure male()
+  print("male dancing")
+end procedure
+
+procedure female()
+  print("female dancing")
+end procedure

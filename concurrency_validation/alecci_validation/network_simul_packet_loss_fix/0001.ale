@@ -1,0 +1,30 @@
+// Network simulation: producers generate packets, consumers process them
+// Uses mutex-protected counter to model queue; semaphore signals available packets
+procedure main(argc, argv)
+  shared mutable can_access_count as mutex := mutex()
+  shared mutable packet_count := 0
+  shared mutable can_consume as semaphore := semaphore(0)
+  create_threads(2, produce)
+  create_threads(2, consume)
+end procedure
+
+procedure produce(thread_number as int)
+  for i := 0 to 5 do
+    sleep(rand() % 20)
+    lock(can_access_count)
+    packet_count := packet_count + 1
+    unlock(can_access_count)
+    signal(can_consume)
+  end for
+end procedure
+
+procedure consume(thread_number as int)
+  for i := 0 to 5 do
+    wait(can_consume)
+    lock(can_access_count)
+    packet_count := packet_count - 1
+    unlock(can_access_count)
+    sleep(rand() % 10)
+    print("Packet consumed")
+  end for
+end procedure

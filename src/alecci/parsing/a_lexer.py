@@ -23,8 +23,8 @@ reserved = {
     # Input/output
     'scan' : 'SCAN',
     'print' : 'PRINT',
-    # # Function-like operators
-    # 'mod' : 'MOD_FUNCTION',
+    # Function-like operators (mod is an alias for the % operator)
+    'mod' : 'MOD',
     # 'log' : 'LOG',
     # 'sqrt' : 'SQRT',
     # Flow control
@@ -46,6 +46,7 @@ reserved = {
     'semaphore' : 'SEMAPHORE',
     'mutex' : 'MUTEX',
     'barrier' : 'BARRIER',
+    'queue' : 'QUEUE',
     # Dynamic typing
     'variant' : 'VARIANT',
     # Boolean literals
@@ -71,7 +72,6 @@ tokens = [
     'DIVIDE',
     'INT_DIVIDE',
     'EXPONENT',
-    'MOD',
     'EQUALS',
     'NEQUALS',
     'LESS',

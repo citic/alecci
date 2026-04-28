@@ -1,0 +1,32 @@
+// 5 philosophers: 4 right-handed + 1 left-handed (asymmetric by philosopher role)
+procedure main(argc, argv)
+  shared mutable chopsticks as array := array(5, semaphore(1))
+  mutable right_threads as thread_array := create_threads(4, philosopher_right)
+  mutable left_threads as thread_array := create_threads(1, philosopher_left)
+  join_threads(right_threads)
+  join_threads(left_threads)
+end procedure
+
+// Right-handed: picks left chopstick first
+procedure philosopher_right(thread_number as int)
+  for i := 0 to 3 do
+    print("thinking (right)")
+    wait(chopsticks[(thread_number + 1) % 5])
+    wait(chopsticks[thread_number])
+    print("eating (right)")
+    signal(chopsticks[(thread_number + 1) % 5])
+    signal(chopsticks[thread_number])
+  end for
+end procedure
+
+// Left-handed: picks right chopstick first
+procedure philosopher_left(thread_number as int)
+  for i := 0 to 3 do
+    print("thinking (left)")
+    wait(chopsticks[thread_number])
+    wait(chopsticks[(thread_number + 1) % 5])
+    print("eating (left)")
+    signal(chopsticks[thread_number])
+    signal(chopsticks[(thread_number + 1) % 5])
+  end for
+end procedure

@@ -1,0 +1,27 @@
+// Mutex + barrier(2) for synchronized pair dance
+procedure main(argc, argv)
+  shared mutable male_entered as mutex := mutex()
+  shared mutable female_entered as mutex := mutex()
+  shared mutable can_dance as barrier := barrier(2)
+  mutable genre as char
+  while scan `{genre}` do
+    case genre of
+      'M': create_thread(male)
+      'W': create_thread(female)
+    end case
+  end while
+end procedure
+
+procedure male()
+  lock(male_entered)
+  barrier_wait(can_dance)
+  unlock(male_entered)
+  print("male dancing")
+end procedure
+
+procedure female()
+  lock(female_entered)
+  barrier_wait(can_dance)
+  unlock(female_entered)
+  print("female dancing")
+end procedure

@@ -1,0 +1,25 @@
+// Asymmetric dining philosophers with quota (max 4 at table simultaneously)
+procedure main(argc, argv)
+  shared mutable chopsticks as array := array(5, semaphore(1))
+  shared mutable quota as semaphore := semaphore(4)
+  mutable threads as thread_array := create_threads(5, philosopher)
+  join_threads(threads)
+end procedure
+
+procedure philosopher(thread_number as int)
+  for i := 0 to 3 do
+    print("thinking")
+    wait(quota)
+    if thread_number % 2 = 0 then
+      wait(chopsticks[(thread_number + 1) % 5])
+      wait(chopsticks[thread_number])
+    else
+      wait(chopsticks[thread_number])
+      wait(chopsticks[(thread_number + 1) % 5])
+    end if
+    print("eating")
+    signal(chopsticks[(thread_number + 1) % 5])
+    signal(chopsticks[thread_number])
+    signal(quota)
+  end for
+end procedure

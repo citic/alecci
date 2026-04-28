@@ -1,0 +1,6 @@
+# Barrier + mutex semaphore: correct pair synchronization
+source: 0002.ale
+expected_issues:
+  - none
+timeout: 10
+max_runs: 1

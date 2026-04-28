@@ -9,6 +9,7 @@ procedure main()
   test_division()
   test_int_division()
   test_modulo()
+  test_mod_keyword()
   test_exponent()
   
   print `=== COMPARISON OPERATORS TEST ===`
@@ -415,4 +416,20 @@ procedure test_variants()
   mutable vbor := bits1 | bits2
   print `  variant: 12 & 10 = {vband}`
   print `  variant: 12 | 10 = {vbor}`
+end procedure
+
+procedure test_mod_keyword()
+  print `Testing mod keyword (mod)`
+
+  const a = 20
+  const b = 3
+  const mod1 = a mod b
+  print `  20 mod 3 = {mod1}`
+
+  const mod2 = 17 mod 5
+  print `  17 mod 5 = {mod2}`
+
+  // No remainder
+  const mod3 = 20 mod 4
+  print `  20 mod 4 = {mod3}`
 end procedure

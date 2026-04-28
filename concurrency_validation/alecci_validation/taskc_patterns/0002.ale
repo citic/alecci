@@ -1,0 +1,24 @@
+// Three-thread chain: a1 -> b1 -> c1 enforced by semaphores
+procedure main(argc, argv)
+  shared mutable a1_ready as semaphore := semaphore(0)
+  shared mutable b1_ready as semaphore := semaphore(0)
+  create_thread(thread_a)
+  create_thread(thread_b)
+  create_thread(thread_c)
+end procedure
+
+procedure thread_a()
+  print("a1")
+  signal(a1_ready)
+end procedure
+
+procedure thread_b()
+  wait(a1_ready)
+  print("b1")
+  signal(b1_ready)
+end procedure
+
+procedure thread_c()
+  wait(b1_ready)
+  print("c1")
+end procedure

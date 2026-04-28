@@ -1,0 +1,6 @@
+# Mutex + barrier: correct synchronization
+source: 0005.ale
+expected_issues:
+  - none
+timeout: 10
+max_runs: 1

@@ -7,10 +7,12 @@ parses ThreadSanitizer output, and generates CSV reports.
 """
 
 import argparse
+import concurrent.futures
 import csv
 import os
 import subprocess
 import sys
+import threading
 import time
 import yaml
 from datetime import datetime
@@ -19,6 +21,12 @@ from typing import Dict, List, Tuple, Optional
 
 # Import the TSan parser from the same directory
 from tsan_parser import parse_tsan_output, get_detected_issue_list, format_issues_for_csv
+
+
+class _NullContext:
+    """No-op context manager used when no semaphore is provided."""
+    def __enter__(self): return self
+    def __exit__(self, *_): pass
 
 
 def parse_alecci_warnings(compile_output: str) -> Dict:
@@ -73,6 +81,11 @@ class TestCase:
         else:
             self.stdin_path = None
     
+    @property
+    def exe_name(self) -> str:
+        """Unique executable name based on parent folder + stem (avoids collisions)."""
+        return f"{self.yaml_path.parent.name}_{self.yaml_path.stem}"
+
     def __repr__(self):
         return f"TestCase({self.name}, source={self.source_path.name})"
 
@@ -134,20 +147,26 @@ def discover_test_cases(test_dir: Path) -> List[TestCase]:
     return test_cases
 
 
-def compile_test(test_case: TestCase, bin_dir: Path, verbose: bool = False) -> Tuple[bool, str]:
+def compile_test(
+    test_case: TestCase,
+    bin_dir: Path,
+    verbose: bool = False,
+    semaphore: Optional[threading.Semaphore] = None,
+) -> Tuple[bool, str]:
     """
     Compile an Alecci source file.
-    
+
     Args:
         test_case: TestCase to compile
         bin_dir: Directory for output executable
         verbose: Print compilation output
-        
+        semaphore: Optional semaphore to limit concurrent compilations
+
     Returns:
         Tuple of (success: bool, output: str)
     """
-    exe_path = bin_dir / test_case.name
-    
+    exe_path = bin_dir / test_case.exe_name
+
     # Build compilation command
     # Use python3 -m alecci to compile with TSan enabled by default
     cmd = [
@@ -161,14 +180,16 @@ def compile_test(test_case: TestCase, bin_dir: Path, verbose: bool = False) -> T
     
     if verbose:
         print(f"  Compiling: {' '.join(cmd)}")
-    
+
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30  # Compilation timeout
-        )
+        ctx = semaphore if semaphore is not None else _NullContext()
+        with ctx:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30  # Compilation timeout
+            )
         
         output = result.stdout + result.stderr
         
@@ -295,27 +316,35 @@ def validate_results(
     return status, "; ".join(notes), missed, unexpected
 
 
-def run_single_test(test_case: TestCase, bin_dir: Path, verbose: bool = False) -> TestResult:
+def run_single_test(
+    test_case: TestCase,
+    bin_dir: Path,
+    verbose: bool = False,
+    compile_semaphore: Optional[threading.Semaphore] = None,
+) -> TestResult:
     """
     Run a complete test: compile, execute, parse, validate.
-    
+
     Args:
         test_case: TestCase to run
         bin_dir: Directory for compiled executables
         verbose: Print detailed progress
-        
+        compile_semaphore: Semaphore limiting concurrent compilations
+
     Returns:
         TestResult object
     """
     result = TestResult(test_case)
-    
+
     if verbose:
         print(f"\nRunning test: {test_case.name}")
         print(f"  Source: {test_case.source_path}")
         print(f"  Expected issues: {test_case.expected_issues}")
-    
+
     # Step 1: Compile
-    compile_success, compile_output = compile_test(test_case, bin_dir, verbose)
+    compile_success, compile_output = compile_test(
+        test_case, bin_dir, verbose, semaphore=compile_semaphore
+    )
     result.compile_success = compile_success
 
     # Parse static warnings from compiler output regardless of compile success
@@ -333,7 +362,7 @@ def run_single_test(test_case: TestCase, bin_dir: Path, verbose: bool = False) -
         print(f"  ✓ Compilation successful")
     
     # Step 2: Execute (possibly multiple times for race detection)
-    exe_path = bin_dir / test_case.name
+    exe_path = bin_dir / test_case.exe_name
     
     # Determine if we need multiple runs (for non-deterministic race detection)
     max_runs = test_case.max_runs
@@ -504,7 +533,15 @@ def main():
         action='store_true',
         help='Print detailed progress information'
     )
-    
+    parser.add_argument(
+        '--jobs',
+        '-j',
+        type=int,
+        default=os.cpu_count()//2 or 1,
+        metavar='N',
+        help='Number of tests to run in parallel (default: number of CPU cores / 2)'
+    )
+
     args = parser.parse_args()
     
     # Setup paths
@@ -525,12 +562,46 @@ def main():
         sys.exit(1)
     
     print(f"Found {len(test_cases)} test case(s)")
-    
-    # Run all tests
-    results = []
-    for test_case in test_cases:
-        result = run_single_test(test_case, bin_dir, args.verbose)
-        results.append(result)
+    print(f"Running with {args.jobs} parallel job(s)")
+    if args.verbose and args.jobs > 1:
+        print("Note: verbose output may be interleaved when running in parallel")
+
+    # Limit concurrent compilations to avoid resource contention
+    # (PLY + llvmlite + clang are memory-heavy; running too many in parallel
+    # causes failures even though each is an isolated subprocess)
+    _compile_sem = threading.Semaphore(max(1, args.jobs // 2))
+
+    # Run all tests in parallel, but print results in discovery order.
+    # _next_to_print tracks whose turn it is; each thread waits on _print_cv
+    # until all lower-indexed tests have printed, then prints and notifies.
+    _print_cv = threading.Condition()
+    _next_to_print = [0]  # mutable int via list so the closure can update it
+    ordered_results: List[Optional[TestResult]] = [None] * len(test_cases)
+    total = len(test_cases)
+
+    def _run(idx: int, test_case: TestCase) -> None:
+        result = run_single_test(
+            test_case, bin_dir, args.verbose, compile_semaphore=_compile_sem
+        )
+        ordered_results[idx] = result
+        if not args.verbose:
+            label = f"{test_case.yaml_path.parent.name}/{test_case.name}"
+            with _print_cv:
+                # Wait until all earlier tests have printed
+                _print_cv.wait_for(lambda: _next_to_print[0] == idx)
+                print(f"  [{idx + 1}/{total}] {label}... {result.status}")
+                _next_to_print[0] += 1
+                _print_cv.notify_all()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
+        futures = [
+            executor.submit(_run, i, tc)
+            for i, tc in enumerate(test_cases)
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()  # re-raise any exception
+
+    results: List[TestResult] = ordered_results  # type: ignore[assignment]
     
     # Generate output CSV path if not specified
     if args.output_csv:

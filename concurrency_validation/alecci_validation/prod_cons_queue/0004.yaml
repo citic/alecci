@@ -1,0 +1,6 @@
+# Race condition: no semaphore — consumers may dequeue from an empty queue (garbage values)
+source: 0004.ale
+expected_issues:
+  - data_race
+timeout: 15
+max_runs: 5

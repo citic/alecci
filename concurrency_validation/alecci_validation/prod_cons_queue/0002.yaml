@@ -1,0 +1,6 @@
+# Correct: sentinel value (-1) used as stop signal for consumers after producers finish
+source: 0002.ale
+expected_issues:
+  - none
+timeout: 15
+max_runs: 5

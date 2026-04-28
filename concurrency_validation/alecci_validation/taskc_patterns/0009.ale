@@ -1,0 +1,12 @@
+// Bounded concurrency: at most room_capacity threads skate at once
+procedure main(argc, argv)
+  shared mutable skater_count := 10
+  shared mutable can_skate as semaphore := semaphore(3)
+  create_threads(skater_count, skater)
+end procedure
+
+procedure skater(thread_number as int)
+  wait(can_skate)
+  print("skating")
+  signal(can_skate)
+end procedure

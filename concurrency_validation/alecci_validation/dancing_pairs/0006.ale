@@ -1,0 +1,32 @@
+// Quartet pattern: semaphore(4) turnstile + sex-specific mutex + room multiplex
+procedure main(argc, argv)
+  shared mutable dancers_barrier as semaphore := semaphore(4)
+  shared mutable male_mutex as semaphore := semaphore(2)
+  shared mutable female_mutex as semaphore := semaphore(2)
+  shared mutable room_multiplex as semaphore := semaphore(8)
+  mutable genre as char
+  while scan `{genre}` do
+    case genre of
+      'M': create_thread(male)
+      'W': create_thread(female)
+    end case
+  end while
+end procedure
+
+procedure male()
+  wait(male_mutex)
+  wait(dancers_barrier)
+  wait(room_multiplex)
+  signal(male_mutex)
+  print("male dancing")
+  signal(room_multiplex)
+end procedure
+
+procedure female()
+  wait(female_mutex)
+  wait(dancers_barrier)
+  wait(room_multiplex)
+  signal(female_mutex)
+  print("female dancing")
+  signal(room_multiplex)
+end procedure

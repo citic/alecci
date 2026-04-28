@@ -1,0 +1,29 @@
+// Bounded network buffer: semaphore(capacity) limits production rate
+// Single producer and consumer using semaphores for flow control
+procedure main(argc, argv)
+  shared mutable buffer_capacity := 8
+  shared mutable can_produce as semaphore := semaphore(8)
+  shared mutable can_consume as semaphore := semaphore(0)
+  shared mutable packet_index := 0
+  create_thread(produce)
+  create_thread(consume)
+end procedure
+
+procedure produce()
+  for i := 0 to 20 do
+    wait(can_produce)
+    sleep(rand() % 15)
+    packet_index := packet_index + 1
+    print("Packet produced")
+    signal(can_consume)
+  end for
+end procedure
+
+procedure consume()
+  for i := 0 to 20 do
+    wait(can_consume)
+    sleep(rand() % 10)
+    print("Packet consumed")
+    signal(can_produce)
+  end for
+end procedure

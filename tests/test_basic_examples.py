@@ -126,6 +126,28 @@ EXAMPLES = {
             "Case test completed successfully",
         ],
     },
+    "for_loop": {
+        "file": "for_loop.ale",
+        "expect": [
+            "For loop test start",
+            "sum 0..4 = 10",
+            "count 1..10 = 10",
+            "3x3 iterations = 9",
+            "For loop test end",
+        ],
+    },
+    "queue": {
+        "file": "queue.ale",
+        "expect": [
+            "Queue test start",
+            "size after 3 enqueues = 3",
+            "dequeued: 10, 20, 30",
+            "size after 3 dequeues = 0",
+            "size after filling to capacity = 5",
+            "sum of 1..5 = 15",
+            "Queue test end",
+        ],
+    },
     "operators": {
         "file": "operators.ale",
         "expect": [
@@ -140,6 +162,9 @@ EXAMPLES = {
             "20 % 3 = 2",
             "2 ^ 3 = 8",
             "2.0 ^ 3 = 8",
+            "20 mod 3 = 2",
+            "17 mod 5 = 2",
+            "20 mod 4 = 0",
             "COMPARISON OPERATORS TEST",
             "5 = 5 is 1",
             "5 != 6 is 1",
@@ -278,6 +303,16 @@ def test_example_float(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_ex
 def test_example_operators(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
     out = _compile_and_run("operators", EXAMPLES["operators"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] operators")
+
+
+def test_example_for_loop(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    out = _compile_and_run("for_loop", EXAMPLES["for_loop"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] for_loop")
+
+
+def test_example_queue(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    out = _compile_and_run("queue", EXAMPLES["queue"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] queue")
 
 
 def test_example_case(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):

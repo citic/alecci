@@ -1,0 +1,45 @@
+// Queue basic test: single-threaded FIFO verification
+// Queues are NOT thread-safe by default. Users must add their own
+// mutex/semaphore protection when sharing a queue between threads.
+
+procedure main()
+  print `Queue test start`
+
+  // Create a queue with capacity 5
+  mutable q as queue := queue(5)
+
+  // Enqueue some values
+  enqueue(q, 10)
+  enqueue(q, 20)
+  enqueue(q, 30)
+
+  // Check size
+  const sz1 = queue_size(q)
+  print `  size after 3 enqueues = {sz1}`
+
+  // Dequeue in FIFO order
+  mutable a := dequeue(q)
+  mutable b := dequeue(q)
+  mutable c := dequeue(q)
+  print `  dequeued: {a}, {b}, {c}`
+
+  // Queue should be empty now
+  const sz2 = queue_size(q)
+  print `  size after 3 dequeues = {sz2}`
+
+  // Fill queue to capacity then drain
+  for i := 1 to 6 do
+    enqueue(q, i)
+  end for
+  const sz3 = queue_size(q)
+  print `  size after filling to capacity = {sz3}`
+
+  mutable sum := 0
+  for i := 0 to 5 do
+    mutable v := dequeue(q)
+    sum := sum + v
+  end for
+  print `  sum of 1..5 = {sum}`
+
+  print `Queue test end`
+end procedure

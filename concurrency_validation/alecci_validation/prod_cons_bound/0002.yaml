@@ -1,0 +1,6 @@
+# Bounded producer-consumer with random delays
+source: 0002.ale
+expected_issues:
+  - none
+timeout: 15
+max_runs: 5

@@ -1,0 +1,6 @@
+# Barrier + mutex + room multiplex: correct synchronization
+source: 0003.ale
+expected_issues:
+  - none
+timeout: 10
+max_runs: 1

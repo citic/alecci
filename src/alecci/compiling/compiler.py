@@ -57,7 +57,7 @@ class CodeGenerator:
         ptr, dtype, is_constant = self.globals[name]
         # Shared mutable variables are globals that are not constant
         # Exclude sync primitives (mutex, semaphore, barrier) as they have their own synchronization
-        return not is_constant and dtype not in ['mutex', 'semaphore', 'barrier', 'thread', 'thread_array']
+        return not is_constant and dtype not in ['mutex', 'semaphore', 'barrier', 'queue', 'thread', 'thread_array']
 
     def insert_yield(self):
         """Insert a sched_yield() call to force thread interleaving for race detection."""
@@ -631,6 +631,9 @@ class CodeGenerator:
             var_type = 'barrier'
             # Barriers take a participant count, handled at initialization time
             # Keep value as-is for now
+        elif var_type is None and isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'queue':
+            var_type = 'queue'
+            # Queue takes a capacity argument, handled at initialization time
         elif var_type is None and isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'variant':
             var_type = 'variant'
             # Variants can be created with variant() function call
@@ -685,6 +688,29 @@ class CodeGenerator:
             variable.initializer = ir.Constant(barrier_storage_ty, [ir.Constant(ir.IntType(8), 0)] * 128)
             self.globals[name] = (variable, 'barrier', False)  # Barriers are mutable
             debug_print(f"DEBUG: Created global barrier storage variable '{name}_storage'")
+            return
+
+        if var_type == 'queue':
+            # Handle shared queue declarations: allocate global storage for (4 + capacity) * 4 bytes
+            # Queue layout: [capacity, count, head, tail, buffer[0..capacity-1]] as i32 array
+            # Capacity is extracted from the queue(capacity) call
+            debug_print(f"DEBUG: Declaring shared queue '{name}' (process_shared_declaration)")
+            queue_capacity = 10  # Default
+            if isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'queue':
+                qargs = value.get('arguments', [])
+                if qargs and qargs[0].get('type') == 'literal':
+                    queue_capacity = int(qargs[0]['value'])
+            total_words = 4 + queue_capacity  # header (4 i32s) + buffer
+            queue_storage_ty = ir.ArrayType(ir.IntType(32), total_words)
+            variable = ir.GlobalVariable(self.module, queue_storage_ty, name=f"{name}_storage")
+            variable.linkage = 'internal'
+            init_vals = [ir.Constant(ir.IntType(32), 0)] * total_words
+            init_vals[0] = ir.Constant(ir.IntType(32), queue_capacity)  # capacity
+            variable.initializer = ir.Constant(queue_storage_ty, init_vals)
+            # Store raw pointer; initialization (writing capacity, zeroing count/head/tail) happens in visit_declaration
+            queue_ptr = variable.gep([ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+            self.globals[name] = (variable, 'queue', False)  # Queues are mutable
+            debug_print(f"DEBUG: Created global queue storage '{name}_storage' with capacity {queue_capacity}")
             return
 
         if var_type == 'variant':
@@ -834,6 +860,9 @@ class CodeGenerator:
                     evaluated_value = args[0]['value']
                 else:
                     evaluated_value = 1  # Default barrier count
+            elif func_name == 'queue':
+                var_type = 'queue'
+                evaluated_value = None  # Handled inside the queue block using init_value_expr directly
             else:
                 # Regular function call - evaluate it
                 evaluated_value = self.visit(init_value_expr)
@@ -875,6 +904,9 @@ class CodeGenerator:
                 var_type = 'barrier'
                 args = init_value_expr.get('arguments', [])
                 raw_value = args[0]['value'] if args and args[0].get('type') == 'literal' else None
+            elif fname == 'queue':
+                var_type = 'queue'
+                raw_value = None  # Capacity is read directly from the function call args later
             elif fname == 'variant':
                 var_type = 'variant'
                 # Variants can be initialized with any value
@@ -998,6 +1030,46 @@ class CodeGenerator:
                 self.builder.call(barrier_init, [barrier_ptr, null_attr, barrier_count])
                 # Track local barrier for cleanup
                 self.local_barriers.append((name, barrier_ptr))
+                return
+
+        if var_type == 'queue':
+            # Queue layout in i32 array: [capacity, count, head, tail, buf[0], ..., buf[capacity-1]]
+            # Extract capacity from queue(capacity) call
+            queue_capacity = 10  # Default
+            if isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call' and init_value_expr.get('name') == 'queue':
+                qargs = init_value_expr.get('arguments', [])
+                if qargs:
+                    cap_node = qargs[0]
+                    if isinstance(cap_node, dict) and cap_node.get('type') == 'literal':
+                        queue_capacity = int(cap_node['value'])
+            total_words = 4 + queue_capacity
+            if shared:
+                # The global storage was pre-allocated in process_shared_declaration.
+                # In main, write the initial values (capacity already set by global initializer,
+                # but count/head/tail are already zero-initialized, so nothing more to do).
+                # Store the global array variable so callers can GEP into it.
+                queue_storage, _, _ = self.globals[name]
+                queue_i32_ptr = self.builder.bitcast(queue_storage, ir.IntType(32).as_pointer())
+                self.globals[name] = (queue_i32_ptr, 'queue', False)
+                debug_print(f"DEBUG: Shared queue '{name}' ready with capacity {queue_capacity}")
+                return
+            else:
+                # Local queue: allocate on stack as [total_words x i32]
+                queue_storage_ty = ir.ArrayType(ir.IntType(32), total_words)
+                storage = self.builder.alloca(queue_storage_ty, name=f"{name}_storage")
+                # Get i32* pointer to first element
+                zero = ir.Constant(ir.IntType(32), 0)
+                queue_ptr = self.builder.gep(storage, [zero, zero])
+                # Write header: capacity, count=0, head=0, tail=0
+                self.builder.store(ir.Constant(ir.IntType(32), queue_capacity), queue_ptr)
+                count_ptr = self.builder.gep(storage, [zero, ir.Constant(ir.IntType(32), 1)])
+                self.builder.store(ir.Constant(ir.IntType(32), 0), count_ptr)
+                head_ptr = self.builder.gep(storage, [zero, ir.Constant(ir.IntType(32), 2)])
+                self.builder.store(ir.Constant(ir.IntType(32), 0), head_ptr)
+                tail_ptr = self.builder.gep(storage, [zero, ir.Constant(ir.IntType(32), 3)])
+                self.builder.store(ir.Constant(ir.IntType(32), 0), tail_ptr)
+                self.locals[name] = (queue_ptr, 'queue', is_constant)
+                debug_print(f"DEBUG: Local queue '{name}' allocated with capacity {queue_capacity}")
                 return
 
         if var_type == 'variant':
@@ -1488,8 +1560,8 @@ class CodeGenerator:
                 return self.builder.sdiv(left_int, right_int)
             else:
                 return self.builder.sdiv(left, right)
-        elif op == '%':
-            # Modulo (remainder)
+        elif op == '%' or op == 'mod':
+            # Modulo (remainder) — both % and the mod keyword
             if operation_type == 'float':
                 # For floats, use frem
                 return self.builder.frem(left, right)
@@ -2589,6 +2661,7 @@ class CodeGenerator:
             return join_thread(self.builder, self.module, thread_arg)
         elif func_name == 'wait':
             # Semaphore wait operation - maps to sem_wait
+            # Supports wait(sem) and wait(sem, n) — calls sem_wait n times
             arg0 = node['arguments'][0]
             debug_print(f"DEBUG: wait() - arg0: {arg0}")
             # If argument is a string literal, treat it as a variable name
@@ -2612,6 +2685,38 @@ class CodeGenerator:
                 sem_wait_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
                 sem_wait = ir.Function(self.module, sem_wait_ty, name='sem_wait')
             debug_print(f"DEBUG: wait() - about to call sem_wait with: {sem_ptr}")
+
+            if len(node['arguments']) >= 2:
+                # wait(sem, n) — emit a loop calling sem_wait n times
+                count_val = self.visit(node['arguments'][1])
+                from .base_types import get_variant_type
+                variant_ty = get_variant_type()
+                if hasattr(count_val, 'type') and count_val.type == variant_ty:
+                    tmp = self.builder.alloca(variant_ty, name="wait_count_tmp")
+                    self.builder.store(count_val, tmp)
+                    count_val = self._extract_variant_value(tmp, 'int')
+                elif hasattr(count_val, 'type') and isinstance(count_val.type, ir.PointerType) and count_val.type.pointee == variant_ty:
+                    count_val = self._extract_variant_value(count_val, 'int')
+                if hasattr(count_val, 'type') and isinstance(count_val.type, ir.IntType) and count_val.type.width != 32:
+                    count_val = self.builder.zext(count_val, ir.IntType(32))
+                i_ptr = self.builder.alloca(ir.IntType(32), name="wait_i")
+                self.builder.store(ir.Constant(ir.IntType(32), 0), i_ptr)
+                loop_cond = self.builder.append_basic_block("wait_loop_cond")
+                loop_body = self.builder.append_basic_block("wait_loop_body")
+                loop_end  = self.builder.append_basic_block("wait_loop_end")
+                self.builder.branch(loop_cond)
+                self.builder.position_at_end(loop_cond)
+                i_val = self.builder.load(i_ptr)
+                cond = self.builder.icmp_signed('<', i_val, count_val)
+                self.builder.cbranch(cond, loop_body, loop_end)
+                self.builder.position_at_end(loop_body)
+                self.builder.call(sem_wait, [sem_ptr])
+                new_i = self.builder.add(i_val, ir.Constant(ir.IntType(32), 1))
+                self.builder.store(new_i, i_ptr)
+                self.builder.branch(loop_cond)
+                self.builder.position_at_end(loop_end)
+                return ir.Constant(ir.IntType(32), 0)
+
             try:
                 result = self.builder.call(sem_wait, [sem_ptr])
                 debug_print(f"DEBUG: wait() - sem_wait call succeeded")
@@ -2622,6 +2727,7 @@ class CodeGenerator:
                 raise
         elif func_name == 'signal':
             # Semaphore signal operation - maps to sem_post
+            # Supports signal(sem) and signal(sem, n) — calls sem_post n times
             arg0 = node['arguments'][0]
             if isinstance(arg0, dict) and arg0.get('type') == 'literal' and isinstance(arg0.get('value'), str):
                 sem_ptr = self.visit_ID({'type': 'ID', 'value': arg0['value']}, prefer_globals=True)
@@ -2639,6 +2745,39 @@ class CodeGenerator:
             if not sem_post:
                 sem_post_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
                 sem_post = ir.Function(self.module, sem_post_ty, name='sem_post')
+
+            if len(node['arguments']) >= 2:
+                # signal(sem, n) — emit a loop calling sem_post n times
+                count_val = self.visit(node['arguments'][1])
+                from .base_types import get_variant_type
+                variant_ty = get_variant_type()
+                if hasattr(count_val, 'type') and count_val.type == variant_ty:
+                    tmp = self.builder.alloca(variant_ty, name="sig_count_tmp")
+                    self.builder.store(count_val, tmp)
+                    count_val = self._extract_variant_value(tmp, 'int')
+                elif hasattr(count_val, 'type') and isinstance(count_val.type, ir.PointerType) and count_val.type.pointee == variant_ty:
+                    count_val = self._extract_variant_value(count_val, 'int')
+                if hasattr(count_val, 'type') and isinstance(count_val.type, ir.IntType) and count_val.type.width != 32:
+                    count_val = self.builder.zext(count_val, ir.IntType(32))
+                # Build: i = 0; while i < n: sem_post(sem); i++
+                i_ptr = self.builder.alloca(ir.IntType(32), name="sig_i")
+                self.builder.store(ir.Constant(ir.IntType(32), 0), i_ptr)
+                loop_cond = self.builder.append_basic_block("sig_loop_cond")
+                loop_body = self.builder.append_basic_block("sig_loop_body")
+                loop_end  = self.builder.append_basic_block("sig_loop_end")
+                self.builder.branch(loop_cond)
+                self.builder.position_at_end(loop_cond)
+                i_val = self.builder.load(i_ptr)
+                cond = self.builder.icmp_signed('<', i_val, count_val)
+                self.builder.cbranch(cond, loop_body, loop_end)
+                self.builder.position_at_end(loop_body)
+                self.builder.call(sem_post, [sem_ptr])
+                new_i = self.builder.add(i_val, ir.Constant(ir.IntType(32), 1))
+                self.builder.store(new_i, i_ptr)
+                self.builder.branch(loop_cond)
+                self.builder.position_at_end(loop_end)
+                return ir.Constant(ir.IntType(32), 0)
+
             return self.builder.call(sem_post, [sem_ptr])
         elif func_name == 'barrier_wait':
             # Barrier wait operation - maps to pthread_barrier_wait
@@ -3261,7 +3400,93 @@ class CodeGenerator:
                 raise Exception(f"barrier() constructor requires exactly 1 argument (participant count), got {len(node['arguments'])}")
             participant_count = self.visit(node['arguments'][0])
             return participant_count
-        
+        elif func_name == 'queue':
+            # queue(capacity) - return 0 as placeholder; real initialization done in visit_declaration
+            return ir.Constant(ir.IntType(32), 0)
+
+        elif func_name == 'enqueue':
+            # enqueue(q, value) - push value onto back of circular buffer (NOT thread-safe)
+            if len(node['arguments']) != 2:
+                raise Exception(f"enqueue() requires exactly 2 arguments (queue, value), got {len(node['arguments'])}")
+            queue_ptr = self._get_queue_ptr(node['arguments'][0])
+            i32 = ir.IntType(32)
+            zero = ir.Constant(i32, 0)
+            # Load fields
+            cap_ptr  = self.builder.gep(queue_ptr, [zero], inbounds=False)
+            cnt_ptr  = self.builder.gep(queue_ptr, [ir.Constant(i32, 1)], inbounds=False)
+            head_ptr = self.builder.gep(queue_ptr, [ir.Constant(i32, 2)], inbounds=False)
+            capacity = self.builder.load(cap_ptr)
+            head     = self.builder.load(head_ptr)
+            # Write value at buffer[head] = queue_ptr + 4 + head
+            buf_idx  = self.builder.add(ir.Constant(i32, 4), head)
+            slot_ptr = self.builder.gep(queue_ptr, [buf_idx], inbounds=False)
+            val = self.visit(node['arguments'][1])
+            # Coerce val to i32 — handle variant pointers, plain int pointers, wider/narrower ints
+            if isinstance(val.type, ir.PointerType):
+                from .base_types import get_variant_type
+                if val.type.pointee == get_variant_type():
+                    # Variant variable (e.g. `mutable x := 0`) — extract the integer field
+                    val = self._extract_variant_value(val, 'int')
+                else:
+                    # Plain integer pointer — load it
+                    val = self.builder.load(val)
+            if not isinstance(val.type, ir.IntType) or val.type.width != 32:
+                if hasattr(val.type, 'width') and val.type.width > 32:
+                    val = self.builder.trunc(val, i32)
+                else:
+                    val = self.builder.zext(val, i32)
+            self.builder.store(val, slot_ptr)
+            # head = (head + 1) % capacity
+            new_head = self.builder.srem(self.builder.add(head, ir.Constant(i32, 1)), capacity)
+            self.builder.store(new_head, head_ptr)
+            # count += 1
+            cnt = self.builder.load(cnt_ptr)
+            self.builder.store(self.builder.add(cnt, ir.Constant(i32, 1)), cnt_ptr)
+            return ir.Constant(i32, 0)
+
+        elif func_name == 'dequeue':
+            # dequeue(q) - pop value from front of circular buffer (NOT thread-safe)
+            if len(node['arguments']) != 1:
+                raise Exception(f"dequeue() requires exactly 1 argument (queue), got {len(node['arguments'])}")
+            queue_ptr = self._get_queue_ptr(node['arguments'][0])
+            i32 = ir.IntType(32)
+            zero = ir.Constant(i32, 0)
+            # Load fields
+            cap_ptr  = self.builder.gep(queue_ptr, [zero], inbounds=False)
+            cnt_ptr  = self.builder.gep(queue_ptr, [ir.Constant(i32, 1)], inbounds=False)
+            tail_ptr = self.builder.gep(queue_ptr, [ir.Constant(i32, 3)], inbounds=False)
+            capacity = self.builder.load(cap_ptr)
+            tail     = self.builder.load(tail_ptr)
+            # Read value from buffer[tail]
+            buf_idx  = self.builder.add(ir.Constant(i32, 4), tail)
+            slot_ptr = self.builder.gep(queue_ptr, [buf_idx], inbounds=False)
+            val      = self.builder.load(slot_ptr)
+            # tail = (tail + 1) % capacity
+            new_tail = self.builder.srem(self.builder.add(tail, ir.Constant(i32, 1)), capacity)
+            self.builder.store(new_tail, tail_ptr)
+            # count -= 1
+            cnt = self.builder.load(cnt_ptr)
+            self.builder.store(self.builder.sub(cnt, ir.Constant(i32, 1)), cnt_ptr)
+            return val
+
+        elif func_name == 'queue_size':
+            # queue_size(q) - return number of elements currently in the queue
+            if len(node['arguments']) != 1:
+                raise Exception(f"queue_size() requires exactly 1 argument (queue), got {len(node['arguments'])}")
+            queue_ptr = self._get_queue_ptr(node['arguments'][0])
+            i32 = ir.IntType(32)
+            cnt_ptr = self.builder.gep(queue_ptr, [ir.Constant(i32, 1)], inbounds=False)
+            return self.builder.load(cnt_ptr)
+
+        elif func_name == 'queue_capacity':
+            # queue_capacity(q) - return capacity of the queue
+            if len(node['arguments']) != 1:
+                raise Exception(f"queue_capacity() requires exactly 1 argument (queue), got {len(node['arguments'])}")
+            queue_ptr = self._get_queue_ptr(node['arguments'][0])
+            i32 = ir.IntType(32)
+            cap_ptr = self.builder.gep(queue_ptr, [ir.Constant(i32, 0)], inbounds=False)
+            return self.builder.load(cap_ptr)
+
         # Default: regular function call
         debug_print(f"DEBUG: default function call: {func_name} with args {[getattr(a, 'type', 'no-type') for a in node['arguments']]}")
         
@@ -3674,6 +3899,27 @@ class CodeGenerator:
         for i in range(16):
             elem_ptr = self.builder.gep(data_array_ptr, [ir.Constant(ir.IntType(32), i)])
             self.builder.store(ir.Constant(ir.IntType(8), 0), elem_ptr)
+
+    def _get_queue_ptr(self, arg_node) -> ir.Value:
+        """Resolve a queue argument node to an i32* pointer into the queue's storage array."""
+        i32 = ir.IntType(32)
+        if isinstance(arg_node, dict) and arg_node.get('type') == 'ID':
+            var_name = arg_node['value']
+            entry = self.locals.get(var_name) or self.globals.get(var_name)
+            if entry is None:
+                raise Exception(f"Undefined queue variable '{var_name}'")
+            ptr, dtype, _ = entry
+            if dtype != 'queue':
+                raise Exception(f"Variable '{var_name}' is not a queue (got type '{dtype}')")
+            # For shared queues stored as GlobalVariable, bitcast to i32*
+            if isinstance(ptr, ir.GlobalVariable):
+                return self.builder.bitcast(ptr, i32.as_pointer())
+            return ptr
+        # Fall back: evaluate as expression and treat as i32*
+        val = self.visit(arg_node)
+        if isinstance(val, ir.GlobalVariable):
+            return self.builder.bitcast(val, i32.as_pointer())
+        return val
 
     def get_variable(self, name: str, prefer_globals: bool = False):
         """

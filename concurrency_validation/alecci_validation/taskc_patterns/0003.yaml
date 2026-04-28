@@ -1,0 +1,6 @@
+# Referee coordinates players: no race
+source: 0003.ale
+expected_issues:
+  - none
+timeout: 10
+max_runs: 20

@@ -1,0 +1,6 @@
+# Unbounded producer-consumer: mutex + semaphore coordination
+source: 0001.ale
+expected_issues:
+  - none
+timeout: 15
+max_runs: 5

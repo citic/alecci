@@ -1,0 +1,6 @@
+# Correct: mutex-protected queue + semaphore + consumed_count counter stop condition
+source: 0001.ale
+expected_issues:
+  - none
+timeout: 15
+max_runs: 5

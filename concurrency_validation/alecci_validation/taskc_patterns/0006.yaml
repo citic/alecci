@@ -1,0 +1,6 @@
+# Three independent threads with no shared state
+source: 0006.ale
+expected_issues:
+  - none
+timeout: 10
+max_runs: 20

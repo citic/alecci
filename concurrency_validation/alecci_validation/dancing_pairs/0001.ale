@@ -1,0 +1,24 @@
+// Direct signal/wait rendezvous: male and female signal each other's queues
+procedure main(argc, argv)
+  shared mutable male_queue as semaphore := semaphore(0)
+  shared mutable female_queue as semaphore := semaphore(0)
+  mutable genre as char
+  while scan `{genre}` do
+    case genre of
+      'M': create_thread(male)
+      'W': create_thread(female)
+    end case
+  end while
+end procedure
+
+procedure male()
+  signal(male_queue)
+  wait(female_queue)
+  print("male dancing")
+end procedure
+
+procedure female()
+  signal(female_queue)
+  wait(male_queue)
+  print("female dancing")
+end procedure

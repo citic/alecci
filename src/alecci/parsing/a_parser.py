@@ -110,6 +110,7 @@ def p_complex_type(p):
     ''' complex_type : SEMAPHORE
                     | MUTEX
                     | BARRIER
+                    | QUEUE
                     | THREAD
                     | ARRAY
                     | VARIANT
