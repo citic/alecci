@@ -1,0 +1,27 @@
+{
+  "name": "alecci-syntax",
+  "displayName": "Alecci Language Syntax Highlighting",
+  "description": "Syntax highlighting for Alecci .ale, .pseudo, and .alecci files",
+  "version": "1.0.1",
+  "engines": {
+    "vscode": "^1.0.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "alecci",
+        "aliases": ["Alecci", "alecci", "Ale"],
+        "extensions": [".ale", ".pseudo", ".alecci"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "alecci",
+        "scopeName": "source.alecci",
+        "path": "./syntaxes/alecci.tmLanguage.json"
+      }
+    ]
+  }
+}
