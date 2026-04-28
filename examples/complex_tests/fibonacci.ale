@@ -1,0 +1,62 @@
+// Complex test 1: Recursive and iterative Fibonacci, GCD
+
+function fib(n)
+    if n <= 1 then
+        return n
+    end if
+    return fib(n - 1) + fib(n - 2)
+end function
+
+// Iterative fib using the identity: b_new = a + b, a_new = b_new - a
+// This avoids variant-to-variant swaps while correctly computing fib(n).
+function fib_iter(n)
+    if n <= 1 then
+        return n
+    end if
+    mutable a := 0
+    mutable b := 1
+    mutable i := 2
+    while i <= n do
+        b := a + b
+        a := b - a
+        i := i + 1
+    end while
+    return b
+end function
+
+// GCD via repeated subtraction (avoids 3-variable swap)
+function gcd(a, b)
+    while a != b do
+        if a > b then
+            a := a - b
+        else
+            b := b - a
+        end if
+    end while
+    return a
+end function
+
+procedure main()
+    print "Fibonacci test start"
+
+    const f0 = fib(0)
+    const f1 = fib(1)
+    const f5 = fib(5)
+    const f10 = fib(10)
+    print `fib(0) = {f0}`
+    print `fib(1) = {f1}`
+    print `fib(5) = {f5}`
+    print `fib(10) = {f10}`
+
+    const fi10 = fib_iter(10)
+    const fi15 = fib_iter(15)
+    print `fib_iter(10) = {fi10}`
+    print `fib_iter(15) = {fi15}`
+
+    const g1 = gcd(48, 18)
+    const g2 = gcd(100, 75)
+    print `gcd(48, 18) = {g1}`
+    print `gcd(100, 75) = {g2}`
+
+    print "Fibonacci test end"
+end procedure

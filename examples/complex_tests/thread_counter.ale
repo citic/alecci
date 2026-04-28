@@ -1,0 +1,24 @@
+// Complex test 2: Thread-safe counter with mutex.
+// 4 threads each increment a shared counter 10 times under a mutex.
+// Final count must be exactly 40.
+
+procedure main()
+    shared mutable counter := 0
+    shared mutable m as mutex := mutex()
+
+    print "Counter test start"
+    mutable threads := create_threads(4, increment_worker)
+    join_threads(threads, 4)
+    print `Final counter = {counter}`
+    print "Counter test end"
+end procedure
+
+procedure increment_worker(thread_number as int)
+    mutable i := 0
+    while i < 10 do
+        lock(m)
+        counter := counter + 1
+        unlock(m)
+        i := i + 1
+    end while
+end procedure

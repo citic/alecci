@@ -1,0 +1,36 @@
+// Complex test 4: Two-phase barrier pipeline.
+// 4 threads work in two phases separated by a barrier.
+// Phase 1: each thread adds its square (0,1,4,9) → sum = 14
+// Phase 2: each thread adds thread_number+1 (1,2,3,4) → sum = 10
+// The barrier guarantees all phase-1 work is visible before phase 2 starts.
+
+procedure main()
+    shared mutable b as barrier := barrier(4)
+    shared mutable phase1_sum := 0
+    shared mutable phase2_sum := 0
+    shared mutable m as mutex := mutex()
+
+    print "Barrier pipeline test start"
+    mutable threads := create_threads(4, pipeline_worker)
+    join_threads(threads)
+    print `Phase 1 sum = {phase1_sum}`
+    print `Phase 2 sum = {phase2_sum}`
+    print "Barrier pipeline test end"
+end procedure
+
+procedure pipeline_worker(thread_number as int)
+    // Phase 1: accumulate squares
+    mutable sq := thread_number * thread_number
+    lock(m)
+    phase1_sum := phase1_sum + sq
+    unlock(m)
+
+    // All threads must finish phase 1 before any starts phase 2
+    barrier_wait(b)
+
+    // Phase 2: accumulate thread_number + 1
+    mutable contrib := thread_number + 1
+    lock(m)
+    phase2_sum := phase2_sum + contrib
+    unlock(m)
+end procedure

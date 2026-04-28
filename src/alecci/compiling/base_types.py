@@ -29,75 +29,50 @@ def get_variant_type_tag_enum():
         'null': 8
     }
 
-def get_type(type_str : str):
-    """Get LLVM type from string representation, including array types"""
-    # For transparent variant system, most variables should be variants
-    if type_str == "semaphore":
-        return ir.IntType(8).as_pointer()  # sem_t* (opaque pointer)
-    elif type_str == "barrier":
-        # pthread_barrier_t* (opaque pointer)
-        return ir.IntType(8).as_pointer()
-    elif type_str == "thread":
-        return ir.IntType(8).as_pointer()  # pthread_t* (opaque pointer)
-    elif type_str == "mutex":
-        return ir.IntType(8).as_pointer()  # pthread_mutex_t* (opaque pointer)
-    elif is_array_type(type_str):
-        # Parse array type: "array[size] of element_type" or "array of element_type"
+# Shared map of named scalar types used by both get_type and get_raw_type.
+_SCALAR_TYPE_MAP = {
+    "int":       lambda: ir.IntType(32),
+    "float":     lambda: ir.DoubleType(),
+    "char":      lambda: ir.IntType(8),
+    "string":    lambda: ir.IntType(8).as_pointer(),
+    "semaphore": lambda: ir.IntType(8).as_pointer(),
+    "barrier":   lambda: ir.IntType(8).as_pointer(),
+    "thread":    lambda: ir.IntType(8).as_pointer(),
+    "mutex":     lambda: ir.IntType(8).as_pointer(),
+    "variant":   get_variant_type,
+}
+
+
+def get_type(type_str: str):
+    """Get LLVM type from string representation, including array types.
+
+    For unknown / unspecified types the fallback is the variant struct so that
+    untyped Alecci variables are transparently wrapped.
+    """
+    if type_str in _SCALAR_TYPE_MAP:
+        return _SCALAR_TYPE_MAP[type_str]()
+    if is_array_type(type_str):
         element_type, size = parse_array_type(type_str)
         base_type = get_type(element_type)
-        if size is not None:
-            return ir.ArrayType(base_type, size)
-        else:
-            # Dynamic array - return pointer to element type
-            return base_type.as_pointer()
-    else:
-        # For explicitly typed variables, use the actual type
-        if type_str == "int":
-            return ir.IntType(32)
-        elif type_str == "float":
-            return ir.DoubleType()
-        elif type_str == "char":
-            return ir.IntType(8)
-        elif type_str == "string":
-            return ir.IntType(8).as_pointer()
-        elif type_str == "variant":
-            return get_variant_type()
-        else:
-            # For unspecified types, default to variant
-            return get_variant_type()
+        return ir.ArrayType(base_type, size) if size is not None else base_type.as_pointer()
+    # Unknown / untyped → variant
+    return get_variant_type()
 
-def get_raw_type(type_str : str):
-    """Get the original LLVM type without variant wrapping (for internal use)"""
-    if type_str == "int":
-        return ir.IntType(32)
-    elif type_str == "float":
-        return ir.DoubleType()
-    elif type_str == "char":
-        return ir.IntType(8)
-    elif type_str == "string":
-        return ir.IntType(8).as_pointer()
-    elif type_str == "semaphore":
-        return ir.IntType(8).as_pointer()  # sem_t* (opaque pointer)
-    elif type_str == "barrier":
-        # pthread_barrier_t* (opaque pointer)
-        return ir.IntType(8).as_pointer()
-    elif type_str == "thread":
-        return ir.IntType(8).as_pointer()  # pthread_t* (opaque pointer)
-    elif type_str == "mutex":
-        return ir.IntType(8).as_pointer()  # pthread_mutex_t* (opaque pointer)
-    elif type_str == "variant":
-        return get_variant_type()
-    elif is_array_type(type_str):
-        # Parse array type: "array[size] of element_type" or "array of element_type"
+
+def get_raw_type(type_str: str):
+    """Get the LLVM type without variant-wrapping fallback.
+
+    Identical to :func:`get_type` for all known named types; falls back to
+    ``i32`` (not variant) for unknown types.  Used internally where a concrete
+    low-level type is required.
+    """
+    if type_str in _SCALAR_TYPE_MAP:
+        return _SCALAR_TYPE_MAP[type_str]()
+    if is_array_type(type_str):
         element_type, size = parse_array_type(type_str)
         base_type = get_raw_type(element_type)
-        if size is not None:
-            return ir.ArrayType(base_type, size)
-        else:
-            # Dynamic array - return pointer to element type
-            return base_type.as_pointer()
-    else:
-        return ir.IntType(32)  # default to int
+        return ir.ArrayType(base_type, size) if size is not None else base_type.as_pointer()
+    return ir.IntType(32)  # default to int
 
 def is_array_type(type_str: str) -> bool:
     """Check if type string represents an array type"""

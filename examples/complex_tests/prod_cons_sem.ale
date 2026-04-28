@@ -1,0 +1,46 @@
+// Complex test 3: Semaphore-based producer-consumer.
+// One producer thread and one consumer thread share a bounded queue.
+// Two semaphores enforce capacity and availability constraints.
+// Final count of consumed items must be exactly 4.
+
+procedure main()
+    shared const item_count = 4
+    shared mutable q as queue := queue(4)
+    shared mutable slots as semaphore := semaphore(4)
+    shared mutable items as semaphore := semaphore(0)
+    shared mutable qmutex as mutex := mutex()
+    shared mutable consumed := 0
+
+    print "Producer-consumer test start"
+    mutable p := create_threads(1, producer)
+    mutable c := create_threads(1, consumer)
+    join_threads(p)
+    join_threads(c)
+    print `Items consumed = {consumed}`
+    print "Producer-consumer test end"
+end procedure
+
+procedure producer(thread_number as int)
+    mutable i := 0
+    while i < item_count do
+        wait(slots)
+        lock(qmutex)
+        enqueue(q, i)
+        unlock(qmutex)
+        signal(items)
+        i := i + 1
+    end while
+end procedure
+
+procedure consumer(thread_number as int)
+    mutable i := 0
+    while i < item_count do
+        wait(items)
+        lock(qmutex)
+        mutable v := dequeue(q)
+        consumed := consumed + 1
+        unlock(qmutex)
+        signal(slots)
+        i := i + 1
+    end while
+end procedure

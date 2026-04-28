@@ -1,13 +1,11 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
-from typing import Dict, Any, List, Union
 from llvmlite import ir
 import sys
 
 from .base_types import get_type
 from .threading_utils import create_threads, create_thread, join_threads, join_thread
 from ..parsing.globals import debug_print
-
-DEBUG = False  # Temporarily enable debug for troubleshooting
+from . import variant_utils
 
 
 
@@ -114,91 +112,219 @@ class CodeGenerator:
         
         # Call TSan function
         self.builder.call(tsan_fn, [ptr_cast])
-    
+
+    # ------------------------------------------------------------------
+    # Low-level helpers (eliminate repeated boilerplate)
+    # ------------------------------------------------------------------
+
+    def _declare_external_fn(self, name: str, return_ty, arg_tys,
+                              var_arg: bool = False) -> ir.Function:
+        """Get or declare an external C function, creating it once per module."""
+        return variant_utils.declare_external_fn(self.module, name, return_ty,
+                                                  arg_tys, var_arg)
+
+    def _resolve_arg_ptr(self, arg0, expected_ty=None) -> ir.Value:
+        """Resolve a sync-primitive argument node to a pointer value.
+
+        Handles the three common node shapes used in wait/signal/lock/unlock/
+        barrier_wait: string-literal-as-ID, ID node, array_access node, and
+        anything else (visited normally). Optionally bitcasts to *expected_ty*.
+        """
+        if (isinstance(arg0, dict) and arg0.get('type') == 'literal' and
+                isinstance(arg0.get('value'), str)):
+            ptr = self.visit_ID({'type': 'ID', 'value': arg0['value']},
+                                prefer_globals=True)
+        elif isinstance(arg0, dict) and arg0.get('type') == 'ID':
+            ptr = self.visit_ID(arg0, prefer_globals=True)
+        elif isinstance(arg0, dict) and arg0.get('type') == 'array_access':
+            ptr = self.visit_array_access(arg0)
+        else:
+            ptr = self.visit(arg0)
+        if expected_ty is not None and hasattr(ptr, 'type') and ptr.type != expected_ty:
+            ptr = self.builder.bitcast(ptr, expected_ty)
+        return ptr
+
+    def _emit_counted_loop(self, fn: ir.Function, ptr: ir.Value,
+                            count_val: ir.Value, label: str) -> ir.Value:
+        """Emit a counted loop that calls *fn*(*ptr*) exactly *count_val* times.
+
+        Used to implement ``wait(sem, n)`` and ``signal(sem, n)``.
+        Returns ``i32 0``.
+        """
+        from .base_types import get_variant_type
+        variant_ty = get_variant_type()
+        # Unwrap count_val from variant if needed
+        if hasattr(count_val, 'type') and count_val.type == variant_ty:
+            tmp = self.builder.alloca(variant_ty, name=f"{label}_count_tmp")
+            self.builder.store(count_val, tmp)
+            count_val = self._extract_variant_value(tmp, 'int')
+        elif (hasattr(count_val, 'type') and
+              isinstance(count_val.type, ir.PointerType) and
+              count_val.type.pointee == variant_ty):
+            count_val = self._extract_variant_value(count_val, 'int')
+        if hasattr(count_val, 'type') and isinstance(count_val.type, ir.IntType) and count_val.type.width != 32:
+            count_val = self.builder.zext(count_val, ir.IntType(32))
+
+        i_ptr = self.builder.alloca(ir.IntType(32), name=f"{label}_i")
+        self.builder.store(ir.Constant(ir.IntType(32), 0), i_ptr)
+        cond_bb = self.builder.append_basic_block(f"{label}_loop_cond")
+        body_bb = self.builder.append_basic_block(f"{label}_loop_body")
+        end_bb  = self.builder.append_basic_block(f"{label}_loop_end")
+        self.builder.branch(cond_bb)
+        self.builder.position_at_end(cond_bb)
+        i_val = self.builder.load(i_ptr)
+        cond = self.builder.icmp_signed('<', i_val, count_val)
+        self.builder.cbranch(cond, body_bb, end_bb)
+        self.builder.position_at_end(body_bb)
+        self.builder.call(fn, [ptr])
+        new_i = self.builder.add(i_val, ir.Constant(ir.IntType(32), 1))
+        self.builder.store(new_i, i_ptr)
+        self.builder.branch(cond_bb)
+        self.builder.position_at_end(end_bb)
+        return ir.Constant(ir.IntType(32), 0)
+
+    def _emit_template_sprintf(self, template: str):
+        """Format a backtick template string using sprintf and return (ptr, is_string).
+
+        *template* is the content between the backticks. Any ``{varname}``
+        placeholders are replaced with the corresponding variable values via a
+        stack-allocated 256-byte sprintf buffer.
+
+        Returns ``(ptr: ir.Value, is_string: True)`` where *ptr* is an ``i8*``
+        pointing to the formatted string buffer.  When no ``{...}`` placeholders
+        are present the string is emitted as a global constant instead.
+        """
+        import re
+        from .base_types import get_variant_type
+
+        variable_patterns = re.findall(r'\{([^}]+)\}', template)
+
+        if not variable_patterns:
+            # No placeholders — emit as a plain global string constant
+            name = f"str_{abs(hash(template))}"
+            str_bytes = bytearray(template.encode("utf8")) + b"\00"
+            str_type = ir.ArrayType(ir.IntType(8), len(str_bytes))
+            if name in self.module.globals:
+                str_global = self.module.get_global(name)
+            else:
+                str_global = ir.GlobalVariable(self.module, str_type, name=name)
+                str_global.linkage = 'internal'
+                str_global.global_constant = True
+                str_global.initializer = ir.Constant(str_type, str_bytes)
+            return self.builder.bitcast(str_global, ir.IntType(8).as_pointer()), True
+
+        variant_ty = get_variant_type()
+        format_string = template
+        format_args = []
+
+        for var_name in variable_patterns:
+            entry = self.get_variable(var_name)
+            dtype = entry[1] if entry and len(entry) >= 2 else None
+
+            if dtype == 'variant':
+                variant_ptr = entry[0]
+                if var_name in self.var_types and self.var_types[var_name] == 'float':
+                    format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                    format_args.append(self._extract_variant_value(variant_ptr, 'float'))
+                elif var_name in self.var_types and self.var_types[var_name] == 'int':
+                    format_string = format_string.replace(f'{{{var_name}}}', '%d')
+                    format_args.append(self._extract_variant_value(variant_ptr, 'int'))
+                else:
+                    # Unknown variant type — use variant_to_string for correct output
+                    format_string = format_string.replace(f'{{{var_name}}}', '%s')
+                    v2s = self._declare_external_fn(
+                        'variant_to_string',
+                        ir.IntType(8).as_pointer(),
+                        [variant_ty.as_pointer()])
+                    format_args.append(self.builder.call(v2s, [variant_ptr]))
+            elif dtype == 'float':
+                format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                var_value = self.visit_ID({'type': 'ID', 'value': var_name})
+                if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
+                    var_value = self.builder.load(var_value)
+                format_args.append(var_value)
+            elif dtype == 'string':
+                format_string = format_string.replace(f'{{{var_name}}}', '%s')
+                var_value = self.visit_ID({'type': 'ID', 'value': var_name})
+                if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType) and var_value.type.pointee != ir.IntType(8):
+                    var_value = self.builder.load(var_value)
+                format_args.append(var_value)
+            else:
+                format_string = format_string.replace(f'{{{var_name}}}', '%d')
+                try:
+                    var_value = self.visit_ID({'type': 'ID', 'value': var_name})
+                    if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
+                        var_value = self.builder.load(var_value)
+                    format_args.append(var_value)
+                except Exception:
+                    format_args.append(ir.Constant(ir.IntType(32), 0))
+
+        # Emit format string global
+        fmt_name = f"fmt_{abs(hash(format_string))}"
+        fmt_bytes = bytearray(format_string.encode("utf8")) + b"\00"
+        fmt_type = ir.ArrayType(ir.IntType(8), len(fmt_bytes))
+        if fmt_name in self.module.globals:
+            fmt_global = self.module.get_global(fmt_name)
+        else:
+            fmt_global = ir.GlobalVariable(self.module, fmt_type, name=fmt_name)
+            fmt_global.linkage = 'internal'
+            fmt_global.global_constant = True
+            fmt_global.initializer = ir.Constant(fmt_type, fmt_bytes)
+        fmt_arg = self.builder.bitcast(fmt_global, ir.IntType(8).as_pointer())
+
+        # Stack buffer + sprintf call
+        buf_ty = ir.ArrayType(ir.IntType(8), 256)
+        buf = self.builder.alloca(buf_ty, name="sprintf_buf")
+        buf_ptr = self.builder.bitcast(buf, ir.IntType(8).as_pointer())
+        sprintf = self._declare_external_fn(
+            'sprintf', ir.IntType(32),
+            [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()],
+            var_arg=True)
+        self.builder.call(sprintf, [buf_ptr, fmt_arg] + format_args)
+        return buf_ptr, True
+
     def _cleanup_concurrency_primitives(self, function_name: str):
         """Clean up concurrency primitives (mutexes, semaphores, barriers) at end of procedure."""
         if not self.builder or self.builder.block.is_terminated:
             return
-        
-        mutex_ty = ir.IntType(8).as_pointer()
-        
-        # Destroy local mutexes
-        for name, mutex_ptr in self.local_mutexes:
+
+        opaque_ty = ir.IntType(8).as_pointer()
+        mutex_destroy  = self._declare_external_fn('pthread_mutex_destroy',  ir.IntType(32), [opaque_ty])
+        sem_destroy     = self._declare_external_fn('sem_destroy',             ir.IntType(32), [opaque_ty])
+        barrier_destroy = self._declare_external_fn('pthread_barrier_destroy', ir.IntType(32), [opaque_ty])
+
+        for name, ptr in self.local_mutexes:
             debug_print(f"DEBUG: Cleaning up local mutex '{name}' in {function_name}")
-            if mutex_ptr.type != mutex_ty:
-                mutex_ptr = self.builder.bitcast(mutex_ptr, mutex_ty)
-            
-            # Get or declare pthread_mutex_destroy
-            pthread_mutex_destroy = self.module.globals.get('pthread_mutex_destroy')
-            if not pthread_mutex_destroy:
-                pthread_mutex_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
-                pthread_mutex_destroy = ir.Function(self.module, pthread_mutex_destroy_ty, name='pthread_mutex_destroy')
-            
-            self.builder.call(pthread_mutex_destroy, [mutex_ptr])
-        
-        # Destroy local semaphores
-        for name, sem_ptr in self.local_semaphores:
+            if ptr.type != opaque_ty:
+                ptr = self.builder.bitcast(ptr, opaque_ty)
+            self.builder.call(mutex_destroy, [ptr])
+
+        for name, ptr in self.local_semaphores:
             debug_print(f"DEBUG: Cleaning up local semaphore '{name}' in {function_name}")
-            if sem_ptr.type != mutex_ty:
-                sem_ptr = self.builder.bitcast(sem_ptr, mutex_ty)
-            
-            # Get or declare sem_destroy
-            sem_destroy = self.module.globals.get('sem_destroy')
-            if not sem_destroy:
-                sem_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
-                sem_destroy = ir.Function(self.module, sem_destroy_ty, name='sem_destroy')
-            
-            self.builder.call(sem_destroy, [sem_ptr])
-        
-        # Destroy local barriers
-        for name, barrier_ptr in self.local_barriers:
+            if ptr.type != opaque_ty:
+                ptr = self.builder.bitcast(ptr, opaque_ty)
+            self.builder.call(sem_destroy, [ptr])
+
+        for name, ptr in self.local_barriers:
             debug_print(f"DEBUG: Cleaning up local barrier '{name}' in {function_name}")
-            if barrier_ptr.type != mutex_ty:
-                barrier_ptr = self.builder.bitcast(barrier_ptr, mutex_ty)
-            
-            # Get or declare pthread_barrier_destroy
-            pthread_barrier_destroy = self.module.globals.get('pthread_barrier_destroy')
-            if not pthread_barrier_destroy:
-                pthread_barrier_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
-                pthread_barrier_destroy = ir.Function(self.module, pthread_barrier_destroy_ty, name='pthread_barrier_destroy')
-            
-            self.builder.call(pthread_barrier_destroy, [barrier_ptr])
-        
-        # For main function, also destroy shared/global concurrency primitives
+            if ptr.type != opaque_ty:
+                ptr = self.builder.bitcast(ptr, opaque_ty)
+            self.builder.call(barrier_destroy, [ptr])
+
         if function_name == 'main':
-            for var_name, (var_ptr, var_type, is_const) in self.globals.items():
+            for var_name, (var_ptr, var_type, _) in self.globals.items():
                 if var_type == 'mutex':
                     debug_print(f"DEBUG: Cleaning up shared mutex '{var_name}' in main")
-                    mutex_ptr = self.builder.bitcast(var_ptr, mutex_ty)
-                    
-                    pthread_mutex_destroy = self.module.globals.get('pthread_mutex_destroy')
-                    if not pthread_mutex_destroy:
-                        pthread_mutex_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
-                        pthread_mutex_destroy = ir.Function(self.module, pthread_mutex_destroy_ty, name='pthread_mutex_destroy')
-                    
-                    self.builder.call(pthread_mutex_destroy, [mutex_ptr])
-                
+                    self.builder.call(mutex_destroy,
+                                      [self.builder.bitcast(var_ptr, opaque_ty)])
                 elif var_type == 'semaphore':
                     debug_print(f"DEBUG: Cleaning up shared semaphore '{var_name}' in main")
-                    sem_ptr = self.builder.bitcast(var_ptr, mutex_ty)
-                    
-                    sem_destroy = self.module.globals.get('sem_destroy')
-                    if not sem_destroy:
-                        sem_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
-                        sem_destroy = ir.Function(self.module, sem_destroy_ty, name='sem_destroy')
-                    
-                    self.builder.call(sem_destroy, [sem_ptr])
-                
+                    self.builder.call(sem_destroy,
+                                      [self.builder.bitcast(var_ptr, opaque_ty)])
                 elif var_type == 'barrier':
                     debug_print(f"DEBUG: Cleaning up shared barrier '{var_name}' in main")
-                    barrier_ptr = self.builder.bitcast(var_ptr, mutex_ty)
-                    
-                    pthread_barrier_destroy = self.module.globals.get('pthread_barrier_destroy')
-                    if not pthread_barrier_destroy:
-                        pthread_barrier_destroy_ty = ir.FunctionType(ir.IntType(32), [mutex_ty])
-                        pthread_barrier_destroy = ir.Function(self.module, pthread_barrier_destroy_ty, name='pthread_barrier_destroy')
-                    
-                    self.builder.call(pthread_barrier_destroy, [barrier_ptr])
+                    self.builder.call(barrier_destroy,
+                                      [self.builder.bitcast(var_ptr, opaque_ty)])
     
     def _make_shared_accesses_atomic(self, ir_string: str) -> str:
         """
@@ -247,83 +373,72 @@ class CodeGenerator:
         
         return ir_string
 
+    def _debug_verify_module(self) -> None:
+        """Walk every function/block/instruction looking for IR errors.
+
+        Only meaningful when debug output is active.  Called from compile()
+        before serialising the module so that error messages name the broken
+        function rather than crashing in str(module).
+        """
+        for name, func in list(self.module.globals.items()):
+            if not hasattr(func, 'blocks'):
+                continue
+            try:
+                str(func)
+                debug_print(f"DEBUG: Function {name} converted successfully")
+            except Exception as e:
+                debug_print(f"DEBUG: ERROR in function {name}: {e}")
+                if not hasattr(func, 'basic_blocks'):
+                    continue
+                for i, block in enumerate(func.basic_blocks):
+                    try:
+                        str(block)
+                        debug_print(f"DEBUG: Block {i} in {name} OK")
+                    except Exception as be:
+                        debug_print(f"DEBUG: ERROR in block {i} of {name}: {be}")
+                        if not hasattr(block, 'instructions'):
+                            continue
+                        for j, instr in enumerate(block.instructions):
+                            try:
+                                str(instr)
+                            except Exception as ie:
+                                debug_print(f"DEBUG: ERROR in instruction {j} of block {i} of {name}: {ie}")
+                                debug_print(f"DEBUG: Instruction type: {type(instr)}")
+                                if hasattr(instr, 'args'):
+                                    for k, arg in enumerate(instr.args):
+                                        if hasattr(arg, 'type'):
+                                            debug_print(f"DEBUG: Arg {k} LLVM type: {arg.type}")
+                                        else:
+                                            debug_print(f"DEBUG: Arg {k} has no type attribute!")
+                                break
+
     def compile(self, ast: Dict[str, Any]) -> str:
         try:
-            # Declare sched_yield() for stress testing
             if self.performance_mode:
-                sched_yield_ty = ir.FunctionType(ir.IntType(32), [])
-                self.sched_yield_fn = ir.Function(self.module, sched_yield_ty, name="sched_yield")
-            
-                # Declare TSan instrumentation functions for manual instrumentation
-                # These functions tell TSan that a memory access is happening
-                void_ty = ir.VoidType()
-                ptr_ty = ir.IntType(8).as_pointer()
-                self.tsan_read1_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_read1")
-                self.tsan_read2_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_read2")
-                self.tsan_read4_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_read4")
-                self.tsan_read8_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_read8")
-                self.tsan_write1_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_write1")
-                self.tsan_write2_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_write2")
-                self.tsan_write4_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_write4")
-                self.tsan_write8_fn = ir.Function(self.module, ir.FunctionType(void_ty, [ptr_ty]), name="__tsan_write8")
-            
-            # Initialize debug metadata for source location tracking
+                self._init_performance_intrinsics()
             self._init_debug_info()
-            
             self.visit(ast)
-            debug_print("DEBUG: AST compilation completed, attempting to convert module to string...")
-            
-            # Try to convert each function individually to find the problematic one
-            debug_print("DEBUG: Checking individual functions...")
-            for name, func in list(self.module.globals.items()):
-                if hasattr(func, 'blocks'):  # It's a function
-                    try:
-                        func_str = str(func)
-                        debug_print(f"DEBUG: Function {name} converted successfully")
-                    except Exception as e:
-                        debug_print(f"DEBUG: ERROR in function {name}: {e}")
-                        # Try to get more details about the problematic function
-                        if hasattr(func, 'basic_blocks'):
-                            for i, block in enumerate(func.basic_blocks):
-                                try:
-                                    block_str = str(block)
-                                    debug_print(f"DEBUG: Block {i} in {name} OK")
-                                except Exception as be:
-                                    debug_print(f"DEBUG: ERROR in block {i} of {name}: {be}")
-                                    # Check individual instructions
-                                    if hasattr(block, 'instructions'):
-                                        for j, instr in enumerate(block.instructions):
-                                            try:
-                                                instr_str = str(instr)
-                                                debug_print(f"DEBUG: Instruction {j} in block {i} of {name} OK")
-                                            except Exception as ie:
-                                                debug_print(f"DEBUG: ERROR in instruction {j} of block {i} of {name}: {ie}")
-                                                debug_print(f"DEBUG: Instruction type: {type(instr)}")
-                                                if hasattr(instr, 'args'):
-                                                    debug_print(f"DEBUG: Number of args: {len(instr.args)}")
-                                                    for k, arg in enumerate(instr.args):
-                                                        debug_print(f"DEBUG: Arg {k}: {repr(arg)} (type: {type(arg)})")
-                                                        if hasattr(arg, 'type'):
-                                                            debug_print(f"DEBUG: Arg {k} LLVM type: {arg.type}")
-                                                        else:
-                                                            debug_print(f"DEBUG: Arg {k} has no type attribute!")
-                                                break
-            
-            # Convert module to string
-            ir_string = str(self.module)
-            
-            # Post-process: convert loads/stores of shared globals to atomic
-            # NOTE: Disabled because TSan doesn't report races on atomic operations
-            # even when the atomic load + compute + atomic store sequence is racy
-            # if self.performance_mode:
-            #     ir_string = self._make_shared_accesses_atomic(ir_string)
-            
-            return ir_string
+            debug_print("DEBUG: AST compilation completed, verifying module...")
+            self._debug_verify_module()
+            return str(self.module)
         except Exception as e:
-            debug_print(f"DEBUG: Error during module string conversion: {e}")
+            debug_print(f"DEBUG: Error during compilation: {e}")
             debug_print(f"DEBUG: Module functions: {list(self.module.globals.keys())}")
-            debug_print(f"DEBUG: Error type: {type(e)}")
             raise
+
+    def _init_performance_intrinsics(self) -> None:
+        """Declare sched_yield and TSan instrumentation functions (performance_mode only)."""
+        void_ty = ir.VoidType()
+        ptr_ty = ir.IntType(8).as_pointer()
+        self.sched_yield_fn = ir.Function(self.module,
+                                           ir.FunctionType(ir.IntType(32), []),
+                                           name="sched_yield")
+        for suffix in ('1', '2', '4', '8'):
+            fn_ty = ir.FunctionType(void_ty, [ptr_ty])
+            setattr(self, f'tsan_read{suffix}_fn',
+                    ir.Function(self.module, fn_ty, name=f'__tsan_read{suffix}'))
+            setattr(self, f'tsan_write{suffix}_fn',
+                    ir.Function(self.module, fn_ty, name=f'__tsan_write{suffix}'))
 
     def visit(self, node: Union[Dict[str, Any], List[Dict[str, Any]], Any]) -> Any:
         if isinstance(node, list):
@@ -509,283 +624,216 @@ class CodeGenerator:
                 self.locals = old_locals
                 self.current_function_name = old_func_name
 
+    # ------------------------------------------------------------------
+    # process_shared_declaration helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_shared_array_size(size_arg) -> int:
+        """Parse an array-size argument node to a plain Python int (default 10)."""
+        if isinstance(size_arg, dict) and size_arg.get('type') == 'literal':
+            try:
+                return int(size_arg['value'])
+            except (ValueError, TypeError):
+                pass
+        return 10
+
+    def _shared_decl_array(self, name: str, value_node: dict) -> None:
+        """Declare a shared array global (all element types)."""
+        args = value_node.get('arguments', [])
+        if len(args) < 2:
+            raise Exception("Array function requires at least 2 arguments: size and element_type/init_value")
+
+        array_size = self._resolve_shared_array_size(args[0])
+
+        _ELEM_TYPES = {
+            'semaphore': (ir.ArrayType(ir.IntType(8), 32),  32),
+            'mutex':     (ir.ArrayType(ir.IntType(8), 40),  40),
+            'barrier':   (ir.ArrayType(ir.IntType(8), 128), 128),
+        }
+        elem_node = args[1]
+        fname = (elem_node.get('name') if isinstance(elem_node, dict) and
+                 elem_node.get('type') == 'function_call' else None)
+        if fname in _ELEM_TYPES:
+            element_type = fname
+            element_llvm_type, nbytes = _ELEM_TYPES[fname]
+            zero_elem = ir.Constant(element_llvm_type, [ir.Constant(ir.IntType(8), 0)] * nbytes)
+        else:
+            element_type = 'int'
+            element_llvm_type = ir.IntType(32)
+            zero_elem = ir.Constant(element_llvm_type, 0)
+
+        array_llvm_type = ir.ArrayType(element_llvm_type, array_size)
+        g = ir.GlobalVariable(self.module, array_llvm_type, name=name)
+        g.linkage = 'internal'
+        g.initializer = ir.Constant(array_llvm_type, [zero_elem] * array_size)
+        self.globals[name] = (g, f'array_{element_type}', False)
+        debug_print(f"DEBUG: Created global array '{name}' with type 'array_{element_type}'")
+
+    def _shared_decl_semaphore(self, name: str) -> None:
+        """Declare a shared semaphore global (zero-initialised storage)."""
+        ty = ir.ArrayType(ir.IntType(8), 32)
+        g = ir.GlobalVariable(self.module, ty, name=f"{name}_storage")
+        g.linkage = 'internal'
+        g.initializer = ir.Constant(ty, [ir.Constant(ir.IntType(8), 0)] * 32)
+        self.globals[name] = (g, 'semaphore', False)
+        debug_print(f"DEBUG: Created global semaphore storage '{name}_storage'")
+
+    def _shared_decl_mutex(self, name: str) -> None:
+        """Declare a shared mutex global (zero-initialised storage)."""
+        ty = ir.ArrayType(ir.IntType(8), 40)
+        g = ir.GlobalVariable(self.module, ty, name=f"{name}_storage")
+        g.linkage = 'internal'
+        g.initializer = ir.Constant(ty, [ir.Constant(ir.IntType(8), 0)] * 40)
+        self.globals[name] = (g, 'mutex', False)
+        debug_print(f"DEBUG: Created global mutex storage '{name}_storage'")
+
+    def _shared_decl_barrier(self, name: str) -> None:
+        """Declare a shared barrier global (zero-initialised storage)."""
+        ty = ir.ArrayType(ir.IntType(8), 128)
+        g = ir.GlobalVariable(self.module, ty, name=f"{name}_storage")
+        g.linkage = 'internal'
+        g.initializer = ir.Constant(ty, [ir.Constant(ir.IntType(8), 0)] * 128)
+        self.globals[name] = (g, 'barrier', False)
+        debug_print(f"DEBUG: Created global barrier storage '{name}_storage'")
+
+    def _shared_decl_queue(self, name: str, value_node) -> None:
+        """Declare a shared queue global ([capacity, count, head, tail, buf…] as i32 array)."""
+        capacity = 10
+        if (isinstance(value_node, dict) and
+                value_node.get('type') == 'function_call' and
+                value_node.get('name') == 'queue'):
+            qargs = value_node.get('arguments', [])
+            if qargs and qargs[0].get('type') == 'literal':
+                capacity = int(qargs[0]['value'])
+        total = 4 + capacity
+        ty = ir.ArrayType(ir.IntType(32), total)
+        g = ir.GlobalVariable(self.module, ty, name=f"{name}_storage")
+        g.linkage = 'internal'
+        init = [ir.Constant(ir.IntType(32), 0)] * total
+        init[0] = ir.Constant(ir.IntType(32), capacity)
+        g.initializer = ir.Constant(ty, init)
+        self.globals[name] = (g, 'queue', False)
+        debug_print(f"DEBUG: Created global queue storage '{name}_storage' capacity={capacity}")
+
+    def _shared_decl_variant(self, name: str, value_node) -> None:
+        """Declare a shared variant global (null-initialised)."""
+        from .base_types import get_variant_type
+        variant_ty = get_variant_type()
+        g = ir.GlobalVariable(self.module, variant_ty, name=name)
+        g.linkage = 'internal'
+        null_tag  = ir.Constant(ir.IntType(32), 8)
+        null_data = ir.Constant(ir.ArrayType(ir.IntType(8), 16),
+                                [ir.Constant(ir.IntType(8), 0)] * 16)
+        g.initializer = ir.Constant(variant_ty, [null_tag, null_data])
+        self.globals[name] = (g, 'variant', False)
+        debug_print(f"DEBUG: Created global variant '{name}'")
+        if value_node is not None:
+            self.shared_runtime_inits.append((name, value_node))
+
+    def _shared_decl_thread_array(self, name: str) -> None:
+        """Create a placeholder global for a thread array (actual creation deferred to pass 2)."""
+        from .base_types import get_type
+        ty = get_type('int')
+        g = ir.GlobalVariable(self.module, ty, name=name)
+        g.linkage = 'internal'
+        g.initializer = ir.Constant(ty, 0)
+        self.globals[name] = (g, 'thread_array', False)
+        debug_print(f"DEBUG: Placeholder global for thread_array '{name}'")
+
+    def _shared_decl_scalar(self, name: str, var_type: str, value, is_constant: bool) -> None:
+        """Declare a shared scalar (int/float/string/…) global."""
+        from .base_types import get_type
+
+        # Infer type from literal value when not explicit
+        if var_type is None:
+            raw = value['value'] if isinstance(value, dict) and value.get('type') == 'literal' else value
+            if isinstance(raw, float):
+                var_type = 'float'
+            elif isinstance(raw, int):
+                var_type = 'int'
+            elif isinstance(raw, str):
+                var_type = 'string'
+            else:
+                var_type = 'int'
+
+        llvm_type = get_type(var_type)
+        g = ir.GlobalVariable(self.module, llvm_type, name=name)
+        g.linkage = 'common' if not is_constant else 'internal'
+        if not is_constant:
+            g.storage_class = 'default'
+
+        if isinstance(value, dict) and value.get('type') == 'literal':
+            g.initializer = ir.Constant(llvm_type, value['value'])
+        elif value is not None and not isinstance(value, dict):
+            g.initializer = ir.Constant(llvm_type, value)
+        else:
+            g.initializer = ir.Constant(llvm_type, 0)
+            if isinstance(value, dict):
+                self.shared_runtime_inits.append((name, value))
+                debug_print(f"DEBUG: Added '{name}' to runtime init list")
+
+        self.globals[name] = (g, var_type, is_constant)
+        debug_print(f"DEBUG: Created shared scalar '{name}' type='{var_type}'")
+
+    # ------------------------------------------------------------------
+    # process_shared_declaration — dispatcher
+    # ------------------------------------------------------------------
+
     def process_shared_declaration(self, node: Dict[str, Any]) -> None:
-        """Process shared variable declarations that should be globally accessible"""
+        """Process shared variable declarations that should be globally accessible."""
         debug_print(f"DEBUG: process_shared_declaration - Processing shared node: {node}")
         name = node['name']
         init = node['init']
-        var_type = init.get('var_type', 'int')
-        value = init['value'] if init.get('value') else None
-        is_constant = node.get('const', False)  # Get const flag from parser
+        var_type = init.get('var_type')        # may be None → infer below
+        value    = init.get('value')
+        is_constant = node.get('const', False)
         debug_print(f"DEBUG: Shared declaration name={name}, type={var_type}, value={value}")
 
-        # Check if this is an array initialization
-        if value and isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'array':
-            # Handle shared array declarations
-            args = value.get('arguments', [])
-            if len(args) < 2:
-                raise Exception(f"Array function requires at least 2 arguments: size and element_type/init_value")
-            
-            # Get array size
-            size_arg = args[0]
-            debug_print(f"DEBUG: Array size argument: {size_arg}")
-            
-            if isinstance(size_arg, dict) and size_arg.get('type') == 'literal':
-                array_size = size_arg['value']
-                if isinstance(array_size, str):
-                    try:
-                        array_size = int(array_size)
-                    except ValueError:
-                        debug_print(f"DEBUG: String literal '{array_size}' cannot be converted to int, using default 10")
-                        array_size = 10
-            elif isinstance(size_arg, dict) and size_arg.get('type') == 'literal' and isinstance(size_arg.get('value'), str):
-                # This might be a variable reference stored as a string literal
-                var_name = size_arg['value']
-                # For now, use a default size - in a real implementation we'd need to track constants
-                debug_print(f"DEBUG: Array size references variable '{var_name}', using default size 10")
-                array_size = 10  # Default fallback
-            elif isinstance(size_arg, str):
-                # Direct variable reference
-                debug_print(f"DEBUG: Array size is variable reference '{size_arg}', using default size 10")
-                array_size = 10  # Default fallback
-            else:
-                # Try to handle the case where it's a variable name directly
-                debug_print(f"DEBUG: Array size is not a literal: {size_arg}, using default size 10")
-                array_size = 10  # Default fallback
-                
-            # Ensure array_size is an integer
-            if not isinstance(array_size, int):
-                debug_print(f"DEBUG: Converting array_size {array_size} (type: {type(array_size)}) to int")
-                try:
-                    array_size = int(array_size)
-                except (ValueError, TypeError):
-                    debug_print(f"DEBUG: Could not convert array_size to int, using default 10")
-                    array_size = 10
-            
-            # Get element type/initialization
-            element_init = args[1]
-            
-            # Determine element type
-            if isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'semaphore':
-                element_type = 'semaphore'
-                element_llvm_type = ir.ArrayType(ir.IntType(8), 32)  # sem_t storage
-            elif isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'mutex':
-                element_type = 'mutex'
-                element_llvm_type = ir.ArrayType(ir.IntType(8), 40)  # pthread_mutex_t storage
-            elif isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'barrier':
-                element_type = 'barrier'
-                element_llvm_type = ir.ArrayType(ir.IntType(8), 128)  # pthread_barrier_t storage (opaque)
-            else:
-                # For now, assume int if not semaphore or mutex
-                element_type = 'int'
-                element_llvm_type = ir.IntType(32)
-            
-            # Create global array
-            array_llvm_type = ir.ArrayType(element_llvm_type, array_size)
-            debug_print(f"DEBUG: Declaring shared array '{name}' of {array_size} {element_type} elements")
-            
-            array_variable = ir.GlobalVariable(self.module, array_llvm_type, name=name)
-            array_variable.linkage = 'internal'
-            
-            # Initialize array
-            if element_type == 'semaphore':
-                # Initialize each semaphore element
-                zero_bytes = [ir.Constant(ir.IntType(8), 0)] * 32
-                sem_init = ir.Constant(element_llvm_type, zero_bytes)
-                array_init = ir.Constant(array_llvm_type, [sem_init] * array_size)
-            elif element_type == 'mutex':
-                # Initialize each mutex element
-                zero_bytes = [ir.Constant(ir.IntType(8), 0)] * 40
-                mutex_init = ir.Constant(element_llvm_type, zero_bytes)
-                array_init = ir.Constant(array_llvm_type, [mutex_init] * array_size)
-            elif element_type == 'barrier':
-                # Initialize each barrier element
-                zero_bytes = [ir.Constant(ir.IntType(8), 0)] * 128
-                barrier_init = ir.Constant(element_llvm_type, zero_bytes)
-                array_init = ir.Constant(array_llvm_type, [barrier_init] * array_size)
-            else:
-                # Initialize with zeros for other types
-                array_init = ir.Constant(array_llvm_type, [ir.Constant(element_llvm_type, 0)] * array_size)
-            
-            array_variable.initializer = array_init
-            
-            # Store in globals with array metadata
-            self.globals[name] = (array_variable, f'array_{element_type}', False)  # Arrays are mutable
-            debug_print(f"DEBUG: Created global array '{name}' with type 'array_{element_type}'")
+        # Shared arrays
+        if (isinstance(value, dict) and
+                value.get('type') == 'function_call' and
+                value.get('name') == 'array'):
+            self._shared_decl_array(name, value)
             return
 
-        # Fix: If var_type is None and value is a function_call to 'semaphore' or 'mutex', treat appropriately
-        if var_type is None and isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'semaphore':
-            var_type = 'semaphore'
-            # Extract initial value from function_call arguments
-            args = value.get('arguments', [])
-            if args and args[0].get('type') == 'literal':
-                value = args[0]['value']
-            else:
+        # Infer var_type from function_call when parser left it None
+        if var_type is None and isinstance(value, dict) and value.get('type') == 'function_call':
+            fname = value.get('name')
+            if fname == 'semaphore':
+                var_type = 'semaphore'
+                args = value.get('arguments', [])
+                value = args[0]['value'] if (args and args[0].get('type') == 'literal') else None
+            elif fname == 'mutex':
+                var_type = 'mutex'
                 value = None
-        elif var_type is None and isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'mutex':
-            var_type = 'mutex'
-            # Mutexes don't take initial values
-            value = None
-        elif var_type is None and isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'barrier':
-            var_type = 'barrier'
-            # Barriers take a participant count, handled at initialization time
-            # Keep value as-is for now
-        elif var_type is None and isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'queue':
-            var_type = 'queue'
-            # Queue takes a capacity argument, handled at initialization time
-        elif var_type is None and isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'variant':
-            var_type = 'variant'
-            # Variants can be created with variant() function call
-        elif var_type is None and isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'create_threads':
-            # Special handling for thread arrays - defer actual creation to second pass
-            var_type = 'thread_array'
-            debug_print(f"DEBUG: Detected shared thread array '{name}' - deferring to second pass")
-            # Create a placeholder global variable that will be replaced in second pass
-            from .base_types import get_type
-            llvm_type = get_type('int')  # Placeholder type
-            variable = ir.GlobalVariable(self.module, llvm_type, name=name)
-            variable.linkage = 'internal'
-            variable.initializer = ir.Constant(llvm_type, 0)
-            self.globals[name] = (variable, 'thread_array', False)  # Thread arrays are mutable
-            return
+            elif fname in ('barrier', 'queue', 'variant'):
+                var_type = fname
+            elif fname == 'create_threads':
+                var_type = 'thread_array'
 
+        # Dispatch to per-type helper
         if var_type == 'semaphore':
-            # Handle shared semaphore declarations
-            sem_ty = ir.IntType(8).as_pointer()  # sem_t*
-            debug_print(f"DEBUG: Declaring shared semaphore '{name}' (process_shared_declaration)")
-            sem_storage_ty = ir.ArrayType(ir.IntType(8), 32)
-            variable = ir.GlobalVariable(self.module, sem_storage_ty, name=f"{name}_storage")
-            variable.linkage = 'internal'
-            variable.initializer = ir.Constant(sem_storage_ty, [ir.Constant(ir.IntType(8), 0)] * 32)
-            # Bitcast the storage to sem_t* and store in globals
-            # We can't use self.builder here, so store the variable for now
-            self.globals[name] = (variable, 'semaphore', False)  # Store as tuple with mutability flag
-            debug_print(f"DEBUG: Created global semaphore storage variable '{name}_storage'")
+            self._shared_decl_semaphore(name)
             return
-
         if var_type == 'mutex':
-            # Handle shared mutex declarations
-            mutex_ty = ir.IntType(8).as_pointer()  # pthread_mutex_t*
-            debug_print(f"DEBUG: Declaring shared mutex '{name}' (process_shared_declaration)")
-            mutex_storage_ty = ir.ArrayType(ir.IntType(8), 40)  # pthread_mutex_t storage
-            variable = ir.GlobalVariable(self.module, mutex_storage_ty, name=f"{name}_storage")
-            variable.linkage = 'internal'
-            variable.initializer = ir.Constant(mutex_storage_ty, [ir.Constant(ir.IntType(8), 0)] * 40)
-            # Bitcast the storage to pthread_mutex_t* and store in globals
-            # We can't use self.builder here, so store the variable for now
-            self.globals[name] = (variable, 'mutex', False)  # Store as tuple with mutability flag
-            debug_print(f"DEBUG: Created global mutex storage variable '{name}_storage'")
+            self._shared_decl_mutex(name)
             return
-
         if var_type == 'barrier':
-            # Handle shared barrier declarations
-            barrier_ty = ir.IntType(8).as_pointer()  # pthread_barrier_t*
-            debug_print(f"DEBUG: Declaring shared barrier '{name}' (process_shared_declaration)")
-            barrier_storage_ty = ir.ArrayType(ir.IntType(8), 128)  # opaque storage
-            variable = ir.GlobalVariable(self.module, barrier_storage_ty, name=f"{name}_storage")
-            variable.linkage = 'internal'
-            variable.initializer = ir.Constant(barrier_storage_ty, [ir.Constant(ir.IntType(8), 0)] * 128)
-            self.globals[name] = (variable, 'barrier', False)  # Barriers are mutable
-            debug_print(f"DEBUG: Created global barrier storage variable '{name}_storage'")
+            self._shared_decl_barrier(name)
             return
-
         if var_type == 'queue':
-            # Handle shared queue declarations: allocate global storage for (4 + capacity) * 4 bytes
-            # Queue layout: [capacity, count, head, tail, buffer[0..capacity-1]] as i32 array
-            # Capacity is extracted from the queue(capacity) call
-            debug_print(f"DEBUG: Declaring shared queue '{name}' (process_shared_declaration)")
-            queue_capacity = 10  # Default
-            if isinstance(value, dict) and value.get('type') == 'function_call' and value.get('name') == 'queue':
-                qargs = value.get('arguments', [])
-                if qargs and qargs[0].get('type') == 'literal':
-                    queue_capacity = int(qargs[0]['value'])
-            total_words = 4 + queue_capacity  # header (4 i32s) + buffer
-            queue_storage_ty = ir.ArrayType(ir.IntType(32), total_words)
-            variable = ir.GlobalVariable(self.module, queue_storage_ty, name=f"{name}_storage")
-            variable.linkage = 'internal'
-            init_vals = [ir.Constant(ir.IntType(32), 0)] * total_words
-            init_vals[0] = ir.Constant(ir.IntType(32), queue_capacity)  # capacity
-            variable.initializer = ir.Constant(queue_storage_ty, init_vals)
-            # Store raw pointer; initialization (writing capacity, zeroing count/head/tail) happens in visit_declaration
-            queue_ptr = variable.gep([ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-            self.globals[name] = (variable, 'queue', False)  # Queues are mutable
-            debug_print(f"DEBUG: Created global queue storage '{name}_storage' with capacity {queue_capacity}")
+            self._shared_decl_queue(name, value)
             return
-
         if var_type == 'variant':
-            # Handle shared variant declarations
-            debug_print(f"DEBUG: Declaring shared variant '{name}' (process_shared_declaration)")
-            from .base_types import get_variant_type
-            variant_ty = get_variant_type()
-            variable = ir.GlobalVariable(self.module, variant_ty, name=name)
-            variable.linkage = 'internal'
-            # Initialize with null variant (type_tag = 8, empty data)
-            null_tag = ir.Constant(ir.IntType(32), 8)  # NULL type
-            null_data = ir.Constant(ir.ArrayType(ir.IntType(8), 16), [ir.Constant(ir.IntType(8), 0)] * 16)
-            variable.initializer = ir.Constant(variant_ty, [null_tag, null_data])
-            self.globals[name] = (variable, 'variant', False)  # Variants are mutable
-            debug_print(f"DEBUG: Created global variant variable '{name}'")
-            # If there's an initialization value, add it to runtime inits
-            if value is not None:
-                self.shared_runtime_inits.append((name, value))
+            self._shared_decl_variant(name, value)
+            return
+        if var_type == 'thread_array':
+            self._shared_decl_thread_array(name)
             return
 
-        # Handle other shared variable types
-        from .base_types import get_type
-        # If var_type is None, infer from value
-        if var_type is None:
-            if isinstance(value, dict) and value.get('type') == 'literal':
-                literal_value = value['value']
-                if isinstance(literal_value, int):
-                    var_type = 'int'
-                elif isinstance(literal_value, float):
-                    var_type = 'float'
-                elif isinstance(literal_value, str):
-                    var_type = 'string'
-                else:
-                    var_type = 'int'  # Default
-            elif isinstance(value, int):
-                var_type = 'int'
-            elif isinstance(value, float):
-                var_type = 'float'
-            elif isinstance(value, str):
-                var_type = 'string'
-            else:
-                var_type = 'int'  # Default
-        
-        debug_print(f"DEBUG: process_shared_declaration - name: {name}, value: {value}, inferred var_type: {var_type}")
-        
-        llvm_type = get_type(var_type)
-        debug_print(f"DEBUG: Declaring shared variable '{name}' of type '{var_type}' (LLVM type: {llvm_type})")
-        
-        variable = ir.GlobalVariable(self.module, llvm_type, name=name)
-        # Use 'common' linkage for shared mutable variables so TSan can instrument them
-        # 'internal' linkage makes TSan think the variable isn't shared across threads
-        variable.linkage = 'common' if not is_constant else 'internal'
-        
-        # Add external name attribute for better TSan reporting
-        # This helps TSan display the actual source variable name
-        if not is_constant:
-            variable.storage_class = 'default'
-        if isinstance(value, dict) and value.get('type') == 'literal':
-            variable.initializer = ir.Constant(llvm_type, value['value'])
-        elif value is not None and not isinstance(value, dict):
-            # Simple value (not a complex expression)
-            variable.initializer = ir.Constant(llvm_type, value)
-        else:
-            # Complex expression (like function calls) or no value - use default initialization
-            # Global variables must have constant initializers, so we default to 0
-            variable.initializer = ir.Constant(llvm_type, 0)
-            debug_print(f"DEBUG: Using default initializer (0) for complex expression in '{name}'")
-            
-            # Add to runtime initialization list if it's a complex expression that needs evaluation
-            if isinstance(value, dict):
-                self.shared_runtime_inits.append((name, value))
-                debug_print(f"DEBUG: Added '{name}' to runtime initialization list")
-        
-        self.globals[name] = (variable, var_type, is_constant)  # Store as tuple with constness
-        debug_print(f"DEBUG: Created global variable '{name}' with inferred type '{var_type}'")    
+        # Scalar (int, float, string, or inferred)
+        self._shared_decl_scalar(name, var_type, value, is_constant)    
     def visit_procedure(self, node: Dict[str, Any]) -> None:
         # This method is now handled by the two-pass compilation
         # The actual compilation happens in compile_procedure_bodies
@@ -796,868 +844,512 @@ class CodeGenerator:
         # The actual compilation happens in compile_procedure_bodies
         pass
 
+    # ------------------------------------------------------------------
+    # Declaration helpers (each handles one var_type in visit_declaration)
+    # ------------------------------------------------------------------
+
+    def _decl_semaphore(self, name: str, shared: bool, is_constant: bool,
+                         evaluated_value, raw_value) -> None:
+        """Allocate / initialise a semaphore variable."""
+        opaque_ty = ir.IntType(8).as_pointer()
+        sem_init_fn = self._declare_external_fn(
+            'sem_init', ir.IntType(32),
+            [opaque_ty, ir.IntType(32), ir.IntType(32)])
+
+        if shared:
+            sem_storage, _, _ = self.globals[name]
+            if self.current_function_name == 'main':
+                sem_ptr = self.builder.bitcast(sem_storage, opaque_ty)
+                init_int = (raw_value if isinstance(raw_value, int)
+                            else evaluated_value if isinstance(evaluated_value, int)
+                            else 0)
+                debug_print(f"DEBUG: sem_init '{name}' with value {init_int}")
+                self.builder.call(sem_init_fn, [sem_ptr,
+                                                ir.Constant(ir.IntType(32), 0),
+                                                ir.Constant(ir.IntType(32), init_int)])
+        else:
+            storage = self.builder.alloca(ir.ArrayType(ir.IntType(8), 32),
+                                           name=f"{name}_storage")
+            sem_ptr = self.builder.bitcast(storage, opaque_ty)
+            self.locals[name] = (sem_ptr, 'semaphore', is_constant)
+            if isinstance(evaluated_value, int):
+                self.builder.call(sem_init_fn, [sem_ptr,
+                                                ir.Constant(ir.IntType(32), 0),
+                                                ir.Constant(ir.IntType(32), evaluated_value)])
+            self.local_semaphores.append((name, sem_ptr))
+
+    def _decl_mutex(self, name: str, shared: bool, is_constant: bool) -> None:
+        """Allocate / initialise a mutex variable."""
+        opaque_ty = ir.IntType(8).as_pointer()
+        null_attr = ir.Constant(opaque_ty, None)
+        mutex_init_fn = self._declare_external_fn(
+            'pthread_mutex_init', ir.IntType(32), [opaque_ty, opaque_ty])
+
+        if shared:
+            mutex_storage, _, _ = self.globals[name]
+            if self.current_function_name == 'main':
+                mutex_ptr = self.builder.bitcast(mutex_storage, opaque_ty)
+                self.builder.call(mutex_init_fn, [mutex_ptr, null_attr])
+        else:
+            storage = self.builder.alloca(ir.ArrayType(ir.IntType(8), 40),
+                                           name=f"{name}_storage")
+            mutex_ptr = self.builder.bitcast(storage, opaque_ty)
+            self.locals[name] = (mutex_ptr, 'mutex', is_constant)
+            self.builder.call(mutex_init_fn, [mutex_ptr, null_attr])
+            self.local_mutexes.append((name, mutex_ptr))
+
+    def _decl_barrier(self, name: str, shared: bool, is_constant: bool,
+                       init_value_expr) -> None:
+        """Allocate / initialise a barrier variable."""
+        opaque_ty = ir.IntType(8).as_pointer()
+        null_attr = ir.Constant(opaque_ty, None)
+        barrier_init_fn = self._declare_external_fn(
+            'pthread_barrier_init', ir.IntType(32),
+            [opaque_ty, opaque_ty, ir.IntType(32)])
+
+        # Determine participant count
+        barrier_count = ir.Constant(ir.IntType(32), 1)
+        if (isinstance(init_value_expr, dict) and
+                init_value_expr.get('type') == 'function_call' and
+                init_value_expr.get('name') == 'barrier'):
+            bargs = init_value_expr.get('arguments', [])
+            if bargs:
+                try:
+                    cnt = self.visit(bargs[0])
+                    if hasattr(cnt, 'type') and isinstance(cnt.type, ir.IntType) and cnt.type.width != 32:
+                        cnt = (self.builder.trunc(cnt, ir.IntType(32))
+                               if cnt.type.width > 32
+                               else self.builder.zext(cnt, ir.IntType(32)))
+                    barrier_count = cnt
+                except Exception:
+                    pass
+
+        if shared:
+            barrier_storage, _, _ = self.globals[name]
+            if self.current_function_name == 'main':
+                barrier_ptr = self.builder.bitcast(barrier_storage, opaque_ty)
+                self.builder.call(barrier_init_fn, [barrier_ptr, null_attr, barrier_count])
+        else:
+            storage = self.builder.alloca(ir.ArrayType(ir.IntType(8), 128),
+                                           name=f"{name}_storage")
+            barrier_ptr = self.builder.bitcast(storage, opaque_ty)
+            self.locals[name] = (barrier_ptr, 'barrier', is_constant)
+            self.builder.call(barrier_init_fn, [barrier_ptr, null_attr, barrier_count])
+            self.local_barriers.append((name, barrier_ptr))
+
+    def _decl_queue(self, name: str, shared: bool, is_constant: bool,
+                     init_value_expr) -> None:
+        """Allocate / initialise a queue variable."""
+        queue_capacity = 10  # default
+        if (isinstance(init_value_expr, dict) and
+                init_value_expr.get('type') == 'function_call' and
+                init_value_expr.get('name') == 'queue'):
+            qargs = init_value_expr.get('arguments', [])
+            if qargs and isinstance(qargs[0], dict) and qargs[0].get('type') == 'literal':
+                queue_capacity = int(qargs[0]['value'])
+
+        total_words = 4 + queue_capacity
+        if shared:
+            queue_storage, _, _ = self.globals[name]
+            queue_i32_ptr = self.builder.bitcast(queue_storage, ir.IntType(32).as_pointer())
+            self.globals[name] = (queue_i32_ptr, 'queue', False)
+        else:
+            storage = self.builder.alloca(ir.ArrayType(ir.IntType(32), total_words),
+                                           name=f"{name}_storage")
+            zero = ir.Constant(ir.IntType(32), 0)
+            queue_ptr = self.builder.gep(storage, [zero, zero])
+            self.builder.store(ir.Constant(ir.IntType(32), queue_capacity), queue_ptr)
+            for field_idx in (1, 2, 3):  # count, head, tail
+                fptr = self.builder.gep(storage, [zero, ir.Constant(ir.IntType(32), field_idx)])
+                self.builder.store(ir.Constant(ir.IntType(32), 0), fptr)
+            self.locals[name] = (queue_ptr, 'queue', is_constant)
+
+    def _decl_variant_local(self, name: str, is_constant: bool,
+                             evaluated_value, raw_value) -> None:
+        """Allocate a local variant variable and initialise it."""
+        from .base_types import (get_variant_type, get_variant_type_tag_enum,
+                                  get_type_tag_for_value, get_raw_type)
+        variant_ty = get_variant_type()
+        variable = self.builder.alloca(variant_ty, name=name)
+        self.locals[name] = (variable, 'variant', is_constant)
+
+        value_type = None
+        if evaluated_value is not None:
+            type_tag = get_type_tag_for_value(evaluated_value, 'variant')
+            self._store_variant_value(variable, evaluated_value, type_tag, 'variant')
+            if hasattr(evaluated_value, 'type'):
+                if isinstance(evaluated_value.type, ir.DoubleType):
+                    value_type = 'float'
+                elif isinstance(evaluated_value.type, ir.IntType):
+                    value_type = 'int'
+                elif (isinstance(evaluated_value.type, ir.PointerType) and
+                      str(evaluated_value.type.pointee) == 'i8'):
+                    value_type = 'string'
+        elif raw_value is not None:
+            llvm_val = ir.Constant(get_raw_type('int'), raw_value) if isinstance(raw_value, int) else \
+                       ir.Constant(get_raw_type('float'), raw_value) if isinstance(raw_value, float) else None
+            if llvm_val is not None:
+                type_tag = get_type_tag_for_value(llvm_val, 'variant')
+                self._store_variant_value(variable, llvm_val, type_tag, 'variant')
+                value_type = 'float' if isinstance(raw_value, float) else 'int'
+            else:
+                self._store_null_variant(variable)
+                value_type = 'string' if isinstance(raw_value, str) else 'null'
+        else:
+            self._store_null_variant(variable)
+            value_type = 'null'
+
+        if value_type:
+            self.var_types[name] = value_type
+            debug_print(f"DEBUG: visit_declaration - tracked type for '{name}': {value_type}")
+
+    def _infer_array_element_type(self, init_value_expr) -> str:
+        """Return the element type string for an array() call init expression."""
+        args = init_value_expr.get('arguments', []) if isinstance(init_value_expr, dict) else []
+        if len(args) < 2:
+            return 'int'
+        elem = args[1]
+        if not isinstance(elem, dict):
+            return 'int'
+        if elem.get('type') == 'function_call':
+            name = elem.get('name')
+            if name in ('semaphore', 'mutex', 'barrier', 'thread'):
+                return name
+        if elem.get('type') == 'literal' and elem.get('value') in ('thread', '"thread"'):
+            return 'thread'
+        return 'int'
+
+    # ------------------------------------------------------------------
+    # visit_declaration — dispatch to per-type helpers
+    # ------------------------------------------------------------------
+
     def visit_declaration(self, node: Dict[str, Any]) -> None:
         debug_print(f"DEBUG: visit_declaration - Processing node: {node}")
         name = node['name']
         shared = node['shared']
-        is_constant = node.get('const', False)  # Get const flag from parser
-        
-        # Skip shared declarations during the second pass - they were already processed
-        # Exception: semaphores, mutexes, and barriers need runtime initialization in main
-        if shared:
-            if name in self.globals:
-                _, var_type, _ = self.globals[name]
-                if var_type in ['semaphore', 'mutex', 'barrier'] and self.current_function_name == 'main':
-                    debug_print(f"DEBUG: visit_declaration - Handling shared {var_type} initialization for '{name}' in main")
-                    debug_print(f"DEBUG: visit_declaration - Will continue to process shared {var_type} '{name}' for initialization")
-                    # Continue processing for initialization - don't return here, let it fall through to the initialization code
-                elif var_type == 'thread_array':
-                    debug_print(f"DEBUG: visit_declaration - Handling shared thread array '{name}'")
-                    # Special case: if this is a shared thread array, we need to execute the create_threads call
-                    if name in self.globals and self.globals[name][1] == 'thread_array':
-                        init = node['init']
-                        if init.get('value', {}).get('type') == 'function_call' and init['value'].get('name') == 'create_threads':
-                            debug_print(f"DEBUG: visit_declaration - executing create_threads call for shared '{name}'")
-                            self.visit(init['value'])  # Execute the create_threads call
-                    return
-                else:
-                    debug_print(f"DEBUG: visit_declaration - Skipping shared declaration '{name}' (already processed in first pass)")
-                    return
-            
-        init = node['init']
-        var_type = init.get('var_type', None)  # None means type needs to be inferred
-        
-        # Validate assignment operator for constants
-        assignment_op = init.get('assignment_op')
-        if assignment_op is not None:  # Only check if there's an assignment
-            if is_constant and assignment_op != '=':
-                raise Exception(f"Constants must be assigned using '=' operator, not '{assignment_op}'. Found in declaration of '{name}'.")
-            elif not is_constant and assignment_op != ':=':
-                raise Exception(f"Mutable variables must be assigned using ':=' operator, not '{assignment_op}'. Found in declaration of '{name}'.")
-        
-        # Check if this is a special function call (mutex, semaphore, etc.)
-        init_value_expr = init.get('value')
-        if (isinstance(init_value_expr, dict) and 
-            init_value_expr.get('type') == 'function_call'):
-            
-            func_name = init_value_expr.get('name')
-            if func_name == 'mutex':
-                var_type = 'mutex'
-                evaluated_value = None  # Will be handled by mutex logic below
-            elif func_name == 'semaphore':
-                var_type = 'semaphore'
-                # Extract initial value from semaphore function arguments
-                args = init_value_expr.get('arguments', [])
-                if args and args[0].get('type') == 'literal':
-                    evaluated_value = args[0]['value']
-                else:
-                    evaluated_value = 0  # Default semaphore value
-            elif func_name == 'barrier':
-                var_type = 'barrier'
-                # Extract participant count from barrier function arguments
-                args = init_value_expr.get('arguments', [])
-                if args and args[0].get('type') == 'literal':
-                    evaluated_value = args[0]['value']
-                else:
-                    evaluated_value = 1  # Default barrier count
-            elif func_name == 'queue':
-                var_type = 'queue'
-                evaluated_value = None  # Handled inside the queue block using init_value_expr directly
-            else:
-                # Regular function call - evaluate it
-                evaluated_value = self.visit(init_value_expr)
-        elif init_value_expr is not None:
-            # Visit the initialization expression to get the LLVM value
-            evaluated_value = self.visit(init_value_expr)
-        else:
-            evaluated_value = None
-            
-        # For type inference, we need to look at the expression type, not the raw value
-        raw_value = init_value_expr.get('value') if isinstance(init_value_expr, dict) else None
+        is_constant = node.get('const', False)
 
-        # Detect thread array type from create_threads function_call
-        if var_type is None and isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call' and init_value_expr.get('name') == 'create_threads':
-            var_type = 'thread_array'
-        
-        # Detect thread type from create_thread function_call
-        if var_type is None and isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call' and init_value_expr.get('name') == 'create_thread':
-            var_type = 'thread'
-            debug_print(f"DEBUG: visit_declaration - detected create_thread call, setting type to 'thread'")
-        
-        # Detect semaphore, mutex, or barrier type from function_call
-        # Also handle shared semaphores that already have a type but need initial value extraction
+        # --- Shared declarations: mostly already handled in pass 1 ---
+        if shared and name in self.globals:
+            _, var_type, _ = self.globals[name]
+            if var_type in ('semaphore', 'mutex', 'barrier') and self.current_function_name == 'main':
+                pass  # fall through for runtime init below
+            elif var_type == 'thread_array':
+                init = node['init']
+                val = init.get('value', {})
+                if isinstance(val, dict) and val.get('type') == 'function_call' and val.get('name') == 'create_threads':
+                    self.visit(val)
+                return
+            else:
+                return
+
+        init = node['init']
+        assignment_op = init.get('assignment_op')
+        if assignment_op is not None:
+            if is_constant and assignment_op != '=':
+                raise Exception(f"Constants must use '=' not '{assignment_op}' in declaration of '{name}'.")
+            if not is_constant and assignment_op != ':=':
+                raise Exception(f"Mutable variables must use ':=' not '{assignment_op}' in declaration of '{name}'.")
+
+        init_value_expr = init.get('value')
+        var_type = init.get('var_type')
+
+        # --- Determine type and (for primitive types) evaluate the init expr ---
+        evaluated_value = None
+        raw_value = None
+
+        _SPECIAL_TYPES = {'mutex', 'semaphore', 'barrier', 'queue',
+                          'create_threads', 'create_thread'}
+
         if isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call':
             fname = init_value_expr.get('name')
-            if fname == 'semaphore':
-                if var_type is None:
-                    var_type = 'semaphore'
-                    debug_print(f"DEBUG: visit_declaration - Set var_type to 'semaphore' for '{name}'")
-                # Extract initial value for both new and shared semaphores
+            if fname == 'mutex':
+                var_type = 'mutex'
+            elif fname == 'semaphore':
+                var_type = 'semaphore'
                 args = init_value_expr.get('arguments', [])
                 raw_value = args[0]['value'] if args and args[0].get('type') == 'literal' else None
-                debug_print(f"DEBUG: visit_declaration - semaphore '{name}' raw_value extracted: {raw_value}, var_type: {var_type}")
-            elif fname == 'mutex':
-                if var_type is None:
-                    var_type = 'mutex'
-                raw_value = None  # Mutexes don't take initial values
+                evaluated_value = raw_value if isinstance(raw_value, int) else 0
             elif fname == 'barrier':
                 var_type = 'barrier'
-                args = init_value_expr.get('arguments', [])
-                raw_value = args[0]['value'] if args and args[0].get('type') == 'literal' else None
             elif fname == 'queue':
                 var_type = 'queue'
-                raw_value = None  # Capacity is read directly from the function call args later
             elif fname == 'variant':
                 var_type = 'variant'
-                # Variants can be initialized with any value
-                raw_value = None
-
-        debug_print(f"DEBUG: visit_declaration - About to check semaphore initialization for '{name}', var_type: {var_type}, shared: {shared}")
-        if var_type == 'semaphore':
-            debug_print(f"DEBUG: visit_declaration - Processing semaphore '{name}' (shared: {shared})")
-            sem_ty = ir.IntType(8).as_pointer()
-            if shared:
-                sem_storage, _, _ = self.globals[name]
-                # Don't store the bitcast in globals - create it fresh each time
-                # Keep the storage pointer in globals
-                if self.current_function_name == 'main':
-                    debug_print(f"DEBUG: Initializing shared semaphore '{name}', evaluated_value: {evaluated_value}, type: {type(evaluated_value)}")
-                    sem_ptr = self.builder.bitcast(sem_storage, sem_ty)
-                    sem_init = self.module.globals.get('sem_init')
-                    if not sem_init:
-                        sem_init_ty = ir.FunctionType(ir.IntType(32), [sem_ty, ir.IntType(32), ir.IntType(32)])
-                        sem_init = ir.Function(self.module, sem_init_ty, name='sem_init')
-                    pshared = ir.Constant(ir.IntType(32), 0)
-                    # For shared semaphores, use raw_value if available, otherwise evaluated_value
-                    if isinstance(raw_value, int):
-                        init_int = raw_value
-                    elif isinstance(evaluated_value, int):
-                        init_int = evaluated_value
-                    else:
-                        init_int = 0
-                    debug_print(f"DEBUG: Semaphore '{name}' init_int: {init_int} (from raw_value: {raw_value}, evaluated_value: {evaluated_value})")
-                    initial = ir.Constant(ir.IntType(32), init_int)
-                    self.builder.call(sem_init, [sem_ptr, pshared, initial])
-                    debug_print(f"DEBUG: sem_init called for '{name}' with initial value: {init_int}")
-                return
+            elif fname == 'create_threads':
+                var_type = 'thread_array'
+                evaluated_value = self.visit(init_value_expr)
+            elif fname == 'create_thread':
+                var_type = 'thread'
+                evaluated_value = self.visit(init_value_expr)
+            elif fname == 'array':
+                var_type = 'array'
+                evaluated_value = self.visit(init_value_expr)
             else:
-                sem_storage_ty = ir.ArrayType(ir.IntType(8), 32)
-                variable = self.builder.alloca(sem_storage_ty, name=f"{name}_storage")
-                sem_ptr = self.builder.bitcast(variable, sem_ty)
-                self.locals[name] = (sem_ptr, 'semaphore', is_constant)
-                if isinstance(evaluated_value, int):
-                    sem_init = self.module.globals.get('sem_init')
-                    if not sem_init:
-                        sem_init_ty = ir.FunctionType(ir.IntType(32), [sem_ty, ir.IntType(32), ir.IntType(32)])
-                        sem_init = ir.Function(self.module, sem_init_ty, name='sem_init')
-                    pshared = ir.Constant(ir.IntType(32), 0)
-                    initial = ir.Constant(ir.IntType(32), evaluated_value)
-                    self.builder.call(sem_init, [sem_ptr, pshared, initial])
-                # Track local semaphore for cleanup
-                self.local_semaphores.append((name, sem_ptr))
-                return
+                evaluated_value = self.visit(init_value_expr)
+        elif init_value_expr is not None:
+            evaluated_value = self.visit(init_value_expr)
+            raw_value = init_value_expr.get('value') if isinstance(init_value_expr, dict) else None
 
-        if var_type == 'mutex':
-            mutex_ty = ir.IntType(8).as_pointer()
-            if shared:
-                mutex_storage, _, _ = self.globals[name]
-                # Don't store the bitcast in globals - create it fresh each time
-                # Keep the storage pointer in globals
-                if self.current_function_name == 'main':
-                    mutex_ptr = self.builder.bitcast(mutex_storage, mutex_ty)
-                    pthread_mutex_init = self.module.globals.get('pthread_mutex_init')
-                    if not pthread_mutex_init:
-                        pthread_mutex_init_ty = ir.FunctionType(ir.IntType(32), [mutex_ty, ir.IntType(8).as_pointer()])
-                        pthread_mutex_init = ir.Function(self.module, pthread_mutex_init_ty, name='pthread_mutex_init')
-                    # Initialize with NULL attributes (default mutex)
-                    null_attr = ir.Constant(ir.IntType(8).as_pointer(), None)
-                    self.builder.call(pthread_mutex_init, [mutex_ptr, null_attr])
-                return
-            else:
-                mutex_storage_ty = ir.ArrayType(ir.IntType(8), 40)
-                variable = self.builder.alloca(mutex_storage_ty, name=f"{name}_storage")
-                mutex_ptr = self.builder.bitcast(variable, mutex_ty)
-                self.locals[name] = (mutex_ptr, 'mutex', is_constant)
-                # Initialize the mutex
-                pthread_mutex_init = self.module.globals.get('pthread_mutex_init')
-                if not pthread_mutex_init:
-                    pthread_mutex_init_ty = ir.FunctionType(ir.IntType(32), [mutex_ty, ir.IntType(8).as_pointer()])
-                    pthread_mutex_init = ir.Function(self.module, pthread_mutex_init_ty, name='pthread_mutex_init')
-                # Initialize with NULL attributes (default mutex)
-                null_attr = ir.Constant(ir.IntType(8).as_pointer(), None)
-                self.builder.call(pthread_mutex_init, [mutex_ptr, null_attr])
-                # Track local mutex for cleanup
-                self.local_mutexes.append((name, mutex_ptr))
-                return
-
-        if var_type == 'barrier':
-            barrier_ty = ir.IntType(8).as_pointer()
-            # Determine participant count from barrier() call if present
-            barrier_count = ir.Constant(ir.IntType(32), 1)
-            if isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call' and init_value_expr.get('name') == 'barrier':
-                bargs = init_value_expr.get('arguments', [])
-                if bargs:
-                    try:
-                        cnt = self.visit(bargs[0])
-                        if hasattr(cnt, 'type') and isinstance(cnt.type, ir.IntType) and cnt.type.width != 32:
-                            cnt = self.builder.trunc(cnt, ir.IntType(32)) if cnt.type.width > 32 else self.builder.zext(cnt, ir.IntType(32))
-                        barrier_count = cnt
-                    except Exception:
-                        barrier_count = ir.Constant(ir.IntType(32), 1)
-            if shared:
-                barrier_storage, _, _ = self.globals[name]
-                # Don't store the bitcast in globals - create it fresh each time
-                # Keep the storage pointer in globals
-                if self.current_function_name == 'main':
-                    barrier_ptr = self.builder.bitcast(barrier_storage, barrier_ty)
-                    barrier_init = self.module.globals.get('pthread_barrier_init')
-                    if not barrier_init:
-                        barrier_init_ty = ir.FunctionType(ir.IntType(32), [barrier_ty, ir.IntType(8).as_pointer(), ir.IntType(32)])
-                        barrier_init = ir.Function(self.module, barrier_init_ty, name='pthread_barrier_init')
-                    null_attr = ir.Constant(ir.IntType(8).as_pointer(), None)
-                    self.builder.call(barrier_init, [barrier_ptr, null_attr, barrier_count])
-                return
-            else:
-                barrier_storage_ty = ir.ArrayType(ir.IntType(8), 128)
-                variable = self.builder.alloca(barrier_storage_ty, name=f"{name}_storage")
-                barrier_ptr = self.builder.bitcast(variable, barrier_ty)
-                self.locals[name] = (barrier_ptr, 'barrier', is_constant)
-                barrier_init = self.module.globals.get('pthread_barrier_init')
-                if not barrier_init:
-                    barrier_init_ty = ir.FunctionType(ir.IntType(32), [barrier_ty, ir.IntType(8).as_pointer(), ir.IntType(32)])
-                    barrier_init = ir.Function(self.module, barrier_init_ty, name='pthread_barrier_init')
-                null_attr = ir.Constant(ir.IntType(8).as_pointer(), None)
-                self.builder.call(barrier_init, [barrier_ptr, null_attr, barrier_count])
-                # Track local barrier for cleanup
-                self.local_barriers.append((name, barrier_ptr))
-                return
-
-        if var_type == 'queue':
-            # Queue layout in i32 array: [capacity, count, head, tail, buf[0], ..., buf[capacity-1]]
-            # Extract capacity from queue(capacity) call
-            queue_capacity = 10  # Default
-            if isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call' and init_value_expr.get('name') == 'queue':
-                qargs = init_value_expr.get('arguments', [])
-                if qargs:
-                    cap_node = qargs[0]
-                    if isinstance(cap_node, dict) and cap_node.get('type') == 'literal':
-                        queue_capacity = int(cap_node['value'])
-            total_words = 4 + queue_capacity
-            if shared:
-                # The global storage was pre-allocated in process_shared_declaration.
-                # In main, write the initial values (capacity already set by global initializer,
-                # but count/head/tail are already zero-initialized, so nothing more to do).
-                # Store the global array variable so callers can GEP into it.
-                queue_storage, _, _ = self.globals[name]
-                queue_i32_ptr = self.builder.bitcast(queue_storage, ir.IntType(32).as_pointer())
-                self.globals[name] = (queue_i32_ptr, 'queue', False)
-                debug_print(f"DEBUG: Shared queue '{name}' ready with capacity {queue_capacity}")
-                return
-            else:
-                # Local queue: allocate on stack as [total_words x i32]
-                queue_storage_ty = ir.ArrayType(ir.IntType(32), total_words)
-                storage = self.builder.alloca(queue_storage_ty, name=f"{name}_storage")
-                # Get i32* pointer to first element
-                zero = ir.Constant(ir.IntType(32), 0)
-                queue_ptr = self.builder.gep(storage, [zero, zero])
-                # Write header: capacity, count=0, head=0, tail=0
-                self.builder.store(ir.Constant(ir.IntType(32), queue_capacity), queue_ptr)
-                count_ptr = self.builder.gep(storage, [zero, ir.Constant(ir.IntType(32), 1)])
-                self.builder.store(ir.Constant(ir.IntType(32), 0), count_ptr)
-                head_ptr = self.builder.gep(storage, [zero, ir.Constant(ir.IntType(32), 2)])
-                self.builder.store(ir.Constant(ir.IntType(32), 0), head_ptr)
-                tail_ptr = self.builder.gep(storage, [zero, ir.Constant(ir.IntType(32), 3)])
-                self.builder.store(ir.Constant(ir.IntType(32), 0), tail_ptr)
-                self.locals[name] = (queue_ptr, 'queue', is_constant)
-                debug_print(f"DEBUG: Local queue '{name}' allocated with capacity {queue_capacity}")
-                return
-
-        if var_type == 'variant':
-            from .base_types import get_variant_type, get_variant_type_tag_enum
-            variant_ty = get_variant_type()
-            
-            if shared:
-                # For shared variants, just get the existing global variable and initialize it
-                variant_ptr, _, _ = self.globals[name]
-                self.globals[name] = (variant_ptr, 'variant', False)
-                # The initialization was handled in process_shared_declaration
-                return
-            else:
-                # Create local variant
-                variable = self.builder.alloca(variant_ty, name=name)
-                self.locals[name] = (variable, 'variant', is_constant)
-                
-                # Initialize variant based on the provided value
-                if evaluated_value is not None:
-                    # We need runtime functions to create variants properly
-                    # For now, create a null variant and let runtime functions handle it
-                    type_tags = get_variant_type_tag_enum()
-                    null_tag = ir.Constant(ir.IntType(32), type_tags['null'])
-                    null_data = ir.Constant(ir.ArrayType(ir.IntType(8), 16), [ir.Constant(ir.IntType(8), 0)] * 16)
-                    null_variant = ir.Constant(variant_ty, [null_tag, null_data])
-                    self.builder.store(null_variant, variable)
-                    # TODO: Call runtime function to initialize with proper value
-                else:
-                    # Create null variant
-                    type_tags = get_variant_type_tag_enum()
-                    null_tag = ir.Constant(ir.IntType(32), type_tags['null'])
-                    null_data = ir.Constant(ir.ArrayType(ir.IntType(8), 16), [ir.Constant(ir.IntType(8), 0)] * 16)
-                    null_variant = ir.Constant(variant_ty, [null_tag, null_data])
-                    self.builder.store(null_variant, variable)
-                return
-
-        # Check for array function call before general type inference
-        if (isinstance(init_value_expr, dict) and 
-            init_value_expr.get('type') == 'function_call' and 
-            init_value_expr.get('name') == 'array'):
-            # Handle array() function calls for local arrays
-            debug_print(f"DEBUG: visit_declaration - handling array() function call for '{name}'")
-            array_ptr = evaluated_value  # Already evaluated above
-            
-            # Extract element type from the array function arguments
-            args = init_value_expr.get('arguments', [])
-            if len(args) >= 2:
-                element_init = args[1]
-                if isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'thread':
-                    element_type = 'thread'
-                elif isinstance(element_init, dict) and element_init.get('type') == 'literal' and element_init.get('value') == 'thread':
-                    element_type = 'thread'
-                elif isinstance(element_init, dict) and element_init.get('type') == 'literal' and element_init.get('value') == '"thread"':
-                    element_type = 'thread'
-                elif isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'semaphore':
-                    element_type = 'semaphore'
-                elif isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'mutex':
-                    element_type = 'mutex'
-                elif isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'barrier':
-                    element_type = 'barrier'
-                else:
-                    element_type = 'int'
-            else:
-                element_type = 'int'
-            
-            # Store the array pointer in locals with array type
-            self.locals[name] = (array_ptr, f'array_{element_type}', is_constant)
-            return
-        
-        # Handle thread_array type from create_threads
-        if var_type == 'thread_array':
-            debug_print(f"DEBUG: visit_declaration - handling thread_array for '{name}'")
-            # evaluated_value should be the array pointer from create_threads
-            if evaluated_value is not None:
-                self.locals[name] = (evaluated_value, 'thread_array', is_constant)
-            else:
-                raise Exception(f"thread_array '{name}' must be initialized with create_threads()")
-            return
-
-        from .base_types import get_type, is_variant_type, get_variant_type
-        
-        # Check if there's an explicit type annotation in the init
-        explicit_type = init.get('var_type')
-        
-        # If there's an explicit type, use it
-        if explicit_type is not None:
-            var_type = explicit_type
-            debug_print(f"DEBUG: visit_declaration - using explicit type: {var_type}")
-        # If no explicit type and no inferred type yet, create as variant (dynamic type)
-        elif var_type is None:
+        # Default to variant for untyped variables
+        if var_type is None:
             var_type = 'variant'
-            debug_print(f"DEBUG: visit_declaration - no explicit type provided, creating as variant for dynamic typing")
-        else:
-            debug_print(f"DEBUG: visit_declaration - using inferred type: {var_type}")
-        
-        
-        # Check if this should be a transparent variant (only for untyped variables)
+
+        # --- Dispatch to per-type handler ---
+        if var_type == 'semaphore':
+            self._decl_semaphore(name, shared, is_constant, evaluated_value, raw_value)
+            return
+        if var_type == 'mutex':
+            self._decl_mutex(name, shared, is_constant)
+            return
+        if var_type == 'barrier':
+            self._decl_barrier(name, shared, is_constant, init_value_expr)
+            return
+        if var_type == 'queue':
+            self._decl_queue(name, shared, is_constant, init_value_expr)
+            return
+
+        # Shared variant: already initialised in pass 1
+        if var_type == 'variant' and shared:
+            return
+
         if var_type == 'variant':
-            # Create variant automatically for transparent variant system
-            from .base_types import get_variant_type, get_variant_type_tag_enum, get_type_tag_for_value
-            variant_ty = get_variant_type()
-            variable = self.builder.alloca(variant_ty, name=name)
-            
-            # Track the actual value type for type inference in binary operations
-            value_type = None
-            
+            self._decl_variant_local(name, is_constant, evaluated_value, raw_value)
+            return
+
+        if var_type == 'array':
+            element_type = self._infer_array_element_type(init_value_expr)
+            self.locals[name] = (evaluated_value, f'array_{element_type}', is_constant)
+            return
+
+        if var_type == 'thread_array':
+            if evaluated_value is None:
+                raise Exception(f"thread_array '{name}' must be initialised with create_threads()")
+            self.locals[name] = (evaluated_value, 'thread_array', is_constant)
+            return
+
+        if var_type == 'thread':
             if evaluated_value is not None:
-                # Create variant with the evaluated value
-                type_tag = get_type_tag_for_value(evaluated_value, var_type)
-                self._store_variant_value(variable, evaluated_value, type_tag, var_type)
-                # Determine the value type from evaluated_value
-                if hasattr(evaluated_value, 'type'):
-                    if isinstance(evaluated_value.type, ir.DoubleType):
-                        value_type = 'float'
-                    elif isinstance(evaluated_value.type, ir.IntType):
-                        value_type = 'int'
-                    elif isinstance(evaluated_value.type, ir.PointerType):
-                        # Check if it's a string (i8*)
-                        if hasattr(evaluated_value.type, 'pointee') and str(evaluated_value.type.pointee) == 'i8':
-                            value_type = 'string'
-            elif raw_value is not None:
-                # Create variant with raw value
-                from .base_types import get_raw_type
-                llvm_value = ir.Constant(get_raw_type(var_type), raw_value)
-                type_tag = get_type_tag_for_value(llvm_value, var_type)
-                self._store_variant_value(variable, llvm_value, type_tag, var_type)
-                # Determine value type from raw_value
-                if isinstance(raw_value, float):
-                    value_type = 'float'
-                elif isinstance(raw_value, int):
-                    value_type = 'int'
-                elif isinstance(raw_value, str):
-                    value_type = 'string'
-            else:
-                # Create null variant
-                type_tags = get_variant_type_tag_enum()
-                self._store_null_variant(variable)
-                value_type = 'null'
-            
-            # Track the value type for this variable
-            if value_type:
-                self.var_types[name] = value_type
-                debug_print(f"DEBUG: visit_declaration - tracked type for '{name}': {value_type}")
-            
-            self.locals[name] = (variable, 'variant', is_constant)
-        else:
-            # System types (int, float, string, semaphore, mutex, etc.) use original logic
-            llvm_type = get_type(var_type)
-            variable = self.builder.alloca(llvm_type, name=name)
-            if evaluated_value is not None:
-                # Store the evaluated value directly
-                self.builder.store(evaluated_value, variable)
-            elif raw_value is not None:
-                # Fall back to constant if we have a raw value
-                initial_value = ir.Constant(llvm_type, raw_value)
-                self.builder.store(initial_value, variable)
-            self.locals[name] = (variable, var_type, is_constant)
+                self.locals[name] = (evaluated_value, 'thread', is_constant)
+            return
+
+        # Generic typed variable (int, float, string, …)
+        from .base_types import get_type as _get_type
+        llvm_type = _get_type(var_type)
+        variable = self.builder.alloca(llvm_type, name=name)
+        if evaluated_value is not None:
+            self.builder.store(evaluated_value, variable)
+        elif raw_value is not None:
+            self.builder.store(ir.Constant(llvm_type, raw_value), variable)
+        self.locals[name] = (variable, var_type, is_constant)
+
+    def _store_value_to_variant(self, ptr: ir.Value, value: ir.Value) -> None:
+        """Store an LLVM value into a variant pointer, inferring the type. Delegates to variant_utils."""
+        variant_utils.store_value_to_variant(self.builder, self.module, ptr, value)
+
+    def _extract_for_array_type(self, value: ir.Value, array_type: str) -> ir.Value:
+        """Extract the concrete element from a variant to match *array_type*. Delegates to variant_utils."""
+        return variant_utils.extract_for_array_type(self.builder, self.module, value, array_type)
 
     def visit_assignment(self, node: Dict[str, Any]) -> None:
         debug_print(f"DEBUG: visit_assignment - Processing assignment: {node}")
         target = node['target']
         value = self.visit(node['value'])
-        
-        # Handle different types of assignment targets
+
         if isinstance(target, str):
             # Simple variable assignment
-            debug_print(f"DEBUG: visit_assignment - Assigning to variable: {target}")
             entry = self.get_variable(target)
             if entry is None:
                 self.semantic_error(f"undefined variable '{target}' in assignment", node)
             ptr, dtype, is_constant = entry
-            debug_print(f"DEBUG: visit_assignment - Variable {target} has dtype: {dtype}, is_constant: {is_constant}")
-            
-            # Check if trying to assign to a constant
             if is_constant:
-                raise Exception(f"Cannot assign to constant variable '{target}'. Constants can only be set during declaration.")
-            
-            # Handle transparent variant assignment
+                raise Exception(f"Cannot assign to constant variable '{target}'.")
+
             if dtype == 'variant':
-                debug_print(f"DEBUG: visit_assignment - Assigning to variant variable: {target}")
-                # Determine the type of the value being assigned
-                from .base_types import get_type_tag_for_value
-                
                 if hasattr(value, 'type'):
-                    if isinstance(value.type, ir.IntType) and value.type.width == 32:
-                        type_tag = get_type_tag_for_value(value, 'int')
-                        self._store_variant_value(ptr, value, type_tag, 'int')
-                    elif isinstance(value.type, ir.DoubleType):
-                        type_tag = get_type_tag_for_value(value, 'float')
-                        self._store_variant_value(ptr, value, type_tag, 'float')
-                    elif isinstance(value.type, ir.PointerType) and value.type.pointee == ir.IntType(8):
-                        type_tag = get_type_tag_for_value(value, 'string')
-                        self._store_variant_value(ptr, value, type_tag, 'string')
-                    else:
-                        # Default to int for unknown types
-                        type_tag = get_type_tag_for_value(value, 'int')
-                        self._store_variant_value(ptr, value, type_tag, 'int')
+                    self._store_value_to_variant(ptr, value)
                 else:
-                    # If no type info, store as null
                     self._store_null_variant(ptr)
             else:
-                # Non-variant assignment (system types)
                 if self.is_shared_mutable_variable(target):
                     self.insert_yield()
-                    # Instrument write access for TSan
-                    # Determine size based on value type
-                    if hasattr(value, 'type'):
-                        if isinstance(value.type, ir.IntType):
-                            size = value.type.width // 8  # bits to bytes
-                        elif isinstance(value.type, ir.DoubleType):
-                            size = 8
-                        else:
-                            size = 4  # default
-                    else:
-                        size = 4  # default
+                    size = (value.type.width // 8
+                            if hasattr(value, 'type') and isinstance(value.type, ir.IntType)
+                            else 8 if hasattr(value, 'type') and isinstance(value.type, ir.DoubleType)
+                            else 4)
                     self.insert_tsan_call(ptr, size, is_write=True)
-                
                 self.builder.store(value, ptr)
-                
                 if self.is_shared_mutable_variable(target):
                     self.insert_yield()
+
         elif isinstance(target, dict) and target['type'] == 'array_access':
-            # Array element assignment - get the array element pointer
             array_name = target['array']
             index = self.visit(target['index'])
-            
-            # Get the array info
+
             entry = self.get_variable(array_name)
             if entry is None:
                 raise Exception(f"Undefined array in assignment: {array_name}")
-            
             array_ptr, array_type, is_constant = entry
-            
-            # Check if trying to assign to a constant array
             if is_constant:
-                raise Exception(f"Cannot assign to constant array '{array_name}'. Constants can only be set during declaration.")
-            
-            # Calculate element pointer - handle variant indices
-            zero = ir.Constant(ir.IntType(32), 0)
-            
-            # If index is a variant, extract the integer value
+                raise Exception(f"Cannot assign to constant array '{array_name}'.")
+
+            # Unwrap variant index
             if hasattr(index, 'type'):
                 from .base_types import get_variant_type
                 variant_ty = get_variant_type()
                 if index.type == variant_ty:
-                    # Index is a variant struct - need to create temp and extract
-                    temp_var = self.builder.alloca(variant_ty, name="temp_index_variant")
-                    self.builder.store(index, temp_var)
-                    index = self._extract_variant_value(temp_var, 'int')
+                    tmp = self.builder.alloca(variant_ty, name="tmp_idx")
+                    self.builder.store(index, tmp)
+                    index = self._extract_variant_value(tmp, 'int')
                 elif isinstance(index.type, ir.PointerType) and index.type.pointee == variant_ty:
-                    # Index is pointer to variant - extract directly
                     index = self._extract_variant_value(index, 'int')
-            
-            element_ptr = self.builder.gep(array_ptr, [zero, index])
-            
-            # Handle variant values - extract the appropriate type for the array
+
+            element_ptr = self.builder.gep(array_ptr, [ir.Constant(ir.IntType(32), 0), index])
+
+            # Coerce value from variant if needed
             if hasattr(value, 'type'):
-                from .base_types import get_variant_type
-                variant_ty = get_variant_type()
-                if value.type == variant_ty:
-                    # Value is a variant struct - extract based on array type
-                    temp_var = self.builder.alloca(variant_ty, name="temp_value_variant")
-                    self.builder.store(value, temp_var)
-                    if array_type == 'array_int':
-                        value = self._extract_variant_value(temp_var, 'int')
-                    elif array_type == 'array_thread':
-                        value = self._extract_variant_value(temp_var, 'thread')
-                    elif array_type == 'array_string':
-                        value = self._extract_variant_value(temp_var, 'string')
-                    else:
-                        # Default to int for unknown array types
-                        value = self._extract_variant_value(temp_var, 'int')
-                elif isinstance(value.type, ir.PointerType) and value.type.pointee == variant_ty:
-                    # Value is pointer to variant - extract directly
-                    if array_type == 'array_int':
-                        value = self._extract_variant_value(value, 'int')
-                    elif array_type == 'array_thread':
-                        value = self._extract_variant_value(value, 'thread')
-                    elif array_type == 'array_string':
-                        value = self._extract_variant_value(value, 'string')
-                    else:
-                        # Default to int for unknown array types
-                        value = self._extract_variant_value(value, 'int')
-            
-            # Special handling for thread values
+                value = self._extract_for_array_type(value, array_type)
+
+            # Thread arrays: unwrap i8** → i8*
             if array_type == 'array_thread' and hasattr(value, 'type'):
-                debug_print(f"DEBUG: Array assignment - storing thread value: {value}, type: {getattr(value, 'type', type(value))}")
                 if isinstance(value.type, ir.PointerType) and isinstance(value.type.pointee, ir.PointerType):
-                    # If value is i8** (pointer to thread handle), load it to get i8* (thread handle)
-                    debug_print(f"DEBUG: Array assignment - loading from i8** to get i8* thread handle")
-                    loaded_value = self.builder.load(value)
-                    debug_print(f"DEBUG: Array assignment - loaded thread handle: {loaded_value}, type: {getattr(loaded_value, 'type', type(loaded_value))}")
-                    if loaded_value is None:
-                        debug_print("ERROR: Loaded thread handle is None!")
-                    value = loaded_value
-                elif value.type == ir.IntType(8).as_pointer():
-                    debug_print(f"DEBUG: Array assignment - value is already i8* thread handle")
-                else:
-                    debug_print(f"DEBUG: Array assignment - unexpected thread value type: {value.type}")
-            
-            # Store the value
-            debug_print(f"DEBUG: Array assignment - final store: value={value}, element_ptr={element_ptr}")
-            if value is None:
-                debug_print("ERROR: Trying to store None value in array!")
+                    value = self.builder.load(value)
+
+            debug_print(f"DEBUG: Array assignment - store value={value} → {element_ptr}")
             self.builder.store(value, element_ptr)
-        elif isinstance(target, dict) and target['type'] == 'dereference':
-            # Pointer dereference assignment - handle existing case
-            name = node['target']
-            entry = self.get_variable(name)
-            if entry is None:
-                self.semantic_error(f"undefined variable '{name}' in assignment", node)
-            ptr, dtype, is_constant = entry
-            self.builder.store(value, ptr)
         else:
             raise Exception(f"Unsupported assignment target type: {target}")
 
     def visit_literal(self, node: Dict[str, Any]) -> ir.Constant:
         debug_print(f"DEBUG: visit_literal - Processing node: {node}")
         v = node['value']
-        debug_print(f"DEBUG: visit_literal - Value type: {type(v)}, value: {v}")
-        debug_print(f"DEBUG: visit_literal - Current locals: {list(self.locals.keys())}")
-        # If v is a variable name in locals, return its value using visit_ID
-        if v in self.locals:
-            debug_print(f"DEBUG: visit_literal - Found '{v}' in locals, treating as variable")
-            ptr, dtype, _ = self.locals[v]
-            debug_print(f"DEBUG: visit_literal - Variable '{v}' has dtype='{dtype}', ptr type={getattr(ptr, 'type', 'unknown')}")
-            if dtype == 'int':
-                loaded = self.builder.load(ptr)
-                debug_print(f"DEBUG: visit_literal - Loaded int value: {loaded}, type: {getattr(loaded, 'type', 'unknown')}")
-                return loaded
-            elif dtype == 'float':
-                return self.builder.load(ptr)
-            elif dtype == 'string':
-                return ptr
-            elif dtype == 'semaphore':
-                return ptr
-            else:
-                loaded = self.builder.load(ptr)
-                debug_print(f"DEBUG: visit_literal - Loaded default value: {loaded}, type: {getattr(loaded, 'type', 'unknown')}")
-                return loaded
         if isinstance(v, int):
-            result = ir.Constant(ir.IntType(32), v)
-            debug_print(f"DEBUG: visit_literal - Created integer constant: {result}")
-            return result
+            return ir.Constant(ir.IntType(32), v)
         if isinstance(v, float):
-            result = ir.Constant(ir.DoubleType(), v)
-            debug_print(f"DEBUG: visit_literal - Created float constant: {result}")
-            return result
+            return ir.Constant(ir.DoubleType(), v)
         if isinstance(v, str):
-            # Check if this string literal is actually a variable name (workaround for parser issue)
-            if v in self.globals or v in self.locals:
-                debug_print(f"DEBUG: visit_literal - String '{v}' found as variable, treating as ID")
+            # Variable reference masquerading as a literal (parser quirk)
+            if v in self.locals or v in self.globals:
+                debug_print(f"DEBUG: visit_literal - '{v}' found as variable, delegating to visit_ID")
                 return self.visit_ID({'type': 'ID', 'value': v})
-            
-            # Create a global string for the literal
-            name = f"str_{abs(hash(v))}"
-            debug_print(f"DEBUG: visit_literal - Creating string with hash name: {name}")
-            str_bytes = bytearray(v.encode("utf8")) + b"\00"
+            # True string literal → global constant + i8* pointer
+            str_name = f"str_{abs(hash(v))}"
+            str_bytes = bytearray(v.encode("utf8")) + b"\x00"
             str_type = ir.ArrayType(ir.IntType(8), len(str_bytes))
-            debug_print(f"DEBUG: visit_literal - String bytes length: {len(str_bytes)}")
-            if name in self.module.globals:
-                debug_print(f"DEBUG: visit_literal - Reusing existing global string: {name}")
-                str_global = self.module.get_global(name)
+            if str_name in self.module.globals:
+                str_global = self.module.get_global(str_name)
             else:
-                debug_print(f"DEBUG: visit_literal - Creating new global string: {name}")
-                str_global = ir.GlobalVariable(self.module, str_type, name=name)
+                str_global = ir.GlobalVariable(self.module, str_type, name=str_name)
                 str_global.linkage = 'internal'
                 str_global.global_constant = True
                 str_global.initializer = ir.Constant(str_type, str_bytes)
-            result = self.builder.bitcast(str_global, ir.IntType(8).as_pointer())
-            debug_print(f"DEBUG: visit_literal - Created string pointer: {result}")
-            return result
-        debug_print(f"DEBUG: visit_literal - ERROR: Unsupported literal type: {type(v)} with value {v}")
+            return self.builder.bitcast(str_global, ir.IntType(8).as_pointer())
         raise Exception(f"Unsupported literal type: {type(v)} with value {v}")
 
     def visit_binary_op(self, node: Dict[str, Any]) -> ir.Value:
         op = node['op']
-        
         debug_print(f"DEBUG: visit_binary_op - op: {op}")
-        debug_print(f"DEBUG: visit_binary_op - left AST node: {node['left']}")
-        debug_print(f"DEBUG: visit_binary_op - right AST node: {node['right']}")
 
-        # Determine the appropriate type for the operation BEFORE visiting operands
         from .base_types import get_variant_type
         variant_ty = get_variant_type()
-        
-        operation_type = 'int'  # default
-        
-        # Bitwise operators always use integers
+
+        # ---- Determine float vs int mode from AST (before visiting) ----
         bitwise_ops = {'&', '|', 'xor', '<<', '>>', '~'}
-        
+        operation_type = 'int'
         if op not in bitwise_ops:
-            # Check if either operand is a float variable based on tracked types
-            # Don't break early - check all operands (if ANY is float, use float operations)
-            for i, ast_node in enumerate([node['left'], node['right']]):
-                debug_print(f"DEBUG: visit_binary_op - checking AST node {i}: {ast_node}")
-                if isinstance(ast_node, dict) and ast_node.get('type') == 'ID':
-                    var_name = ast_node.get('value')  # ID nodes use 'value', not 'name'
-                    debug_print(f"DEBUG: visit_binary_op - found ID node with value '{var_name}'")
-                    if var_name in self.var_types:
-                        var_type = self.var_types[var_name]
-                        debug_print(f"DEBUG: visit_binary_op - variable '{var_name}' has tracked type: {var_type}")
-                        if var_type == 'float':
+            for ast_node in (node['left'], node['right']):
+                if isinstance(ast_node, dict):
+                    if ast_node.get('type') == 'ID':
+                        if self.var_types.get(ast_node.get('value')) == 'float':
                             operation_type = 'float'
-                            debug_print(f"DEBUG: visit_binary_op - operand {i} variable '{var_name}' is tracked as float, setting operation_type='float'")
-                            # Continue checking - don't break
-                elif isinstance(ast_node, dict) and ast_node.get('type') == 'literal':
-                    # Check if it's a float literal OR a variable reference (parser quirk)
-                    literal_value = ast_node.get('value')
-                    if isinstance(literal_value, float):
-                        operation_type = 'float'
-                        debug_print(f"DEBUG: visit_binary_op - operand {i} is float literal, setting operation_type='float'")
-                        # Continue checking
-                    elif isinstance(literal_value, str) and literal_value in self.var_types:
-                        # This is actually a variable reference, not a literal string
-                        var_type = self.var_types[literal_value]
-                        debug_print(f"DEBUG: visit_binary_op - operand {i} variable '{literal_value}' (from literal) has tracked type: {var_type}")
-                        if var_type == 'float':
+                    elif ast_node.get('type') == 'literal':
+                        v = ast_node.get('value')
+                        if isinstance(v, float):
                             operation_type = 'float'
-                            debug_print(f"DEBUG: visit_binary_op - operand {i} variable '{literal_value}' is tracked as float, setting operation_type='float'")
-                            # Continue checking
-        
-        debug_print(f"DEBUG: visit_binary_op - final operation_type: {operation_type}")
-        
-        # Now visit the operands to get LLVM values
-        left_raw = self.visit(node['left'])
+                        elif isinstance(v, str) and self.var_types.get(v) == 'float':
+                            operation_type = 'float'
+
+        left_raw  = self.visit(node['left'])
         right_raw = self.visit(node['right'])
-        
-        debug_print(f"DEBUG: visit_binary_op - left_raw: {left_raw}, type: {getattr(left_raw, 'type', 'no-type')}")
-        debug_print(f"DEBUG: visit_binary_op - right_raw: {right_raw}, type: {getattr(right_raw, 'type', 'no-type')}")
-        
-        # Also check if the computed values themselves are floats (for nested expressions)
-        if hasattr(left_raw, 'type') and isinstance(left_raw.type, ir.DoubleType):
+
+        # Override to float if the computed values are already doubles
+        if hasattr(left_raw,  'type') and isinstance(left_raw.type,  ir.DoubleType):
             operation_type = 'float'
-            debug_print(f"DEBUG: visit_binary_op - left_raw is already DoubleType, setting operation_type='float'")
         if hasattr(right_raw, 'type') and isinstance(right_raw.type, ir.DoubleType):
             operation_type = 'float'
-            debug_print(f"DEBUG: visit_binary_op - right_raw is already DoubleType, setting operation_type='float'")
-        
-        # Now extract values with the determined type
-        left = self._auto_extract_value(left_raw, operation_type)
+
+        left  = self._auto_extract_value(left_raw,  operation_type)
         right = self._auto_extract_value(right_raw, operation_type)
-        
-        debug_print(f"DEBUG: visit_binary_op - after extraction: left={left}, left.type={getattr(left, 'type', 'no-type')}")
-        debug_print(f"DEBUG: visit_binary_op - after extraction: right={right}, right.type={getattr(right, 'type', 'no-type')}")
-        
-        # If we're doing float operations, ensure both operands are float type
+
+        # Coerce both operands to double when doing float arithmetic
         if operation_type == 'float':
-            if hasattr(left, 'type') and isinstance(left.type, ir.IntType):
-                debug_print(f"DEBUG: visit_binary_op - converting left from int to float")
-                # Convert integer to float
-                left = self.builder.sitofp(left, ir.DoubleType())
+            if hasattr(left,  'type') and isinstance(left.type,  ir.IntType):
+                left  = self.builder.sitofp(left,  ir.DoubleType())
             if hasattr(right, 'type') and isinstance(right.type, ir.IntType):
-                debug_print(f"DEBUG: visit_binary_op - converting right from int to float")
-                # Convert integer to float
                 right = self.builder.sitofp(right, ir.DoubleType())
-        
-        debug_print(f"DEBUG: visit_binary_op - final: left={left}, left.type={getattr(left, 'type', 'no-type')}")
-        debug_print(f"DEBUG: visit_binary_op - final: right={right}, right.type={getattr(right, 'type', 'no-type')}")
-        
-        # For arithmetic operations with floats, use float operations
-        if op == '+':
-            if operation_type == 'float':
-                return self.builder.fadd(left, right)
-            else:
-                return self.builder.add(left, right)
-        elif op == '-':
-            if operation_type == 'float':
-                return self.builder.fsub(left, right)
-            else:
-                return self.builder.sub(left, right)
-        elif op == '*':
-            if operation_type == 'float':
-                return self.builder.fmul(left, right)
-            else:
-                return self.builder.mul(left, right)
-        elif op == '/':
-            if operation_type == 'float':
-                return self.builder.fdiv(left, right)
-            else:
-                return self.builder.sdiv(left, right)
-        elif op == '#':
-            # Integer division (always returns integer)
-            if operation_type == 'float':
-                # Convert to integers first
-                left_int = self.builder.fptosi(left, ir.IntType(32))
-                right_int = self.builder.fptosi(right, ir.IntType(32))
-                return self.builder.sdiv(left_int, right_int)
-            else:
-                return self.builder.sdiv(left, right)
-        elif op == '%' or op == 'mod':
-            # Modulo (remainder) — both % and the mod keyword
-            if operation_type == 'float':
-                # For floats, use frem
-                return self.builder.frem(left, right)
-            else:
-                return self.builder.srem(left, right)
-        elif op == '^':
-            # Exponentiation
-            # Use pow function from math library
-            if operation_type == 'float':
-                pow_fn = self.module.globals.get('pow')
-                if not pow_fn:
-                    pow_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType(), ir.DoubleType()])
-                    pow_fn = ir.Function(self.module, pow_ty, name='pow')
-                return self.builder.call(pow_fn, [left, right])
-            else:
-                # For integers, convert to float, use pow, convert back
-                left_float = self.builder.sitofp(left, ir.DoubleType())
-                right_float = self.builder.sitofp(right, ir.DoubleType())
-                pow_fn = self.module.globals.get('pow')
-                if not pow_fn:
-                    pow_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType(), ir.DoubleType()])
-                    pow_fn = ir.Function(self.module, pow_ty, name='pow')
-                result_float = self.builder.call(pow_fn, [left_float, right_float])
-                return self.builder.fptosi(result_float, ir.IntType(32))
-        
-        # Bitwise operators
-        elif op == '&':
-            return self.builder.and_(left, right)
-        elif op == '|':
-            return self.builder.or_(left, right)
-        elif op == 'xor':
-            return self.builder.xor(left, right)
-        elif op == '<<':
-            return self.builder.shl(left, right)
-        elif op == '>>':
-            return self.builder.ashr(left, right)  # Arithmetic right shift
-        
-        # Comparison operators
-        if op in ['=', '!=', '<', '<=', '>', '>=']:
-            if hasattr(left, 'type') and hasattr(right, 'type'):
-                # Promote i8/i16 operands to i32 so mixed char/int comparisons work
-                if isinstance(left.type, ir.IntType) and left.type.width < 32:
-                    left = self.builder.sext(left, ir.IntType(32))
-                if isinstance(right.type, ir.IntType) and right.type.width < 32:
-                    right = self.builder.sext(right, ir.IntType(32))
-                if left.type != right.type:
-                    raise Exception(f"Type mismatch in comparison: {left.type} vs {right.type}")
-                if isinstance(left.type, ir.PointerType):
-                    raise Exception("Direct comparison of pointers (e.g., strings) is not supported. Use a string comparison function.")
-                
-                # Map operators to LLVM predicates
-                op_map = {
-                    '=': '==',  
-                    '==': '==', 
-                    '!=': '!=',
-                    '<': '<',
-                    '<=': '<=',
-                    '>': '>',
-                    '>=': '>='
-                }
-                
-                # Use fcmp for floats, icmp for integers
+
+        debug_print(f"DEBUG: visit_binary_op op={op} op_type={operation_type} "
+                    f"left={getattr(left,'type','?')} right={getattr(right,'type','?')}")
+
+        # ---- Arithmetic: dispatch table ----
+        _INT_OPS = {'+': 'add', '-': 'sub', '*': 'mul', '/': 'sdiv',
+                    '#': 'sdiv', '%': 'srem', 'mod': 'srem'}
+        _FLT_OPS = {'+': 'fadd', '-': 'fsub', '*': 'fmul', '/': 'fdiv',
+                    '%': 'frem', 'mod': 'frem'}
+
+        if op in _FLT_OPS and operation_type == 'float':
+            return getattr(self.builder, _FLT_OPS[op])(left, right)
+        if op in _INT_OPS and operation_type == 'int':
+            return getattr(self.builder, _INT_OPS[op])(left, right)
+
+        # '#' in float mode: convert to int first, then sdiv
+        if op == '#' and operation_type == 'float':
+            return self.builder.sdiv(self.builder.fptosi(left, ir.IntType(32)),
+                                     self.builder.fptosi(right, ir.IntType(32)))
+
+        # ---- Exponentiation ----
+        if op == '^':
+            pow_fn = self._declare_external_fn('pow', ir.DoubleType(),
+                                               [ir.DoubleType(), ir.DoubleType()])
+            lf = left  if operation_type == 'float' else self.builder.sitofp(left,  ir.DoubleType())
+            rf = right if operation_type == 'float' else self.builder.sitofp(right, ir.DoubleType())
+            res = self.builder.call(pow_fn, [lf, rf])
+            return res if operation_type == 'float' else self.builder.fptosi(res, ir.IntType(32))
+
+        # ---- Bitwise ----
+        _BIT_OPS = {'&': 'and_', '|': 'or_', 'xor': 'xor', '<<': 'shl', '>>': 'ashr'}
+        if op in _BIT_OPS:
+            return getattr(self.builder, _BIT_OPS[op])(left, right)
+
+        # ---- Comparisons ----
+        _CMP_MAP = {'=': '==', '==': '==', '!=': '!=',
+                    '<': '<', '<=': '<=', '>': '>', '>=': '>='}
+        if op in _CMP_MAP:
+            pred = _CMP_MAP[op]
+            if hasattr(left, 'type') and isinstance(left.type, ir.IntType) and left.type.width < 32:
+                left  = self.builder.sext(left,  ir.IntType(32))
+            if hasattr(right, 'type') and isinstance(right.type, ir.IntType) and right.type.width < 32:
+                right = self.builder.sext(right, ir.IntType(32))
+            if hasattr(left, 'type') and left.type != right.type:
+                raise Exception(f"Type mismatch in comparison: {left.type} vs {right.type}")
+            if hasattr(left, 'type') and isinstance(left.type, ir.PointerType):
+                raise Exception("Direct pointer comparison is not supported.")
+            cmp = (self.builder.fcmp_ordered(pred, left, right)
+                   if operation_type == 'float'
+                   else self.builder.icmp_signed(pred, left, right))
+            return self.builder.zext(cmp, ir.IntType(32))
+
+        # ---- Logical and / or ----
+        if op in ('and', 'or'):
+            def to_bool(v):
                 if operation_type == 'float':
-                    result_bool = self.builder.fcmp_ordered(op_map[op], left, right)
-                else:
-                    result_bool = self.builder.icmp_signed(op_map[op], left, right)
-                # Convert i1 result to i32 (0 or 1)
-                return self.builder.zext(result_bool, ir.IntType(32))
-        
-        # Logical operators (boolean AND/OR)
-        # Note: 'and' and 'or' are logical operators (short-circuit in most languages)
-        # For Alecci, we treat them as bitwise on integers (simpler implementation)
-        elif op == 'and':
-            # Convert to i1 (boolean), perform logical and, convert back to i32
-            if operation_type == 'float':
-                left_bool = self.builder.fcmp_ordered('!=', left, ir.Constant(ir.DoubleType(), 0.0))
-                right_bool = self.builder.fcmp_ordered('!=', right, ir.Constant(ir.DoubleType(), 0.0))
-            else:
-                left_bool = self.builder.icmp_signed('!=', left, ir.Constant(left.type, 0))
-                right_bool = self.builder.icmp_signed('!=', right, ir.Constant(right.type, 0))
-            result_bool = self.builder.and_(left_bool, right_bool)
-            return self.builder.zext(result_bool, ir.IntType(32))
-        elif op == 'or':
-            # Convert to i1 (boolean), perform logical or, convert back to i32
-            if operation_type == 'float':
-                left_bool = self.builder.fcmp_ordered('!=', left, ir.Constant(ir.DoubleType(), 0.0))
-                right_bool = self.builder.fcmp_ordered('!=', right, ir.Constant(ir.DoubleType(), 0.0))
-            else:
-                left_bool = self.builder.icmp_signed('!=', left, ir.Constant(left.type, 0))
-                right_bool = self.builder.icmp_signed('!=', right, ir.Constant(right.type, 0))
-            result_bool = self.builder.or_(left_bool, right_bool)
-            return self.builder.zext(result_bool, ir.IntType(32))
-            
-        # Add more operators as needed
-        else:
-            raise Exception(f"Unsupported operator: {op}")
+                    return self.builder.fcmp_ordered('!=', v, ir.Constant(ir.DoubleType(), 0.0))
+                return self.builder.icmp_signed('!=', v, ir.Constant(v.type, 0))
+            lb, rb = to_bool(left), to_bool(right)
+            comb = self.builder.and_(lb, rb) if op == 'and' else self.builder.or_(lb, rb)
+            return self.builder.zext(comb, ir.IntType(32))
+
+        raise Exception(f"Unsupported operator: {op}")
 
     def visit_unary_op(self, node: Dict[str, Any]) -> ir.Value:
         """Handle unary operators like unary minus, logical NOT, bitwise NOT"""
@@ -1848,412 +1540,30 @@ class CodeGenerator:
     def visit_print(self, node: Dict[str, Any]) -> None:
         expression = node.get('expression')
         format_str = node.get('format')
-        debug_print(f"PRINT DEBUG: Processing print node: {node}")
-        debug_print(f"DEBUG: visit_print - expression: {expression}")
-        debug_print(f"DEBUG: visit_print - format: {format_str}")
-        debug_print(f"DEBUG: visit_print - full node: {node}")
-        
-        # Check if this is a template string in the format field
+        debug_print(f"DEBUG: visit_print - expression: {expression}, format: {format_str}")
+
+        # --- Template string in the 'format' field (from parser) ---
         if format_str and isinstance(format_str, str) and format_str.startswith('`') and format_str.endswith('`'):
-            # Handle template string from format field
-            template = format_str[1:-1]  # Remove backticks
-            debug_print(f"FORMAT TEMPLATE DEBUG: Processing format template: '{template}'")
-            debug_print(f"DEBUG: visit_print - processing template string from format field: {template}")
-            
-            # Use the same template processing logic as in the expression field
-            import re
-            
-            # Find all variables in the template string {variable_name}
-            variable_patterns = re.findall(r'\{([^}]+)\}', template)
-            debug_print(f"DEBUG: visit_print - found variables in format template: {variable_patterns}")
-            
-            if variable_patterns:
-                # Use sprintf to format the string with actual variable values
-                format_string = template
-                format_args = []
-                
-                # Replace each variable with appropriate format specifier and get values
-                for var_name in variable_patterns:
-                    # Get the variable value first to determine its type
-                    try:
-                        var_value = self.visit_ID({'type': 'ID', 'value': var_name})
-                        
-                        # Check if this is a variant
-                        entry = self.get_variable(var_name)
-                        if entry and entry[1] == 'variant':
-                            # Check var_types to determine actual format needed
-                            variant_ptr = entry[0]  # Get the pointer to the variant
-                            if var_name in self.var_types and self.var_types[var_name] == 'float':
-                                # For float variants, extract as float and use %f
-                                format_string = format_string.replace(f'{{{var_name}}}', '%f')
-                                var_value = self._extract_variant_value(variant_ptr, 'float')
-                                format_args.append(var_value)
-                            elif var_name in self.var_types and self.var_types[var_name] in ['int']:
-                                # For int variants, extract as int and use %d
-                                format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                                var_value = self._extract_variant_value(variant_ptr, 'int')
-                                format_args.append(var_value)
-                            else:
-                                # For variants without type tracking or with other types, use variant_to_string
-                                # This ensures proper handling of floats that aren't tracked in var_types
-                                format_string = format_string.replace(f'{{{var_name}}}', '%s')
-                                
-                                # Get or create the variant_to_string runtime function
-                                from .base_types import get_variant_type
-                                variant_ty = get_variant_type()
-                                variant_to_string = self.module.globals.get('variant_to_string')
-                                if not variant_to_string:
-                                    func_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [variant_ty.as_pointer()])
-                                    variant_to_string = ir.Function(self.module, func_ty, name='variant_to_string')
-                                
-                                # Call variant_to_string to get the string representation
-                                string_result = self.builder.call(variant_to_string, [variant_ptr])
-                                format_args.append(string_result)
-                            debug_print(f"DEBUG: visit_print - handled variant {var_name}")
-                        else:
-                            # For non-variants, determine format based on variable type
-                            entry = self.get_variable(var_name)
-                            if entry and len(entry) >= 2:
-                                dtype = entry[1]
-                                if dtype == 'float':
-                                    format_string = format_string.replace(f'{{{var_name}}}', '%f')
-                                    if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
-                                        var_value = self.builder.load(var_value)
-                                elif dtype == 'variant':
-                                    # Check var_types to see if this variant holds a float
-                                    # Get the variant pointer (entry[0] is the pointer)
-                                    variant_ptr = entry[0]
-                                    if var_name in self.var_types and self.var_types[var_name] == 'float':
-                                        format_string = format_string.replace(f'{{{var_name}}}', '%f')
-                                        # Extract the float value from the variant
-                                        var_value = self._extract_variant_value(variant_ptr, 'float')
-                                    else:
-                                        format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                                        # Extract the int value from the variant
-                                        var_value = self._extract_variant_value(variant_ptr, 'int')
-                                elif dtype == 'string':
-                                    format_string = format_string.replace(f'{{{var_name}}}', '%s')
-                                    if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
-                                        var_value = self.builder.load(var_value)
-                                else:
-                                    format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                                    if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
-                                        var_value = self.builder.load(var_value)
-                            else:
-                                format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                                if hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
-                                    var_value = self.builder.load(var_value)
-                            
-                            # var_value is now the extracted/loaded value
-                            format_args.append(var_value)
-                            debug_print(f"DEBUG: visit_print - added {var_name} = {var_value} to format args")
-                    except Exception as e:
-                        debug_print(f"DEBUG: visit_print - could not resolve variable {var_name}: {e}")
-                        # Fall back to 0 if variable can't be resolved
-                        format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                        format_args.append(ir.Constant(ir.IntType(32), 0))
-                
-                # Create format string
-                format_name = f"format_str_{abs(hash(format_string))}"
-                format_bytes = bytearray(format_string.encode("utf8")) + b"\00"
-                format_type = ir.ArrayType(ir.IntType(8), len(format_bytes))
-                
-                if format_name in self.module.globals:
-                    format_global = self.module.get_global(format_name)
-                else:
-                    format_global = ir.GlobalVariable(self.module, format_type, name=format_name)
-                    format_global.linkage = 'internal'
-                    format_global.global_constant = True
-                    format_global.initializer = ir.Constant(format_type, format_bytes)
-                
-                format_arg = self.builder.bitcast(format_global, ir.IntType(8).as_pointer())
-                
-                # Create buffer for sprintf output
-                buffer_size = 256  # Should be enough for most strings
-                buffer_type = ir.ArrayType(ir.IntType(8), buffer_size)
-                buffer = self.builder.alloca(buffer_type, name="sprintf_buffer")
-                buffer_ptr = self.builder.bitcast(buffer, ir.IntType(8).as_pointer())
-                
-                # Get or create sprintf function
-                sprintf = self.module.globals.get('sprintf')
-                if not sprintf:
-                    sprintf_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()], var_arg=True)
-                    sprintf = ir.Function(self.module, sprintf_ty, name="sprintf")
-                
-                # Call sprintf with format string and variables
-                sprintf_args = [buffer_ptr, format_arg] + format_args
-                self.builder.call(sprintf, sprintf_args)
-                
-                val = buffer_ptr
-                is_string = True
-            else:
-                # No variables in template, treat as simple string
-                processed_string = template
-                debug_print(f"DEBUG: visit_print - no variables in format template: {processed_string}")
-                
-                # Create string literal
-                name = f"str_{abs(hash(processed_string))}"
-                str_bytes = bytearray(processed_string.encode("utf8")) + b"\00"
-                str_type = ir.ArrayType(ir.IntType(8), len(str_bytes))
-                
-                if name in self.module.globals:
-                    str_global = self.module.get_global(name)
-                else:
-                    str_global = ir.GlobalVariable(self.module, str_type, name=name)
-                    str_global.linkage = 'internal'
-                    str_global.global_constant = True
-                    str_global.initializer = ir.Constant(str_type, str_bytes)
-                
-                val = self.builder.bitcast(str_global, ir.IntType(8).as_pointer())
-                is_string = True
+            val, is_string = self._emit_template_sprintf(format_str[1:-1])
+
+        # --- Template string in the 'expression' field as a raw string ---
         elif (isinstance(expression, str) and
-            expression.startswith('`') and 
-            expression.endswith('`')):
-            
-            # Handle template string
-            template = expression[1:-1]  # Remove backticks
-            debug_print(f"DEBUG: visit_print - processing raw template string: {template}")
-            
-            # Implement proper template variable substitution (same logic as the other template handler)
-            import re
-            
-            # Find all variables in the template string {variable_name}
-            variable_patterns = re.findall(r'\{([^}]+)\}', template)
-            debug_print(f"DEBUG: visit_print - found variables in template: {variable_patterns}")
-            
-            if variable_patterns:
-                # Use sprintf to format the string with actual variable values
-                format_string = template
-                format_args = []
-                
-                # Replace each variable with appropriate format specifier based on type
-                for var_name in variable_patterns:
-                    # Determine format based on variable type
-                    entry = self.get_variable(var_name)
-                    if entry and len(entry) >= 2:
-                        dtype = entry[1]
-                        if dtype == 'float':
-                            format_string = format_string.replace(f'{{{var_name}}}', '%f')
-                        elif dtype == 'variant':
-                            # Check var_types to see if this variant holds a float
-                            if var_name in self.var_types and self.var_types[var_name] == 'float':
-                                format_string = format_string.replace(f'{{{var_name}}}', '%f')
-                            else:
-                                format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                        else:
-                            format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                    else:
-                        format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                    
-                    # Get the variable value
-                    try:
-                        var_value = self.visit_ID({'type': 'ID', 'value': var_name})
-                        # If it's a variant, extract the appropriate value using the pointer
-                        if entry and entry[1] == 'variant':
-                            variant_ptr = entry[0]  # Get the pointer to the variant
-                            if var_name in self.var_types and self.var_types[var_name] == 'float':
-                                var_value = self._extract_variant_value(variant_ptr, 'float')
-                            else:
-                                var_value = self._extract_variant_value(variant_ptr, 'int')
-                        elif hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
-                            var_value = self.builder.load(var_value)
-                        format_args.append(var_value)
-                        debug_print(f"DEBUG: visit_print - added {var_name} = {var_value} to format args")
-                    except Exception as e:
-                        debug_print(f"DEBUG: visit_print - could not resolve variable {var_name}: {e}")
-                        # Fall back to 0 if variable can't be resolved
-                        format_args.append(ir.Constant(ir.IntType(32), 0))
-                
-                # Create format string
-                format_name = f"format_str_{abs(hash(format_string))}"
-                format_bytes = bytearray(format_string.encode("utf8")) + b"\00"
-                format_type = ir.ArrayType(ir.IntType(8), len(format_bytes))
-                
-                if format_name in self.module.globals:
-                    format_global = self.module.get_global(format_name)
-                else:
-                    format_global = ir.GlobalVariable(self.module, format_type, name=format_name)
-                    format_global.linkage = 'internal'
-                    format_global.global_constant = True
-                    format_global.initializer = ir.Constant(format_type, format_bytes)
-                
-                format_arg = self.builder.bitcast(format_global, ir.IntType(8).as_pointer())
-                
-                # Create buffer for sprintf output
-                buffer_size = 256  # Should be enough for most strings
-                buffer_type = ir.ArrayType(ir.IntType(8), buffer_size)
-                buffer = self.builder.alloca(buffer_type, name="sprintf_buffer")
-                buffer_ptr = self.builder.bitcast(buffer, ir.IntType(8).as_pointer())
-                
-                # Get or create sprintf function
-                sprintf = self.module.globals.get('sprintf')
-                if not sprintf:
-                    sprintf_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()], var_arg=True)
-                    sprintf = ir.Function(self.module, sprintf_ty, name="sprintf")
-                
-                # Call sprintf with format string and variables
-                sprintf_args = [buffer_ptr, format_arg] + format_args
-                self.builder.call(sprintf, sprintf_args)
-                
-                val = buffer_ptr
-                is_string = True
-            else:
-                # No variables in template, treat as simple string
-                processed_string = template
-                debug_print(f"DEBUG: visit_print - no variables in template: {processed_string}")
-                
-                # Create string literal
-                name = f"str_{abs(hash(processed_string))}"
-                str_bytes = bytearray(processed_string.encode("utf8")) + b"\00"
-                str_type = ir.ArrayType(ir.IntType(8), len(str_bytes))
-                
-                if name in self.module.globals:
-                    str_global = self.module.get_global(name)
-                else:
-                    str_global = ir.GlobalVariable(self.module, str_type, name=name)
-                    str_global.linkage = 'internal'
-                    str_global.global_constant = True
-                    str_global.initializer = ir.Constant(str_type, str_bytes)
-                
-                val = self.builder.bitcast(str_global, ir.IntType(8).as_pointer())
-                is_string = True
-            name = f"str_{abs(hash(processed_string))}"
-            str_bytes = bytearray(processed_string.encode("utf8")) + b"\00"
-            str_type = ir.ArrayType(ir.IntType(8), len(str_bytes))
-            
-            if name in self.module.globals:
-                str_global = self.module.get_global(name)
-            else:
-                str_global = ir.GlobalVariable(self.module, str_type, name=name)
-                str_global.linkage = 'internal'
-                str_global.global_constant = True
-                str_global.initializer = ir.Constant(str_type, str_bytes)
-            
-            val = self.builder.bitcast(str_global, ir.IntType(8).as_pointer())
-            is_string = True
-        # Check if this is a template string in literal node format
-        elif (isinstance(expression, dict) and 
-            expression.get('type') == 'literal' and 
-            isinstance(expression.get('value'), str) and
-            expression['value'].startswith('`') and 
-            expression['value'].endswith('`')):
-            
-            # Handle template string
-            template = expression['value'][1:-1]  # Remove backticks
-            debug_print(f"TEMPLATE DEBUG: Processing template: '{template}'")
-            debug_print(f"DEBUG: visit_print - processing template string: {template}")
-            
-            # Implement proper template variable substitution
-            import re
-            
-            # Find all variables in the template string {variable_name}
-            variable_patterns = re.findall(r'\{([^}]+)\}', template)
-            debug_print(f"DEBUG: visit_print - found variables in template: {variable_patterns}")
-            
-            if variable_patterns:
-                # Use sprintf to format the string with actual variable values
-                format_string = template
-                format_args = []
-                
-                # Replace each variable with appropriate format specifier based on type
-                for var_name in variable_patterns:
-                    # Determine format based on variable type
-                    entry = self.get_variable(var_name)
-                    if entry and len(entry) >= 2:
-                        dtype = entry[1]
-                        if dtype == 'float':
-                            format_string = format_string.replace(f'{{{var_name}}}', '%f')
-                        elif dtype == 'variant':
-                            # Check var_types to see if this variant holds a float
-                            if var_name in self.var_types and self.var_types[var_name] == 'float':
-                                format_string = format_string.replace(f'{{{var_name}}}', '%f')
-                            else:
-                                format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                        else:
-                            format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                    else:
-                        format_string = format_string.replace(f'{{{var_name}}}', '%d')
-                    
-                    # Get the variable value
-                    try:
-                        var_value = self.visit_ID({'type': 'ID', 'value': var_name})
-                        # If it's a variant, extract the appropriate value using the pointer
-                        if entry and entry[1] == 'variant':
-                            variant_ptr = entry[0]  # Get the pointer to the variant
-                            if var_name in self.var_types and self.var_types[var_name] == 'float':
-                                var_value = self._extract_variant_value(variant_ptr, 'float')
-                            else:
-                                var_value = self._extract_variant_value(variant_ptr, 'int')
-                        elif hasattr(var_value, 'type') and isinstance(var_value.type, ir.PointerType):
-                            var_value = self.builder.load(var_value)
-                        format_args.append(var_value)
-                        debug_print(f"DEBUG: visit_print - added {var_name} = {var_value} to format args")
-                    except Exception as e:
-                        debug_print(f"DEBUG: visit_print - could not resolve variable {var_name}: {e}")
-                        # Fall back to 0 if variable can't be resolved
-                        format_args.append(ir.Constant(ir.IntType(32), 0))
-                
-                # Create format string
-                format_name = f"format_str_{abs(hash(format_string))}"
-                format_bytes = bytearray(format_string.encode("utf8")) + b"\00"
-                format_type = ir.ArrayType(ir.IntType(8), len(format_bytes))
-                
-                if format_name in self.module.globals:
-                    format_global = self.module.get_global(format_name)
-                else:
-                    format_global = ir.GlobalVariable(self.module, format_type, name=format_name)
-                    format_global.linkage = 'internal'
-                    format_global.global_constant = True
-                    format_global.initializer = ir.Constant(format_type, format_bytes)
-                
-                format_arg = self.builder.bitcast(format_global, ir.IntType(8).as_pointer())
-                
-                # Create buffer for sprintf output
-                buffer_size = 256  # Should be enough for most strings
-                buffer_type = ir.ArrayType(ir.IntType(8), buffer_size)
-                buffer = self.builder.alloca(buffer_type, name="sprintf_buffer")
-                buffer_ptr = self.builder.bitcast(buffer, ir.IntType(8).as_pointer())
-                
-                # Get or create sprintf function
-                sprintf = self.module.globals.get('sprintf')
-                if not sprintf:
-                    sprintf_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()], var_arg=True)
-                    sprintf = ir.Function(self.module, sprintf_ty, name="sprintf")
-                
-                # Call sprintf with format string and variables
-                sprintf_args = [buffer_ptr, format_arg] + format_args
-                self.builder.call(sprintf, sprintf_args)
-                
-                val = buffer_ptr
-                is_string = True
-            else:
-                # No variables in template, treat as simple string
-                processed_string = template
-                debug_print(f"DEBUG: visit_print - no variables in template: {processed_string}")
-                
-                # Create string literal
-                name = f"str_{abs(hash(processed_string))}"
-                str_bytes = bytearray(processed_string.encode("utf8")) + b"\00"
-                str_type = ir.ArrayType(ir.IntType(8), len(str_bytes))
-                
-                if name in self.module.globals:
-                    str_global = self.module.get_global(name)
-                else:
-                    str_global = ir.GlobalVariable(self.module, str_type, name=name)
-                    str_global.linkage = 'internal'
-                    str_global.global_constant = True
-                    str_global.initializer = ir.Constant(str_type, str_bytes)
-                
-                val = self.builder.bitcast(str_global, ir.IntType(8).as_pointer())
-                is_string = True
+              expression.startswith('`') and expression.endswith('`')):
+            val, is_string = self._emit_template_sprintf(expression[1:-1])
+
+        # --- Template string in a literal node ---
+        elif (isinstance(expression, dict) and
+              expression.get('type') == 'literal' and
+              isinstance(expression.get('value'), str) and
+              expression['value'].startswith('`') and expression['value'].endswith('`')):
+            val, is_string = self._emit_template_sprintf(expression['value'][1:-1])
+
         else:
-            # Handle regular expressions
+            # Regular expression (variable, arithmetic, literal, …)
             val = self.visit(expression)
-            # Detect if val is a string pointer or int
-            is_string = False
-            if isinstance(expression, dict) and expression.get('type') == 'literal':
-                if isinstance(expression['value'], str):
-                    is_string = True
+            is_string = (isinstance(expression, dict) and
+                         expression.get('type') == 'literal' and
+                         isinstance(expression.get('value'), str))
         
         # Create format string
         if is_string:
@@ -2420,504 +1730,334 @@ class CodeGenerator:
     def visit_ID(self, node: Dict[str, Any], prefer_globals: bool = False) -> ir.Value:
         name = node['value']
         debug_print(f"DEBUG: visit_ID searching for '{name}', prefer_globals={prefer_globals}")
-        debug_print(f"DEBUG: visit_ID - current locals: {list(self.locals.keys())}")
-        debug_print(f"DEBUG: visit_ID - current globals: {list(self.globals.keys())}")
         entry = self.get_variable(name, prefer_globals)
         if entry is None:
             self.semantic_error(f"undefined variable '{name}'", node)
-        
+
         ptr, dtype, is_constant = entry
         debug_print(f"DEBUG: visit_ID for '{name}', dtype={dtype}, ptr type={getattr(ptr, 'type', None)}")
-        debug_print(f"DEBUG: visit_ID - ptr value: {ptr}")
 
-        # Use dtype to determine how to load or return the value
-        if dtype == 'semaphore':
-            # For semaphores, we need to create a fresh bitcast from storage to i8*
-            # Check if this is a storage pointer that needs bitcasting
-            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
-                pointee = ptr.type.pointee
-                if isinstance(pointee, ir.ArrayType) and pointee.element == ir.IntType(8):
-                    # This is semaphore storage - bitcast to i8*
-                    sem_ty = ir.IntType(8).as_pointer()
-                    sem_ptr = self.builder.bitcast(ptr, sem_ty)
-                    debug_print(f"DEBUG: visit_ID - created fresh bitcast for semaphore '{name}': {sem_ptr}")
-                    return sem_ptr
-            # If already a proper pointer, return as-is
+        # Opaque C types stored as raw byte arrays — bitcast to i8* on every access
+        if dtype in ('semaphore', 'mutex', 'barrier'):
+            if (hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType) and
+                    isinstance(ptr.type.pointee, ir.ArrayType) and
+                    ptr.type.pointee.element == ir.IntType(8)):
+                return self.builder.bitcast(ptr, ir.IntType(8).as_pointer())
             return ptr
-        elif dtype == 'mutex':
-            # For mutexes, we need to create a fresh bitcast from storage to i8*
-            # Check if this is a storage pointer that needs bitcasting
-            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
-                pointee = ptr.type.pointee
-                if isinstance(pointee, ir.ArrayType) and pointee.element == ir.IntType(8):
-                    # This is mutex storage - bitcast to i8*
-                    mutex_ty = ir.IntType(8).as_pointer()
-                    mutex_ptr = self.builder.bitcast(ptr, mutex_ty)
-                    debug_print(f"DEBUG: visit_ID - created fresh bitcast for mutex '{name}': {mutex_ptr}")
-                    return mutex_ptr
-            # If already a proper pointer, return as-is
-            return ptr
-        elif dtype == 'barrier':
-            # Always return the pointer as-is for barriers
-            # If this is a global barrier storage, we need to bitcast it to i8*
-            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
-                pointee = ptr.type.pointee
-                if isinstance(pointee, ir.ArrayType) and pointee.element == ir.IntType(8):
-                    # This is barrier storage - bitcast to i8*
-                    barrier_ty = ir.IntType(8).as_pointer()
-                    barrier_ptr = self.builder.bitcast(ptr, barrier_ty)
-                    debug_print(f"DEBUG: visit_ID - generated bitcast for barrier: {barrier_ptr}")
-                    return barrier_ptr
-            debug_print(f"DEBUG: visit_ID - returning barrier pointer: {ptr}")
-            return ptr
-        elif dtype == 'thread':
-            # For thread handles, load the i8* value if stored as pointer
-            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
-                loaded = self.builder.load(ptr)
-                debug_print(f"DEBUG: visit_ID - loaded thread handle: {loaded}")
-                return loaded
-            return ptr
-        elif dtype == 'variant':
-            # For variants, return the pointer to the variant struct
-            # Runtime functions will handle extracting values
-            return ptr
-        elif dtype == 'int':
-            # Load the value if it's a pointer
-            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
-                # Insert yield and TSan instrumentation for shared mutable variables
-                if self.is_shared_mutable_variable(name):
-                    self.insert_yield()
-                    # Instrument read access for TSan (i32 = 4 bytes)
-                    self.insert_tsan_call(ptr, 4, is_write=False)
-                
-                loaded = self.builder.load(ptr)
-                
-                # Insert yield after load if shared mutable variable
-                if self.is_shared_mutable_variable(name):
-                    self.insert_yield()
-                
-                return loaded
-            return ptr
-        elif dtype == 'float':
-            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
-                # Insert yield and TSan instrumentation for shared mutable variables
-                if self.is_shared_mutable_variable(name):
-                    self.insert_yield()
-                    # Instrument read access for TSan (double = 8 bytes)
-                    self.insert_tsan_call(ptr, 8, is_write=False)
-                
-                loaded = self.builder.load(ptr)
-                
-                # Insert yield after load if shared mutable variable
-                if self.is_shared_mutable_variable(name):
-                    self.insert_yield()
-                
-                return loaded
-            return ptr
-        elif dtype == 'string':
-            # Strings are pointers, return as-is
-            return ptr
-        elif dtype is not None:
-            # For other types, try to load if pointer
+
+        if dtype == 'thread':
             if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
                 return self.builder.load(ptr)
             return ptr
-        # Fallback to previous logic if dtype is not set
+
+        if dtype == 'variant':
+            return ptr
+
+        if dtype == 'string':
+            return ptr
+
+        if dtype in ('int', 'float'):
+            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
+                is_shared = self.is_shared_mutable_variable(name)
+                if is_shared:
+                    self.insert_yield()
+                    self.insert_tsan_call(ptr, 4 if dtype == 'int' else 8, is_write=False)
+                loaded = self.builder.load(ptr)
+                if is_shared:
+                    self.insert_yield()
+                return loaded
+            return ptr
+
+        if dtype is not None:
+            if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
+                return self.builder.load(ptr)
+            return ptr
+
+        # Fallback: dtype is None — infer from pointer shape
         if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
             pointee = ptr.type.pointee
             if pointee == ir.IntType(8):
-                debug_print(f"DEBUG: visit_ID returning i8* pointer for '{name}'")
                 return ptr
             if isinstance(pointee, ir.PointerType) and pointee.pointee == ir.IntType(8):
-                loaded = self.builder.load(ptr)
-                debug_print(f"DEBUG: visit_ID loaded i8* from i8** for '{name}'")
-                return loaded
-            if isinstance(pointee, ir.IntType) and pointee.width == 32:
-                loaded = self.builder.load(ptr)
-                debug_print(f"DEBUG: visit_ID loaded i32 value for '{name}'")
-                return loaded
-            if isinstance(pointee, ir.DoubleType):
-                loaded = self.builder.load(ptr)
-                debug_print(f"DEBUG: visit_ID loaded double value for '{name}'")
-                return loaded
-        debug_print(f"DEBUG: visit_ID returning ptr as-is for '{name}' (type: {getattr(ptr, 'type', None)})")
+                return self.builder.load(ptr)
+            if isinstance(pointee, (ir.IntType, ir.DoubleType)):
+                return self.builder.load(ptr)
         return ptr
+
+    # ------------------------------------------------------------------
+    # visit_func_call helpers — one method per heavy built-in
+    # ------------------------------------------------------------------
+
+    def _handle_create_thread(self, node: Dict[str, Any]) -> ir.Value:
+        """Handle create_thread(func, arg1, …) built-in."""
+        target_func_arg = node['arguments'][0]
+        target_func = target_func_arg['value'] if isinstance(target_func_arg, dict) else target_func_arg
+
+        args = [self.visit(node['arguments'][i])
+                for i in range(1, len(node['arguments']))]
+
+        if target_func not in self.funcs:
+            raise Exception(f"Undefined function: {target_func}")
+        target_func_obj = self.funcs[target_func]
+
+        if len(target_func_obj.args) != len(args):
+            raise Exception(f"Function '{target_func}' expects {len(target_func_obj.args)} arguments, "
+                            f"but got {len(args)}")
+
+        from .base_types import get_variant_type
+        variant_ty = get_variant_type()
+        coerced: list = []
+        for i, (arg, param) in enumerate(zip(args, target_func_obj.args)):
+            if hasattr(arg, 'type') and isinstance(arg.type, ir.PointerType) and arg.type.pointee == variant_ty:
+                if isinstance(param.type, ir.IntType):
+                    arg = self._extract_variant_value(arg, 'int')
+                elif isinstance(param.type, ir.DoubleType):
+                    arg = self._extract_variant_value(arg, 'float')
+                elif isinstance(param.type, ir.PointerType):
+                    arg = self._extract_variant_value(arg, 'string')
+            elif hasattr(arg, 'type') and arg.type == variant_ty:
+                tmp = self.builder.alloca(variant_ty, name=f"thread_arg_{i}_tmp")
+                self.builder.store(arg, tmp)
+                if isinstance(param.type, ir.IntType):
+                    arg = self._extract_variant_value(tmp, 'int')
+                elif isinstance(param.type, ir.DoubleType):
+                    arg = self._extract_variant_value(tmp, 'float')
+                elif isinstance(param.type, ir.PointerType):
+                    arg = self._extract_variant_value(tmp, 'string')
+            coerced.append(arg)
+
+        debug_print(f"DEBUG: create_thread - target_func: {target_func}, args: {coerced}")
+        result = create_thread(self.builder, self.module, target_func_obj, thread_args=coerced)
+        debug_print(f"DEBUG: create_thread - returned: {result}")
+        return result
+
+    def _handle_join_threads(self, node: Dict[str, Any]) -> ir.Value:
+        """Handle join_threads(threads_arr [, count]) built-in."""
+        threads_arg = node['arguments'][0]
+
+        if len(node['arguments']) > 1:
+            thread_count = self.visit(node['arguments'][1])
+        elif 'thread_count' in self.globals:
+            ptr, _, _ = self.globals['thread_count']
+            thread_count = self.builder.load(ptr)
+        else:
+            thread_count = ir.Constant(ir.IntType(32), 1)
+
+        if isinstance(threads_arg, dict) and threads_arg.get('type') in ('literal', 'ID'):
+            threads_name = threads_arg['value']
+            if threads_name in self.locals:
+                threads_ptr, dtype, _ = self.locals[threads_name]
+                debug_print(f"DEBUG: join_threads - local '{threads_name}', dtype={dtype}")
+            elif threads_name in self.globals:
+                threads_ptr, *_ = self.globals[threads_name]
+                debug_print(f"DEBUG: join_threads - global '{threads_name}'")
+            else:
+                raise Exception(f"Undefined thread array variable: {threads_name}")
+        else:
+            threads_ptr = self.visit(threads_arg)
+
+        join_threads(self.builder, self.module, threads_ptr, thread_count)
+        return ir.Constant(ir.IntType(32), 0)
+
+    def _handle_rand(self, node: Dict[str, Any]) -> ir.Value:
+        """Handle rand([max]) or rand(min, max) — thread-safe, OS-seeded."""
+        args = node.get('arguments', [])
+        if len(args) not in (0, 1, 2):
+            raise Exception(f"rand() requires 0, 1 or 2 arguments, got {len(args)}")
+
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+
+        # Allocate a per-function seed variable at the entry block
+        func_label = self.current_function_name or 'global'
+        seed_var_name = f'__rand_seed_{func_label}'
+        if seed_var_name not in self.locals:
+            saved_block = self.builder.block
+            entry_block = self.builder.function.entry_basic_block
+            if len(entry_block.instructions) > 0:
+                self.builder.position_before(entry_block.instructions[0])
+            else:
+                self.builder.position_at_end(entry_block)
+            seed_var = self.builder.alloca(i32, name=seed_var_name)
+            self.builder.store(ir.Constant(i32, 0), seed_var)
+            self.locals[seed_var_name] = (seed_var, 'int', False)
+            self.builder.position_at_end(saved_block)
+
+        seed_var, _, _ = self.locals[seed_var_name]
+        seed_val = self.builder.load(seed_var)
+        need_seed = self.builder.icmp_signed('==', seed_val, ir.Constant(i32, 0))
+
+        cur_func = self.builder.function
+        seed_bb      = cur_func.append_basic_block('rand_seed')
+        cont_bb      = cur_func.append_basic_block('rand_cont')
+        self.builder.cbranch(need_seed, seed_bb, cont_bb)
+
+        # ---- Seed block ----
+        self.builder.position_at_end(seed_bb)
+        getrandom_fn = self._declare_external_fn('getrandom', i64,
+                                                  [ir.IntType(8).as_pointer(), i64, i32])
+        time_fn      = self._declare_external_fn('time', i64, [i64.as_pointer()])
+        pthread_self_fn = self._declare_external_fn('pthread_self',
+                                                     ir.IntType(8).as_pointer(), [])
+
+        seed_tmp = self.builder.alloca(i32, name='seed_tmp')
+        seed_buf = self.builder.bitcast(seed_tmp, ir.IntType(8).as_pointer())
+        gr_n     = self.builder.call(getrandom_fn,
+                                     [seed_buf, ir.Constant(i64, 4), ir.Constant(i32, 0)])
+
+        ok_bb        = cur_func.append_basic_block('rand_seed_ok')
+        fb_bb        = cur_func.append_basic_block('rand_seed_fb')
+        done_seed_bb = cur_func.append_basic_block('rand_seed_done')
+        self.builder.cbranch(self.builder.icmp_signed('==', gr_n, ir.Constant(i64, 4)),
+                             ok_bb, fb_bb)
+
+        # OK path: hardware entropy
+        self.builder.position_at_end(ok_bb)
+        self.builder.store(self.builder.load(seed_tmp), seed_var)
+        self.builder.branch(done_seed_bb)
+
+        # Fallback: time XOR pthread_self XOR seed_addr
+        self.builder.position_at_end(fb_bb)
+        t          = self.builder.call(time_fn, [ir.Constant(i64.as_pointer(), None)])
+        tid        = self.builder.call(pthread_self_fn, [])
+        tid_int    = self.builder.ptrtoint(tid, i64)
+        addr_int   = self.builder.ptrtoint(seed_var, i64)
+        combined   = self.builder.xor(self.builder.xor(t, tid_int), addr_int)
+        shifted    = self.builder.lshr(combined, ir.Constant(i64, 17))
+        final64    = self.builder.xor(combined, shifted)
+        seed_fb    = self.builder.trunc(final64, i32)
+        seed_nz    = self.builder.select(
+            self.builder.icmp_signed('==', seed_fb, ir.Constant(i32, 0)),
+            ir.Constant(i32, 1), seed_fb)
+        self.builder.store(seed_nz, seed_var)
+        self.builder.branch(done_seed_bb)
+
+        # Warmup loop
+        self.builder.position_at_end(done_seed_bb)
+        tid_wu      = self.builder.call(pthread_self_fn, [])
+        tid_wu_32   = self.builder.trunc(self.builder.ptrtoint(tid_wu, i64), i32)
+        warmup_cnt  = self.builder.and_(tid_wu_32, ir.Constant(i32, 15))
+
+        warmup_loop_bb = cur_func.append_basic_block('rand_warmup_loop')
+        warmup_done_bb = cur_func.append_basic_block('rand_warmup_done')
+        warmup_ctr     = self.builder.alloca(i32, name='warmup_counter')
+        self.builder.store(ir.Constant(i32, 0), warmup_ctr)
+        self.builder.branch(warmup_loop_bb)
+
+        self.builder.position_at_end(warmup_loop_bb)
+        ctr_val      = self.builder.load(warmup_ctr)
+        rand_r_local = self._declare_external_fn('rand_r', i32, [i32.as_pointer()])
+        self.builder.call(rand_r_local, [seed_var])
+        next_ctr     = self.builder.add(ctr_val, ir.Constant(i32, 1))
+        self.builder.store(next_ctr, warmup_ctr)
+        self.builder.cbranch(self.builder.icmp_signed('>=', next_ctr, warmup_cnt),
+                             warmup_done_bb, warmup_loop_bb)
+
+        self.builder.position_at_end(warmup_done_bb)
+        self.builder.branch(cont_bb)
+
+        # ---- Continue block: produce the random value ----
+        self.builder.position_at_end(cont_bb)
+        rand_r_func = self._declare_external_fn('rand_r', i32, [i32.as_pointer()])
+        rand_val    = self.builder.call(rand_r_func, [seed_var])
+
+        def ensure_i32(val: ir.Value) -> ir.Value:
+            v = val
+            if not hasattr(v, 'type'):
+                raise Exception("rand() argument must be an integer expression")
+            if isinstance(v.type, ir.PointerType):
+                v = self.builder.load(v)
+            if not isinstance(v.type, ir.IntType):
+                raise Exception("rand() argument must be an integer expression")
+            if v.type.width == 32:
+                return v
+            if v.type.width < 32:
+                return self.builder.zext(v, i32)
+            return self.builder.trunc(v, i32)
+
+        if len(args) == 0:
+            return rand_val
+        if len(args) == 1:
+            max_v   = ensure_i32(self.visit(args[0]))
+            zero    = ir.Constant(i32, 0)
+            safe    = self.builder.select(
+                self.builder.icmp_signed('==', max_v, zero), ir.Constant(i32, 1), max_v)
+            return self.builder.srem(rand_val, safe)
+        # 2-arg form: rand(min, max) half-open [min, max)
+        min_v   = ensure_i32(self.visit(args[0]))
+        max_v   = ensure_i32(self.visit(args[1]))
+        one     = ir.Constant(i32, 1)
+        zero    = ir.Constant(i32, 0)
+        ge      = self.builder.icmp_signed('>=', max_v, min_v)
+        hi      = self.builder.select(ge, max_v, min_v)
+        lo      = self.builder.select(ge, min_v, max_v)
+        rng     = self.builder.sub(hi, lo)
+        safe    = self.builder.select(
+            self.builder.icmp_signed('<=', rng, zero), one, rng)
+        return self.builder.add(self.builder.srem(rand_val, safe), lo)
 
     def visit_func_call(self, node: Dict[str, Any]) -> ir.Value:
         # Special handling for create_threads, create_thread, wait, and signal
         func_name = node['name']['value'] if isinstance(node['name'], dict) else node['name']
         if func_name == 'create_threads':
-            # New argument order: create_threads(thread_count, target_func)
             thread_count_arg = node['arguments'][0]
             target_func_arg = node['arguments'][1]
             target_func = target_func_arg['value'] if isinstance(target_func_arg, dict) else target_func_arg
-            if isinstance(thread_count_arg, dict) and thread_count_arg.get('type') == 'literal':
-                thread_count_value = thread_count_arg['value']
-                # If it's a string, treat it as a variable name and look it up
-                if isinstance(thread_count_value, str):
-                    # Look up the variable in globals or locals
-                    if thread_count_value in self.globals:
-                        var_ptr, var_type, _ = self.globals[thread_count_value]
-                        thread_count = self.builder.load(var_ptr) if var_type in ('int', 'float') or var_type is None else var_ptr
-                    elif thread_count_value in self.locals:
-                        var_ptr, var_type, _ = self.locals[thread_count_value]
-                        thread_count = self.builder.load(var_ptr) if var_type in ('int', 'float') or var_type is None else var_ptr
-                    else:
-                        self.semantic_error(f"undefined variable '{thread_count_value}' in create_threads", node)
-                else:
-                    # It's a numeric literal
-                    thread_count = ir.Constant(ir.IntType(32), thread_count_value)
-            else:
-                # Process normally if it's not a literal
-                thread_count = self.visit(thread_count_arg)
-                
+            thread_count = self.visit(thread_count_arg)
             if target_func not in self.funcs:
                 raise Exception(f"Undefined function: {target_func}")
             target_func_obj = self.funcs[target_func]
-            
-            # Validate that the target function has at least one parameter (for thread_number)
             if len(target_func_obj.args) == 0:
                 raise Exception(f"Function '{target_func}' called by create_threads must have at least one parameter (thread_number)")
-            
             return create_threads(self.builder, self.module, thread_count, target_func_obj)
         elif func_name == 'create_thread':
-            target_func_arg = node['arguments'][0]
-            target_func = target_func_arg['value'] if isinstance(target_func_arg, dict) else target_func_arg
-            
-            # Process all arguments after the function name
-            args = []
-            for i in range(1, len(node['arguments'])):
-                arg_value = self.visit(node['arguments'][i])
-                args.append(arg_value)
-            
-            if target_func not in self.funcs:
-                raise Exception(f"Undefined function: {target_func}")
-            target_func_obj = self.funcs[target_func]
-            
-            # Validate that the target function has the right number of parameters
-            if len(target_func_obj.args) != len(args):
-                raise Exception(f"Function '{target_func}' expects {len(target_func_obj.args)} arguments, but got {len(args)}")
-            
-            # Coerce variant args to match the expected parameter types of the target function
-            from .base_types import get_variant_type
-            variant_ty = get_variant_type()
-            coerced_args = []
-            for i, (arg, param) in enumerate(zip(args, target_func_obj.args)):
-                if hasattr(arg, 'type') and isinstance(arg.type, ir.PointerType) and arg.type.pointee == variant_ty:
-                    # arg is a variant pointer; extract the value the param expects
-                    if isinstance(param.type, ir.IntType):
-                        arg = self._extract_variant_value(arg, 'int')
-                    elif isinstance(param.type, ir.DoubleType):
-                        arg = self._extract_variant_value(arg, 'float')
-                    elif isinstance(param.type, ir.PointerType):
-                        arg = self._extract_variant_value(arg, 'string')
-                    # else: leave as-is (e.g. already variant)
-                elif hasattr(arg, 'type') and arg.type == variant_ty:
-                    # arg is a variant value (not pointer); store it then extract
-                    temp_ptr = self.builder.alloca(variant_ty, name=f"thread_arg_{i}_tmp")
-                    self.builder.store(arg, temp_ptr)
-                    if isinstance(param.type, ir.IntType):
-                        arg = self._extract_variant_value(temp_ptr, 'int')
-                    elif isinstance(param.type, ir.DoubleType):
-                        arg = self._extract_variant_value(temp_ptr, 'float')
-                    elif isinstance(param.type, ir.PointerType):
-                        arg = self._extract_variant_value(temp_ptr, 'string')
-                coerced_args.append(arg)
-            args = coerced_args
-
-            debug_print(f"DEBUG: create_thread - calling create_thread with target_func: {target_func}, args: {args}")
-            result = create_thread(self.builder, self.module, target_func_obj, thread_args=args)
-            debug_print(f"DEBUG: create_thread - returned: {result}, type: {getattr(result, 'type', type(result))}")
-            return result
+            return self._handle_create_thread(node)
         elif func_name == 'join_thread':
-            # Join a single thread using pthread_join
             if len(node['arguments']) != 1:
                 raise Exception(f"join_thread() requires exactly 1 argument (thread handle), got {len(node['arguments'])}")
-            
-            debug_print(f"DEBUG: join_thread function call - raw argument: {node['arguments'][0]}")
             thread_arg = self.visit(node['arguments'][0])
-            debug_print(f"DEBUG: join_thread() - thread_arg: {thread_arg}, type: {getattr(thread_arg, 'type', type(thread_arg))}")
-            
-            # Check if thread_arg is a variant and extract the thread handle if needed
             if hasattr(thread_arg, 'type'):
                 from .base_types import get_variant_type
                 variant_ty = get_variant_type()
                 if thread_arg.type == variant_ty:
-                    # Thread handle is wrapped in a variant - need to extract it
-                    debug_print(f"DEBUG: join_thread() - extracting thread handle from variant")
-                    # Create a temporary variable to store the variant
-                    temp_var = self.builder.alloca(variant_ty, name="temp_thread_variant")
-                    self.builder.store(thread_arg, temp_var)
-                    # Extract as thread type (which is i8*)
-                    thread_arg = self._extract_variant_value(temp_var, 'thread')
-                    debug_print(f"DEBUG: join_thread() - extracted thread_arg: {thread_arg}, type: {getattr(thread_arg, 'type', type(thread_arg))}")
+                    tmp = self.builder.alloca(variant_ty, name="tmp_thread")
+                    self.builder.store(thread_arg, tmp)
+                    thread_arg = self._extract_variant_value(tmp, 'thread')
                 elif isinstance(thread_arg.type, ir.PointerType) and thread_arg.type.pointee == variant_ty:
-                    # Thread handle is a pointer to variant - extract directly
-                    debug_print(f"DEBUG: join_thread() - extracting thread handle from variant pointer")
                     thread_arg = self._extract_variant_value(thread_arg, 'thread')
-                    debug_print(f"DEBUG: join_thread() - extracted thread_arg: {thread_arg}, type: {getattr(thread_arg, 'type', type(thread_arg))}")
-            
-            # Use the join_thread function from threading_utils
             return join_thread(self.builder, self.module, thread_arg)
-        elif func_name == 'wait':
-            # Semaphore wait operation - maps to sem_wait
-            # Supports wait(sem) and wait(sem, n) — calls sem_wait n times
-            arg0 = node['arguments'][0]
-            debug_print(f"DEBUG: wait() - arg0: {arg0}")
-            # If argument is a string literal, treat it as a variable name
-            if isinstance(arg0, dict) and arg0.get('type') == 'literal' and isinstance(arg0.get('value'), str):
-                debug_print(f"DEBUG: wait() - treating arg0 as variable name: {arg0['value']}")
-                sem_ptr = self.visit_ID({'type': 'ID', 'value': arg0['value']}, prefer_globals=True)
-            elif isinstance(arg0, dict) and arg0.get('type') == 'ID':
-                debug_print(f"DEBUG: wait() - treating arg0 as ID")
-                sem_ptr = self.visit_ID(arg0, prefer_globals=True)
-            else:
-                debug_print(f"DEBUG: wait() - visiting arg0 normally")
-                sem_ptr = self.visit(arg0)
-            debug_print(f"DEBUG: wait() - sem_ptr: {sem_ptr}, type: {getattr(sem_ptr, 'type', type(sem_ptr))}")
-            sem_ty = ir.IntType(8).as_pointer()
+        elif func_name in ('wait', 'signal'):
+            opaque_ty = ir.IntType(8).as_pointer()
+            sem_ptr = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
             if not hasattr(sem_ptr, 'type') or not isinstance(sem_ptr.type, ir.PointerType):
-                raise Exception(f"Semaphore argument is not a pointer. Got type: {getattr(sem_ptr, 'type', type(sem_ptr))}")
-            if sem_ptr.type != sem_ty:
-                sem_ptr = self.builder.bitcast(sem_ptr, sem_ty)
-            sem_wait = self.module.globals.get('sem_wait')
-            if not sem_wait:
-                sem_wait_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
-                sem_wait = ir.Function(self.module, sem_wait_ty, name='sem_wait')
-            debug_print(f"DEBUG: wait() - about to call sem_wait with: {sem_ptr}")
-
+                raise Exception(f"Semaphore argument to {func_name}() is not a pointer.")
+            c_name = 'sem_wait' if func_name == 'wait' else 'sem_post'
+            fn = self._declare_external_fn(c_name, ir.IntType(32), [opaque_ty])
             if len(node['arguments']) >= 2:
-                # wait(sem, n) — emit a loop calling sem_wait n times
-                count_val = self.visit(node['arguments'][1])
-                from .base_types import get_variant_type
-                variant_ty = get_variant_type()
-                if hasattr(count_val, 'type') and count_val.type == variant_ty:
-                    tmp = self.builder.alloca(variant_ty, name="wait_count_tmp")
-                    self.builder.store(count_val, tmp)
-                    count_val = self._extract_variant_value(tmp, 'int')
-                elif hasattr(count_val, 'type') and isinstance(count_val.type, ir.PointerType) and count_val.type.pointee == variant_ty:
-                    count_val = self._extract_variant_value(count_val, 'int')
-                if hasattr(count_val, 'type') and isinstance(count_val.type, ir.IntType) and count_val.type.width != 32:
-                    count_val = self.builder.zext(count_val, ir.IntType(32))
-                i_ptr = self.builder.alloca(ir.IntType(32), name="wait_i")
-                self.builder.store(ir.Constant(ir.IntType(32), 0), i_ptr)
-                loop_cond = self.builder.append_basic_block("wait_loop_cond")
-                loop_body = self.builder.append_basic_block("wait_loop_body")
-                loop_end  = self.builder.append_basic_block("wait_loop_end")
-                self.builder.branch(loop_cond)
-                self.builder.position_at_end(loop_cond)
-                i_val = self.builder.load(i_ptr)
-                cond = self.builder.icmp_signed('<', i_val, count_val)
-                self.builder.cbranch(cond, loop_body, loop_end)
-                self.builder.position_at_end(loop_body)
-                self.builder.call(sem_wait, [sem_ptr])
-                new_i = self.builder.add(i_val, ir.Constant(ir.IntType(32), 1))
-                self.builder.store(new_i, i_ptr)
-                self.builder.branch(loop_cond)
-                self.builder.position_at_end(loop_end)
-                return ir.Constant(ir.IntType(32), 0)
-
-            try:
-                result = self.builder.call(sem_wait, [sem_ptr])
-                debug_print(f"DEBUG: wait() - sem_wait call succeeded")
-                return result
-            except Exception as e:
-                debug_print(f"DEBUG: wait() - sem_wait call failed: {e}")
-                debug_print(f"DEBUG: wait() - sem_ptr type: {getattr(sem_ptr, 'type', type(sem_ptr))}")
-                raise
-        elif func_name == 'signal':
-            # Semaphore signal operation - maps to sem_post
-            # Supports signal(sem) and signal(sem, n) — calls sem_post n times
-            arg0 = node['arguments'][0]
-            if isinstance(arg0, dict) and arg0.get('type') == 'literal' and isinstance(arg0.get('value'), str):
-                sem_ptr = self.visit_ID({'type': 'ID', 'value': arg0['value']}, prefer_globals=True)
-            elif isinstance(arg0, dict) and arg0.get('type') == 'ID':
-                sem_ptr = self.visit_ID(arg0, prefer_globals=True)
-            else:
-                sem_ptr = self.visit(arg0)
-            debug_print(f"DEBUG: signal() sem_ptr type: {getattr(sem_ptr, 'type', type(sem_ptr))}")
-            sem_ty = ir.IntType(8).as_pointer()
-            if not hasattr(sem_ptr, 'type') or not isinstance(sem_ptr.type, ir.PointerType):
-                raise Exception(f"Semaphore argument to signal() is not a pointer. Got type: {getattr(sem_ptr, 'type', type(sem_ptr))} and value: {sem_ptr}")
-            if sem_ptr.type != sem_ty:
-                sem_ptr = self.builder.bitcast(sem_ptr, sem_ty)
-            sem_post = self.module.globals.get('sem_post')
-            if not sem_post:
-                sem_post_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
-                sem_post = ir.Function(self.module, sem_post_ty, name='sem_post')
-
-            if len(node['arguments']) >= 2:
-                # signal(sem, n) — emit a loop calling sem_post n times
-                count_val = self.visit(node['arguments'][1])
-                from .base_types import get_variant_type
-                variant_ty = get_variant_type()
-                if hasattr(count_val, 'type') and count_val.type == variant_ty:
-                    tmp = self.builder.alloca(variant_ty, name="sig_count_tmp")
-                    self.builder.store(count_val, tmp)
-                    count_val = self._extract_variant_value(tmp, 'int')
-                elif hasattr(count_val, 'type') and isinstance(count_val.type, ir.PointerType) and count_val.type.pointee == variant_ty:
-                    count_val = self._extract_variant_value(count_val, 'int')
-                if hasattr(count_val, 'type') and isinstance(count_val.type, ir.IntType) and count_val.type.width != 32:
-                    count_val = self.builder.zext(count_val, ir.IntType(32))
-                # Build: i = 0; while i < n: sem_post(sem); i++
-                i_ptr = self.builder.alloca(ir.IntType(32), name="sig_i")
-                self.builder.store(ir.Constant(ir.IntType(32), 0), i_ptr)
-                loop_cond = self.builder.append_basic_block("sig_loop_cond")
-                loop_body = self.builder.append_basic_block("sig_loop_body")
-                loop_end  = self.builder.append_basic_block("sig_loop_end")
-                self.builder.branch(loop_cond)
-                self.builder.position_at_end(loop_cond)
-                i_val = self.builder.load(i_ptr)
-                cond = self.builder.icmp_signed('<', i_val, count_val)
-                self.builder.cbranch(cond, loop_body, loop_end)
-                self.builder.position_at_end(loop_body)
-                self.builder.call(sem_post, [sem_ptr])
-                new_i = self.builder.add(i_val, ir.Constant(ir.IntType(32), 1))
-                self.builder.store(new_i, i_ptr)
-                self.builder.branch(loop_cond)
-                self.builder.position_at_end(loop_end)
-                return ir.Constant(ir.IntType(32), 0)
-
-            return self.builder.call(sem_post, [sem_ptr])
+                return self._emit_counted_loop(fn, sem_ptr,
+                                               self.visit(node['arguments'][1]), func_name[:3])
+            return self.builder.call(fn, [sem_ptr])
         elif func_name == 'barrier_wait':
-            # Barrier wait operation - maps to pthread_barrier_wait
+            # Barrier wait — maps to pthread_barrier_wait
             if len(node['arguments']) != 1:
                 raise Exception(f"barrier_wait() requires exactly 1 argument (barrier), got {len(node['arguments'])}")
-            arg0 = node['arguments'][0]
-            debug_print(f"DEBUG: barrier_wait - arg0: {arg0}")
-            if isinstance(arg0, dict) and arg0.get('type') == 'literal' and isinstance(arg0.get('value'), str):
-                barrier_ptr = self.visit_ID({'type': 'ID', 'value': arg0['value']}, prefer_globals=True)
-            elif isinstance(arg0, dict) and arg0.get('type') == 'ID':
-                barrier_ptr = self.visit_ID(arg0, prefer_globals=True)
-            elif isinstance(arg0, dict) and arg0.get('type') == 'array_access':
-                barrier_ptr = self.visit_array_access(arg0)
-            else:
-                barrier_ptr = self.visit(arg0)
-            debug_print(f"DEBUG: barrier_wait - barrier_ptr: {barrier_ptr}, type: {getattr(barrier_ptr, 'type', None)}")
-            barrier_ty = ir.IntType(8).as_pointer()
+            opaque_ty = ir.IntType(8).as_pointer()
+            barrier_ptr = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
             if not hasattr(barrier_ptr, 'type') or not isinstance(barrier_ptr.type, ir.PointerType):
                 raise Exception(f"barrier_wait() argument is not a pointer. Got type: {getattr(barrier_ptr, 'type', type(barrier_ptr))}")
-            if barrier_ptr.type != barrier_ty:
-                barrier_ptr = self.builder.bitcast(barrier_ptr, barrier_ty)
-            debug_print(f"DEBUG: barrier_wait - final barrier_ptr: {barrier_ptr}, type: {getattr(barrier_ptr, 'type', None)}")
-            pthread_barrier_wait = self.module.globals.get('pthread_barrier_wait')
-            if not pthread_barrier_wait:
-                pthread_barrier_wait_ty = ir.FunctionType(ir.IntType(32), [barrier_ty])
-                pthread_barrier_wait = ir.Function(self.module, pthread_barrier_wait_ty, name='pthread_barrier_wait')
-            return self.builder.call(pthread_barrier_wait, [barrier_ptr])
-        elif func_name == 'lock':
-            # Mutex lock operation - maps to pthread_mutex_lock  
-            arg0 = node['arguments'][0]
-            debug_print(f"DEBUG: lock() - arg0: {arg0}")
-            # If argument is a string literal, treat it as a variable name
-            if isinstance(arg0, dict) and arg0.get('type') == 'literal' and isinstance(arg0.get('value'), str):
-                debug_print(f"DEBUG: lock() - treating arg0 as variable name: {arg0['value']}")
-                mutex_ptr = self.visit_ID({'type': 'ID', 'value': arg0['value']}, prefer_globals=True)
-            elif isinstance(arg0, dict) and arg0.get('type') == 'ID':
-                debug_print(f"DEBUG: lock() - treating arg0 as ID")
-                mutex_ptr = self.visit_ID(arg0, prefer_globals=True)
-            elif isinstance(arg0, dict) and arg0.get('type') == 'array_access':
-                debug_print(f"DEBUG: lock() - treating arg0 as array access")
-                mutex_ptr = self.visit_array_access(arg0)
-            else:
-                debug_print(f"DEBUG: lock() - visiting arg0 normally")
-                mutex_ptr = self.visit(arg0)
-            debug_print(f"DEBUG: lock() - mutex_ptr: {mutex_ptr}, type: {getattr(mutex_ptr, 'type', type(mutex_ptr))}")
-            mutex_ty = ir.IntType(8).as_pointer()
+            debug_print(f"DEBUG: barrier_wait - barrier_ptr: {barrier_ptr}")
+            fn = self._declare_external_fn('pthread_barrier_wait', ir.IntType(32), [opaque_ty])
+            return self.builder.call(fn, [barrier_ptr])
+        elif func_name in ('lock', 'unlock'):
+            opaque_ty = ir.IntType(8).as_pointer()
+            mutex_ptr = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
             if not hasattr(mutex_ptr, 'type') or not isinstance(mutex_ptr.type, ir.PointerType):
-                raise Exception(f"Mutex argument is not a pointer. Got type: {getattr(mutex_ptr, 'type', type(mutex_ptr))}")
-            if mutex_ptr.type != mutex_ty:
-                mutex_ptr = self.builder.bitcast(mutex_ptr, mutex_ty)
-            pthread_mutex_lock = self.module.globals.get('pthread_mutex_lock')
-            if not pthread_mutex_lock:
-                pthread_mutex_lock_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
-                pthread_mutex_lock = ir.Function(self.module, pthread_mutex_lock_ty, name='pthread_mutex_lock')
-            debug_print(f"DEBUG: lock() - about to call pthread_mutex_lock with: {mutex_ptr}")
-            try:
-                result = self.builder.call(pthread_mutex_lock, [mutex_ptr])
-                debug_print(f"DEBUG: lock() - pthread_mutex_lock call succeeded")
-                return result
-            except Exception as e:
-                debug_print(f"DEBUG: lock() - pthread_mutex_lock call failed: {e}")
-                debug_print(f"DEBUG: lock() - mutex_ptr type: {getattr(mutex_ptr, 'type', type(mutex_ptr))}")
-                raise
-        elif func_name == 'unlock':
-            # Mutex unlock operation - maps to pthread_mutex_unlock
-            arg0 = node['arguments'][0]
-            debug_print(f"DEBUG: unlock() - arg0: {arg0}")
-            # If argument is a string literal, treat it as a variable name
-            if isinstance(arg0, dict) and arg0.get('type') == 'literal' and isinstance(arg0.get('value'), str):
-                debug_print(f"DEBUG: unlock() - treating arg0 as variable name: {arg0['value']}")
-                mutex_ptr = self.visit_ID({'type': 'ID', 'value': arg0['value']}, prefer_globals=True)
-            elif isinstance(arg0, dict) and arg0.get('type') == 'ID':
-                debug_print(f"DEBUG: unlock() - treating arg0 as ID")
-                mutex_ptr = self.visit_ID(arg0, prefer_globals=True)
-            elif isinstance(arg0, dict) and arg0.get('type') == 'array_access':
-                debug_print(f"DEBUG: unlock() - treating arg0 as array access")
-                mutex_ptr = self.visit_array_access(arg0)
-            else:
-                debug_print(f"DEBUG: unlock() - visiting arg0 normally")
-                mutex_ptr = self.visit(arg0)
-            debug_print(f"DEBUG: unlock() - mutex_ptr: {mutex_ptr}, type: {getattr(mutex_ptr, 'type', type(mutex_ptr))}")
-            mutex_ty = ir.IntType(8).as_pointer()
-            if not hasattr(mutex_ptr, 'type') or not isinstance(mutex_ptr.type, ir.PointerType):
-                raise Exception(f"Mutex argument is not a pointer. Got type: {getattr(mutex_ptr, 'type', type(mutex_ptr))}")
-            if mutex_ptr.type != mutex_ty:
-                mutex_ptr = self.builder.bitcast(mutex_ptr, mutex_ty)
-            pthread_mutex_unlock = self.module.globals.get('pthread_mutex_unlock')
-            if not pthread_mutex_unlock:
-                pthread_mutex_unlock_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
-                pthread_mutex_unlock = ir.Function(self.module, pthread_mutex_unlock_ty, name='pthread_mutex_unlock')
-            debug_print(f"DEBUG: unlock() - about to call pthread_mutex_unlock with: {mutex_ptr}")
-            try:
-                result = self.builder.call(pthread_mutex_unlock, [mutex_ptr])
-                debug_print(f"DEBUG: unlock() - pthread_mutex_unlock call succeeded")
-                return result
-            except Exception as e:
-                debug_print(f"DEBUG: unlock() - pthread_mutex_unlock call failed: {e}")
-                debug_print(f"DEBUG: unlock() - mutex_ptr type: {getattr(mutex_ptr, 'type', type(mutex_ptr))}")
-                raise
+                raise Exception(f"Mutex argument to {func_name}() is not a pointer.")
+            c_name = 'pthread_mutex_lock' if func_name == 'lock' else 'pthread_mutex_unlock'
+            fn = self._declare_external_fn(c_name, ir.IntType(32), [opaque_ty])
+            return self.builder.call(fn, [mutex_ptr])
         elif func_name == 'join_threads':
-            # Join multiple threads using pthread_join in a loop
-            threads_arg = node['arguments'][0]
-            
-            # Get thread_count - if not provided as second argument, try to get from globals
-            if len(node['arguments']) > 1:
-                thread_count = self.visit(node['arguments'][1])
-            else:
-                # Try to get thread_count from globals
-                if 'thread_count' in self.globals:
-                    thread_count_ptr, dtype, _ = self.globals['thread_count']
-                    thread_count = self.builder.load(thread_count_ptr)
-                else:
-                    thread_count = ir.Constant(ir.IntType(32), 1)  # Default to 1
-            
-            if isinstance(threads_arg, dict) and threads_arg.get('type') == 'literal' and isinstance(threads_arg.get('value'), str):
-                # Thread array variable name as string literal
-                threads_name = threads_arg['value']
-                if threads_name in self.locals:
-                    threads_ptr, dtype, _ = self.locals[threads_name]
-                elif threads_name in self.globals:
-                    threads_ptr, dtype, _ = self.globals[threads_name]
-                else:
-                    raise Exception(f"Undefined thread array variable: {threads_name}")
-            elif isinstance(threads_arg, dict) and threads_arg.get('type') == 'ID':
-                # For join_threads, we need the pointer to the array, not the loaded value
-                threads_name = threads_arg['value']
-                if threads_name in self.locals:
-                    threads_ptr, dtype, _ = self.locals[threads_name]
-                    # If it's a thread_array, we already have the pointer to the array
-                    # Don't load it - just pass the pointer directly
-                    debug_print(f"DEBUG: join_threads - found thread_array '{threads_name}' in locals, dtype: {dtype}, threads_ptr: {threads_ptr}")
-                elif threads_name in self.globals:
-                    threads_ptr, dtype = self.globals[threads_name]
-                    debug_print(f"DEBUG: join_threads - found thread_array '{threads_name}' in globals, dtype: {dtype}, threads_ptr: {threads_ptr}")
-                else:
-                    raise Exception(f"Undefined thread array variable: {threads_name}")
-            else:
-                threads_ptr = self.visit(threads_arg)
-            join_threads(self.builder, self.module, threads_ptr, thread_count)
-            return ir.Constant(ir.IntType(32), 0)  # Return success code
+            return self._handle_join_threads(node)
         elif func_name == 'array':
             # Handle array() function calls for local arrays
             args = node.get('arguments', [])
@@ -2936,30 +2076,21 @@ class CodeGenerator:
             
             # Get element type/initialization
             element_init = args[1]
-            
-            # Determine element type
-            if isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'semaphore':
-                element_type = 'semaphore'
-                element_llvm_type = ir.ArrayType(ir.IntType(8), 32)  # sem_t storage
-            elif isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'mutex':
-                element_type = 'mutex'
-                element_llvm_type = ir.ArrayType(ir.IntType(8), 40)  # pthread_mutex_t storage
-            elif isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'barrier':
-                element_type = 'barrier'
-                element_llvm_type = ir.ArrayType(ir.IntType(8), 128)  # pthread_barrier_t storage (opaque)
-            elif isinstance(element_init, dict) and element_init.get('type') == 'function_call' and element_init.get('name') == 'thread':
-                element_type = 'thread'
-                element_llvm_type = ir.IntType(8).as_pointer()  # pthread_t as void*
-            elif isinstance(element_init, dict) and element_init.get('type') == 'literal' and element_init.get('value') == 'thread':
-                element_type = 'thread'
-                element_llvm_type = ir.IntType(8).as_pointer()  # pthread_t as void*
-            elif isinstance(element_init, dict) and element_init.get('type') == 'literal' and element_init.get('value') == '"thread"':
-                element_type = 'thread'  
-                element_llvm_type = ir.IntType(8).as_pointer()  # pthread_t as void*
-            else:
-                # For now, assume int if not semaphore, mutex, or thread
-                element_type = 'int'
-                element_llvm_type = ir.IntType(32)
+
+            _ELEM_SPEC = {
+                'semaphore': ('semaphore', ir.ArrayType(ir.IntType(8), 32)),
+                'mutex':     ('mutex',     ir.ArrayType(ir.IntType(8), 40)),
+                'barrier':   ('barrier',   ir.ArrayType(ir.IntType(8), 128)),
+                'thread':    ('thread',    ir.IntType(8).as_pointer()),
+            }
+            init_name = None
+            if isinstance(element_init, dict):
+                if element_init.get('type') == 'function_call':
+                    init_name = element_init.get('name')
+                elif element_init.get('type') == 'literal':
+                    v = element_init.get('value', '')
+                    init_name = v.strip('"') if isinstance(v, str) else None
+            element_type, element_llvm_type = _ELEM_SPEC.get(init_name, ('int', ir.IntType(32)))
             
             # Create local array
             array_llvm_type = ir.ArrayType(element_llvm_type, array_size)
@@ -2982,16 +2113,8 @@ class CodeGenerator:
             
             # If argument is a string pointer, use atoi to convert
             if hasattr(arg, 'type') and isinstance(arg.type, ir.PointerType) and arg.type.pointee == ir.IntType(8):
-                # Get or create atoi function
-                atoi = self.module.globals.get('atoi')
-                if not atoi:
-                    atoi_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
-                    atoi = ir.Function(self.module, atoi_ty, name="atoi")
-                
-                # Call atoi with the string argument
-                result = self.builder.call(atoi, [arg])
-                debug_print(f"DEBUG: int() conversion - called atoi, result: {result}")
-                return result
+                atoi = self._declare_external_fn('atoi', ir.IntType(32), [ir.IntType(8).as_pointer()])
+                return self.builder.call(atoi, [arg])
             
             # For other types, create a placeholder (compile-time conversion not supported)
             debug_print(f"DEBUG: int() conversion - unsupported type, creating placeholder")
@@ -3170,220 +2293,16 @@ class CodeGenerator:
             nsec_ptr = self.builder.gep(ts_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)], inbounds=True)
             self.builder.store(tv_nsec, nsec_ptr)
 
-            # Declare or get nanosleep
-            nanosleep = self.module.globals.get('nanosleep')
-            if not nanosleep:
-                nanosleep_ty = ir.FunctionType(ir.IntType(32), [self.timespec_ty.as_pointer(), self.timespec_ty.as_pointer()])
-                nanosleep = ir.Function(self.module, nanosleep_ty, name='nanosleep')
-
+            nanosleep = self._declare_external_fn('nanosleep', ir.IntType(32),
+                                                   [self.timespec_ty.as_pointer(), self.timespec_ty.as_pointer()])
             null_rem = ir.Constant(self.timespec_ty.as_pointer(), None)
-            debug_print(f"DEBUG: sleep() calling nanosleep with tv_sec/tv_nsec")
             return self.builder.call(nanosleep, [ts_ptr, null_rem])
         elif func_name == 'seed':
             # Remove explicit seeding API in favor of automatic OS-entropy seeding on first rand() use
             raise Exception("seed() was removed. rand() now auto-seeds from OS entropy on first use.")
         elif func_name == 'rand':
-            # Thread-safe random integer generator using rand_r() with per-function seed
-            # Auto-seeds from OS entropy (getrandom) on first use; falls back to time(NULL) + thread ID if needed.
-            # Usage:
-            #   rand() -> int in [0, RAND_MAX]
-            #   rand(max) -> int in [0, max)
-            #   rand(min, max) -> int in [min, max) (order-agnostic, half-open interval)
-            args = node.get('arguments', [])
-            if len(args) not in (0, 1, 2):
-                raise Exception(f"rand() requires 0, 1 or 2 arguments, got {len(args)}")
+            return self._handle_rand(node)
 
-            i32 = ir.IntType(32)
-            i64 = ir.IntType(64)
-
-            # Create a function-local static seed variable (simulated with an alloca at function entry)
-            # Store seed in the function's locals so each function/thread has its own seed
-            func_name = self.current_function_name or 'global'
-            seed_var_name = f'__rand_seed_{func_name}'
-            
-            if seed_var_name not in self.locals:
-                # Create seed variable at function entry
-                # Save current position
-                saved_block = self.builder.block
-                
-                # Find or create the entry block's first position
-                entry_block = self.builder.function.entry_basic_block
-                if len(entry_block.instructions) > 0:
-                    self.builder.position_before(entry_block.instructions[0])
-                else:
-                    self.builder.position_at_end(entry_block)
-                
-                seed_var = self.builder.alloca(i32, name=seed_var_name)
-                # Initialize to 0 (will be set on first use)
-                self.builder.store(ir.Constant(i32, 0), seed_var)
-                self.locals[seed_var_name] = (seed_var, 'int', False)
-                
-                # Restore position
-                self.builder.position_at_end(saved_block)
-            
-            seed_var, _, _ = self.locals[seed_var_name]
-            
-            # Check if we need to seed (seed == 0 means not initialized)
-            seed_val = self.builder.load(seed_var)
-            need_seed = self.builder.icmp_signed('==', seed_val, ir.Constant(i32, 0))
-
-            cur_func = self.builder.function
-            seed_bb = cur_func.append_basic_block(name='rand_seed')
-            cont_bb = cur_func.append_basic_block(name='rand_cont')
-            self.builder.cbranch(need_seed, seed_bb, cont_bb)
-
-            # Seed block - initialize the seed variable
-            self.builder.position_at_end(seed_bb)
-            # Try getrandom(void* buf, size_t buflen, unsigned int flags) -> ssize_t
-            getrandom_fn = self.module.globals.get('getrandom')
-            if not getrandom_fn:
-                getrandom_ty = ir.FunctionType(i64, [ir.IntType(8).as_pointer(), i64, i32])
-                getrandom_fn = ir.Function(self.module, getrandom_ty, name='getrandom')
-            # time_t time(time_t*) -> assume i64 time_t
-            time_fn = self.module.globals.get('time')
-            if not time_fn:
-                time_ty = ir.FunctionType(i64, [i64.as_pointer()])
-                time_fn = ir.Function(self.module, time_ty, name='time')
-            # pthread_self() -> pthread_t (as i8*)
-            pthread_self_fn = self.module.globals.get('pthread_self')
-            if not pthread_self_fn:
-                pthread_self_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [])
-                pthread_self_fn = ir.Function(self.module, pthread_self_ty, name='pthread_self')
-
-            seed_tmp = self.builder.alloca(i32, name='seed_tmp')
-            seed_buf = self.builder.bitcast(seed_tmp, ir.IntType(8).as_pointer())
-            gr_n = self.builder.call(getrandom_fn, [seed_buf, ir.Constant(i64, 4), ir.Constant(i32, 0)])
-
-            ok_bb = cur_func.append_basic_block(name='rand_seed_ok')
-            fb_bb = cur_func.append_basic_block(name='rand_seed_fb')
-            done_seed_bb = cur_func.append_basic_block(name='rand_seed_done')
-
-            got_4 = self.builder.icmp_signed('==', gr_n, ir.Constant(i64, 4))
-            self.builder.cbranch(got_4, ok_bb, fb_bb)
-
-            # OK: use hardware entropy
-            self.builder.position_at_end(ok_bb)
-            seed_val32 = self.builder.load(seed_tmp)
-            self.builder.store(seed_val32, seed_var)
-            self.builder.branch(done_seed_bb)
-
-            # Fallback: use time(NULL) XOR pthread_self() for uniqueness per thread
-            self.builder.position_at_end(fb_bb)
-            null_time_ptr = ir.Constant(i64.as_pointer(), None)
-            t = self.builder.call(time_fn, [null_time_ptr])
-            # Get thread ID and convert to i32
-            tid = self.builder.call(pthread_self_fn, [])
-            tid_int = self.builder.ptrtoint(tid, i64)
-            # Use more bits of time for better entropy (use full time value)
-            time_xor_tid = self.builder.xor(t, tid_int)
-            # Also add the address of the seed variable for additional uniqueness
-            seed_addr_int = self.builder.ptrtoint(seed_var, i64)
-            combined = self.builder.xor(time_xor_tid, seed_addr_int)
-            # Hash it a bit more by rotating and XORing
-            shifted = self.builder.lshr(combined, ir.Constant(i64, 17))
-            final64 = self.builder.xor(combined, shifted)
-            seed_fallback = self.builder.trunc(final64, i32)
-            # Ensure seed is never 0 (0 is our "uninitialized" marker)
-            seed_is_zero = self.builder.icmp_signed('==', seed_fallback, ir.Constant(i32, 0))
-            final_seed = self.builder.select(seed_is_zero, ir.Constant(i32, 1), seed_fallback)
-            self.builder.store(final_seed, seed_var)
-            self.builder.branch(done_seed_bb)
-
-            # Continue after seeding
-            self.builder.position_at_end(done_seed_bb)
-            # Warm up the RNG by calling rand_r several times based on thread ID
-            # This ensures different threads get different sequences even with similar seeds
-            tid_warmup = self.builder.call(pthread_self_fn, [])
-            tid_warmup_int = self.builder.ptrtoint(tid_warmup, i64)
-            tid_warmup_32 = self.builder.trunc(tid_warmup_int, i32)
-            # Use lower bits as iteration count (0-15 iterations)
-            warmup_count = self.builder.and_(tid_warmup_32, ir.Constant(i32, 15))
-            
-            # Create warmup loop
-            warmup_loop_bb = cur_func.append_basic_block(name='rand_warmup_loop')
-            warmup_done_bb = cur_func.append_basic_block(name='rand_warmup_done')
-            
-            # Initialize counter
-            warmup_counter = self.builder.alloca(i32, name='warmup_counter')
-            self.builder.store(ir.Constant(i32, 0), warmup_counter)
-            self.builder.branch(warmup_loop_bb)
-            
-            # Warmup loop: call rand_r multiple times
-            self.builder.position_at_end(warmup_loop_bb)
-            counter_val = self.builder.load(warmup_counter)
-            # Declare rand_r here if not already done
-            if 'rand_r' not in [f.name for f in self.module.functions]:
-                rand_r_ty = ir.FunctionType(i32, [i32.as_pointer()])
-                temp_rand_r = ir.Function(self.module, rand_r_ty, name='rand_r')
-            else:
-                temp_rand_r = self.module.get_global('rand_r')
-            # Call rand_r to advance the state
-            self.builder.call(temp_rand_r, [seed_var])
-            # Increment counter
-            next_counter = self.builder.add(counter_val, ir.Constant(i32, 1))
-            self.builder.store(next_counter, warmup_counter)
-            # Check if done
-            done_warmup = self.builder.icmp_signed('>=', next_counter, warmup_count)
-            self.builder.cbranch(done_warmup, warmup_done_bb, warmup_loop_bb)
-            
-            self.builder.position_at_end(warmup_done_bb)
-            self.builder.branch(cont_bb)
-
-            # Continue after seeding (or if already seeded)
-            self.builder.position_at_end(cont_bb)
-
-            # Declare rand_r(unsigned int *seed) -> int
-            rand_r_func = self.module.globals.get('rand_r')
-            if not rand_r_func:
-                rand_r_ty = ir.FunctionType(i32, [i32.as_pointer()])
-                rand_r_func = ir.Function(self.module, rand_r_ty, name='rand_r')
-
-            # Call rand_r with pointer to our seed variable
-            rand_val = self.builder.call(rand_r_func, [seed_var])
-
-            # Helpers to coerce arguments to i32 ints
-            def ensure_i32(val):
-                v = val
-                if not hasattr(v, 'type'):
-                    raise Exception("rand() argument must be an integer expression")
-                if isinstance(v.type, ir.PointerType):
-                    v = self.builder.load(v)
-                if not isinstance(v.type, ir.IntType):
-                    raise Exception("rand() argument must be an integer expression")
-                if v.type.width == 32:
-                    return v
-                if v.type.width < 32:
-                    return self.builder.zext(v, i32)
-                return self.builder.trunc(v, i32)
-
-            if len(args) == 0:
-                # Return raw rand_r() value (0 to RAND_MAX)
-                return rand_val
-            if len(args) == 1:
-                max_v = ensure_i32(self.visit(args[0]))
-                zero = ir.Constant(i32, 0)
-                one = ir.Constant(i32, 1)
-                # Avoid division by zero at runtime: if max == 0 use 1
-                safe_mod = self.builder.select(self.builder.icmp_signed('==', max_v, zero), one, max_v)
-                mod_val = self.builder.srem(rand_val, safe_mod)
-                return mod_val
-            else:  # len(args) == 2
-                min_v = ensure_i32(self.visit(args[0]))
-                max_v = ensure_i32(self.visit(args[1]))
-                one = ir.Constant(i32, 1)
-                zero = ir.Constant(i32, 0)
-                # Normalize order to get lo <= hi
-                ge = self.builder.icmp_signed('>=', max_v, min_v)
-                hi = self.builder.select(ge, max_v, min_v)
-                lo = self.builder.select(ge, min_v, max_v)
-                # range = hi - lo (half-open interval [lo, hi))
-                rng = self.builder.sub(hi, lo)
-                # Protect against zero or negative range
-                safe_rng = self.builder.select(self.builder.icmp_signed('<=', rng, zero), one, rng)
-                mod_val = self.builder.srem(rand_val, safe_rng)
-                res = self.builder.add(mod_val, lo)
-                return res
-        
         # Handle constructor functions for synchronization primitives
         elif func_name == 'semaphore':
             # semaphore(initial_value) - return the initial value for use in declarations
@@ -3622,46 +2541,14 @@ class CodeGenerator:
         
         debug_print(f"DEBUG: visit_array_access - element_ptr: {element_ptr}")
         
-        # Use element_type to determine if we should load or return pointer
+        # Value types are loaded; opaque C types (semaphore/mutex/barrier) return the pointer
+        _LOAD_TYPES = {'int', 'float', 'thread'}
         if isinstance(element_type, str):
-            # For array types, extract the actual element type
-            if element_type.startswith('array_'):
-                actual_element_type = element_type[6:]  # Remove 'array_' prefix
-                if actual_element_type == 'semaphore':
-                    # Return pointer to semaphore storage for wait/signal operations
-                    debug_print(f"DEBUG: visit_array_access - returning semaphore pointer: {element_ptr}")
-                    return element_ptr
-                elif actual_element_type == 'mutex':
-                    # Return pointer to mutex storage for lock/unlock operations
-                    debug_print(f"DEBUG: visit_array_access - returning mutex pointer: {element_ptr}")
-                    return element_ptr
-                elif actual_element_type == 'thread':
-                    # Load and return the thread handle (i8*) from the array element
-                    result = self.builder.load(element_ptr)
-                    debug_print(f"DEBUG: visit_array_access - thread array access: element_ptr={element_ptr}, result={result}")
-                    debug_print(f"DEBUG: visit_array_access - result type: {getattr(result, 'type', 'no-type')}")
-                    return result
-                elif actual_element_type == 'barrier':
-                    # Return pointer to barrier storage for barrier_wait operations
-                    debug_print(f"DEBUG: visit_array_access - returning barrier pointer: {element_ptr}")
-                    return element_ptr
-                elif actual_element_type in ('int', 'float'):
-                    result = self.builder.load(element_ptr)
-                    debug_print(f"DEBUG: visit_array_access - returning loaded {actual_element_type}: {result}")
-                    return result
-                else:
-                    debug_print(f"DEBUG: visit_array_access - returning element_ptr for type {actual_element_type}: {element_ptr}")
-                    return element_ptr
-            elif element_type in ('int', 'float'):
-                result = self.builder.load(element_ptr)
-                debug_print(f"DEBUG: visit_array_access - returning loaded {element_type}: {result}")
-                return result
-            else:
-                debug_print(f"DEBUG: visit_array_access - returning element_ptr for unknown type {element_type}: {element_ptr}")
-                return element_ptr
-        result = self.builder.load(element_ptr)
-        debug_print(f"DEBUG: visit_array_access - returning loaded default: {result}")
-        return result
+            actual = element_type.removeprefix('array_')
+            if actual in _LOAD_TYPES:
+                return self.builder.load(element_ptr)
+            return element_ptr
+        return self.builder.load(element_ptr)
 
     def visit_return(self, node: Dict[str, Any]) -> None:
         # Mark that we've seen an explicit return in this body
@@ -3709,196 +2596,22 @@ class CodeGenerator:
         raise NotImplementedError("Reference not implemented yet.")
 
     def _store_variant_value(self, variant_ptr, value, type_tag, type_hint=None):
-        """Store a value in a variant structure using runtime functions"""
-        debug_print(f"DEBUG: _store_variant_value - storing value: {value}, type_tag: {type_tag}, type_hint: {type_hint}")
-        from .base_types import get_variant_type
-        variant_ty = get_variant_type()
-        
-        # Check if this is a variant struct being assigned to another variant first
-        if hasattr(value, 'type') and str(value.type) == str(variant_ty):
-            debug_print(f"DEBUG: _store_variant_value - direct store of variant struct")
-            # Simply store the variant value directly
-            self.builder.store(value, variant_ptr)
-            debug_print(f"DEBUG: _store_variant_value - stored variant directly")
-            return
-        
-        # Use runtime functions to create variants properly
-        if hasattr(value, 'type'):
-            if isinstance(value.type, ir.IntType) and value.type.width == 32:
-                # Create variant using runtime function
-                debug_print(f"DEBUG: _store_variant_value - creating int variant using runtime")
-                func_name = 'variant_create_int'
-                func = self.module.globals.get(func_name)
-                if not func:
-                    func_ty = ir.FunctionType(variant_ty, [ir.IntType(32)])
-                    func = ir.Function(self.module, func_ty, name=func_name)
-                created_variant = self.builder.call(func, [value])
-                self.builder.store(created_variant, variant_ptr)
-                
-            elif isinstance(value.type, ir.DoubleType):
-                # Create variant using runtime function
-                debug_print(f"DEBUG: _store_variant_value - creating float variant using runtime")
-                func_name = 'variant_create_float'
-                func = self.module.globals.get(func_name)
-                if not func:
-                    func_ty = ir.FunctionType(variant_ty, [ir.DoubleType()])
-                    func = ir.Function(self.module, func_ty, name=func_name)
-                created_variant = self.builder.call(func, [value])
-                self.builder.store(created_variant, variant_ptr)
-                
-            elif isinstance(value.type, ir.PointerType) and value.type.pointee == ir.IntType(8):
-                # Create string variant using runtime function
-                debug_print(f"DEBUG: _store_variant_value - creating string variant using runtime")
-                func_name = 'variant_create_string'
-                func = self.module.globals.get(func_name)
-                if not func:
-                    func_ty = ir.FunctionType(variant_ty, [ir.IntType(8).as_pointer()])
-                    func = ir.Function(self.module, func_ty, name=func_name)
-                created_variant = self.builder.call(func, [value])
-                self.builder.store(created_variant, variant_ptr)
-                
-            else:
-                # Fall back to null variant for unknown types
-                debug_print(f"DEBUG: _store_variant_value - creating null variant for unknown type")
-                func_name = 'variant_create_null'
-                func = self.module.globals.get(func_name)
-                if not func:
-                    func_ty = ir.FunctionType(variant_ty, [])
-                    func = ir.Function(self.module, func_ty, name=func_name)
-                created_variant = self.builder.call(func, [])
-                self.builder.store(created_variant, variant_ptr)
+        """Store *value* into the variant at *variant_ptr*. Delegates to variant_utils."""
+        debug_print(f"DEBUG: _store_variant_value - value: {value}, type_tag: {type_tag}")
+        variant_utils.store_variant(self.builder, self.module, variant_ptr, value)
 
     def _extract_variant_value(self, variant_ptr, expected_type='int'):
-        """Extract a raw value from a variant for operations, with automatic type conversion"""
-        # Don't load the variant - pass the pointer directly to avoid struct passing issues
-        from .base_types import get_variant_type
-        variant_ty = get_variant_type()
-        
-        # For numeric types, use conversion functions that handle int/float automatically
-        if expected_type == 'float':
-            # Use variant_to_float which converts int to float if needed
-            func_name = 'variant_to_float'
-            func = self.module.globals.get(func_name)
-            if not func:
-                # variant_to_float takes variant pointer, returns variant by value
-                func_ty = ir.FunctionType(variant_ty, [variant_ty.as_pointer()])
-                func = ir.Function(self.module, func_ty, name=func_name)
-            # Pass the pointer directly
-            converted_variant = self.builder.call(func, [variant_ptr])
-            # Now extract the float from the converted variant
-            # Store it temporarily
-            temp_ptr = self.builder.alloca(variant_ty, name="converted_variant")
-            self.builder.store(converted_variant, temp_ptr)
-            # Extract float
-            get_func_name = 'variant_get_float'
-            get_func = self.module.globals.get(get_func_name)
-            if not get_func:
-                get_func_ty = ir.FunctionType(ir.DoubleType(), [variant_ty.as_pointer()])
-                get_func = ir.Function(self.module, get_func_ty, name=get_func_name)
-            return self.builder.call(get_func, [temp_ptr])
-        elif expected_type == 'int':
-            # Use variant_to_int which converts float to int if needed
-            func_name = 'variant_to_int'
-            func = self.module.globals.get(func_name)
-            if not func:
-                func_ty = ir.FunctionType(variant_ty, [variant_ty.as_pointer()])
-                func = ir.Function(self.module, func_ty, name=func_name)
-            converted_variant = self.builder.call(func, [variant_ptr])
-            temp_ptr = self.builder.alloca(variant_ty, name="converted_variant")
-            self.builder.store(converted_variant, temp_ptr)
-            get_func_name = 'variant_get_int'
-            get_func = self.module.globals.get(get_func_name)
-            if not get_func:
-                get_func_ty = ir.FunctionType(ir.IntType(32), [variant_ty.as_pointer()])
-                get_func = ir.Function(self.module, get_func_ty, name=get_func_name)
-            return self.builder.call(get_func, [temp_ptr])
-        else:
-            # For non-numeric types, use direct extraction
-            if expected_type == 'string' or expected_type == 'thread':
-                func_name = 'variant_get_string'
-            else:
-                func_name = 'variant_get_int'  # Default
-            
-            func = self.module.globals.get(func_name)
-            if not func:
-                from .base_types import get_raw_type
-                return_ty = get_raw_type(expected_type)
-                func_ty = ir.FunctionType(return_ty, [variant_ty.as_pointer()])
-                func = ir.Function(self.module, func_ty, name=func_name)
-            
-            return self.builder.call(func, [variant_ptr])
+        """Extract a typed value from the variant at *variant_ptr*. Delegates to variant_utils."""
+        return variant_utils.extract_variant(self.builder, self.module, variant_ptr, expected_type)
 
     def _auto_extract_value(self, value, prefer_type='int'):
-        """Automatically extract value from variant if needed"""
-        debug_print(f"DEBUG: _auto_extract_value - input value: {value}, type: {getattr(value, 'type', 'no-type')}, prefer_type: {prefer_type}")
-        
-        # If prefer_type is 'auto', just return the raw value for type inspection
-        if prefer_type == 'auto':
-            if isinstance(value.type, ir.PointerType):
-                loaded = self.builder.load(value)
-                debug_print(f"DEBUG: _auto_extract_value - auto mode, loaded: {loaded}, type: {getattr(loaded, 'type', 'no-type')}")
-                return loaded
-            return value
-        
-        if not hasattr(value, 'type'):
-            debug_print(f"DEBUG: _auto_extract_value - no type, returning as-is")
-            return value
-            
-        # If it's a pointer to a variant struct, extract the value
-        from .base_types import get_variant_type
-        variant_ty = get_variant_type()
-        
-        debug_print(f"DEBUG: _auto_extract_value - variant_ty: {variant_ty}")
-        debug_print(f"DEBUG: _auto_extract_value - value.type: {value.type}")
-        debug_print(f"DEBUG: _auto_extract_value - is PointerType: {isinstance(value.type, ir.PointerType)}")
-        debug_print(f"DEBUG: _auto_extract_value - is variant struct: {value.type == variant_ty}")
-        
-        if value.type == variant_ty:
-            # This is a variant struct value - need to store it to extract
-            debug_print(f"DEBUG: _auto_extract_value - handling variant struct value")
-            temp_var = self.builder.alloca(variant_ty, name="temp_variant")
-            self.builder.store(value, temp_var)
-            return self._extract_variant_value(temp_var, prefer_type)
-        elif (isinstance(value.type, ir.PointerType) and 
-              value.type.pointee == variant_ty):
-            # This is a variant pointer - extract the value
-            debug_print(f"DEBUG: _auto_extract_value - extracting from variant pointer")
-            return self._extract_variant_value(value, prefer_type)
-        elif isinstance(value.type, ir.PointerType):
-            # Regular pointer - load the value
-            debug_print(f"DEBUG: _auto_extract_value - loading from regular pointer")
-            loaded = self.builder.load(value)
-            debug_print(f"DEBUG: _auto_extract_value - loaded: {loaded}, type: {getattr(loaded, 'type', 'no-type')}")
-            # Check if the loaded value is a variant struct
-            if hasattr(loaded, 'type') and loaded.type == variant_ty:
-                debug_print(f"DEBUG: _auto_extract_value - loaded value is variant struct, need to extract")
-                # We need to create a temporary alloca and store the loaded variant, then extract
-                temp_var = self.builder.alloca(variant_ty, name="temp_variant")
-                self.builder.store(loaded, temp_var)
-                return self._extract_variant_value(temp_var, prefer_type)
-            return loaded
-        else:
-            # Already a value
-            debug_print(f"DEBUG: _auto_extract_value - already a value, returning as-is")
-            return value
+        """Strip variant/pointer wrapping from *value*. Delegates to variant_utils."""
+        debug_print(f"DEBUG: _auto_extract_value - value type: {getattr(value, 'type', 'no-type')}, prefer: {prefer_type}")
+        return variant_utils.auto_extract(self.builder, self.module, value, prefer_type)
 
     def _store_null_variant(self, variant_ptr):
-        """Store a null variant"""
-        from .base_types import get_variant_type_tag_enum
-        type_tags = get_variant_type_tag_enum()
-        null_tag = type_tags['null']
-        
-        # Store null type tag
-        tag_ptr = self.builder.gep(variant_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        self.builder.store(ir.Constant(ir.IntType(32), null_tag), tag_ptr)
-        
-        # Zero out data
-        data_ptr = self.builder.gep(variant_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
-        data_array_ptr = self.builder.bitcast(data_ptr, ir.IntType(8).as_pointer())
-        # Memset to zero
-        for i in range(16):
-            elem_ptr = self.builder.gep(data_array_ptr, [ir.Constant(ir.IntType(32), i)])
-            self.builder.store(ir.Constant(ir.IntType(8), 0), elem_ptr)
+        """Store a null variant. Delegates to variant_utils."""
+        variant_utils.store_null_variant(self.builder, variant_ptr)
 
     def _get_queue_ptr(self, arg_node) -> ir.Value:
         """Resolve a queue argument node to an i32* pointer into the queue's storage array."""
