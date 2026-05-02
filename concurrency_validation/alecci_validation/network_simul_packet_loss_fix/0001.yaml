@@ -1,6 +1,6 @@
 # Network simulation: mutex-protected packet counter, semaphore signals
 source: 0001.ale
 expected_issues:
-  - none
+  - thread_leak
 timeout: 15
 max_runs: 5

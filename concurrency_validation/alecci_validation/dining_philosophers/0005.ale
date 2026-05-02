@@ -1,0 +1,33 @@
+// DEADLOCK: one greedy philosopher never releases chopsticks after eating;
+// neighbors who need those chopsticks will block forever
+procedure main(argc, argv)
+  shared mutable chopsticks as array := array(5, semaphore(1))
+  mutable greedy as thread_array := create_threads(1, philosopher_greedy)
+  mutable others as thread_array := create_threads(4, philosopher)
+  join_threads(greedy)
+  join_threads(others)
+end procedure
+
+// Greedy philosopher: acquires chopsticks but never signals them back
+// On the second iteration it will deadlock on its own chopsticks (semaphore = 0)
+procedure philosopher_greedy(thread_number as int)
+  for i := 0 to 3 do
+    print("thinking (greedy)")
+    wait(chopsticks[thread_number])
+    wait(chopsticks[(thread_number + 1) % 5])
+    print("eating (greedy)")
+    // BUG: missing signal() calls — chopsticks are never released
+  end for
+end procedure
+
+// Normal philosopher: correct asymmetric lock order, always releases chopsticks
+procedure philosopher(thread_number as int)
+  for i := 0 to 3 do
+    print("thinking")
+    wait(chopsticks[(thread_number + 1) % 5])
+    wait(chopsticks[thread_number])
+    print("eating")
+    signal(chopsticks[(thread_number + 1) % 5])
+    signal(chopsticks[thread_number])
+  end for
+end procedure

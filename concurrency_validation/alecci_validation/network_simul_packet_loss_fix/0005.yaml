@@ -1,0 +1,7 @@
+# RACE CONDITION + THREAD LEAK: packet_count and dropped_count unprotected, threads not joined
+source: 0005.ale
+expected_issues:
+  - data_race
+  - thread_leak
+timeout: 15
+max_runs: 5

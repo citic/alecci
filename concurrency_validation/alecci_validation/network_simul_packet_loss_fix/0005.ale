@@ -1,0 +1,32 @@
+// RACE CONDITION + THREAD LEAK: packet_count and dropped_count both unprotected;
+// multiple producers/consumers race on shared counters with no mutex, no join
+procedure main(argc, argv)
+  shared mutable packet_count := 0
+  shared mutable dropped_count := 0
+  // BUG: no mutex anywhere; threads also not joined — thread_leak
+  create_threads(3, produce)
+  create_threads(3, consume)
+end procedure
+
+procedure produce(thread_number as int)
+  for i := 0 to 4 do
+    sleep(rand() % 20)
+    // BUG: packet_count incremented without lock — data race
+    packet_count := packet_count + 1
+    print("Packet sent")
+  end for
+end procedure
+
+procedure consume(thread_number as int)
+  for i := 0 to 4 do
+    sleep(rand() % 15)
+    // BUG: packet_count and dropped_count both read/written without mutex — data race
+    if packet_count > 0 then
+      packet_count := packet_count - 1
+      print("Packet received")
+    else
+      dropped_count := dropped_count + 1
+      print("Packet dropped")
+    end if
+  end for
+end procedure

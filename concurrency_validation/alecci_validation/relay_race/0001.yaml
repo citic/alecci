@@ -2,5 +2,6 @@
 source: 0001.ale
 expected_issues:
   - data_race
+  - thread_leak
 timeout: 10
 max_runs: 20

@@ -1,0 +1,6 @@
+# THREAD LEAK: correct synchronization (mutex + semaphore) but threads never joined
+source: 0005.ale
+expected_issues:
+  - thread_leak
+timeout: 15
+max_runs: 5

@@ -1,0 +1,36 @@
+// DEADLOCK: both can_produce and can_consume semaphores initialized to 0;
+// producers wait for consumers to signal first, consumers wait for producers — circular
+procedure main(argc, argv)
+  shared mutable packet_count := 0
+  shared mutable can_access_count as mutex := mutex()
+  // BUG: can_produce starts at 0 — producers block immediately waiting for consumers
+  // BUG: consumers also wait on can_consume (0) — circular dependency, all threads block
+  shared mutable can_produce as semaphore := semaphore(0)
+  shared mutable can_consume as semaphore := semaphore(0)
+  create_threads(2, produce)
+  create_threads(2, consume)
+end procedure
+
+procedure produce(thread_number as int)
+  for i := 0 to 5 do
+    // BUG: waits for consumer to signal can_produce first, but consumer is also waiting
+    wait(can_produce)
+    lock(can_access_count)
+    packet_count := packet_count + 1
+    unlock(can_access_count)
+    signal(can_consume)
+  end for
+end procedure
+
+procedure consume(thread_number as int)
+  for i := 0 to 5 do
+    // BUG: waits for producer to signal, but producer is waiting for consumer first
+    wait(can_consume)
+    lock(can_access_count)
+    packet_count := packet_count - 1
+    unlock(can_access_count)
+    sleep(rand() % 10)
+    print("Packet consumed")
+    signal(can_produce)
+  end for
+end procedure

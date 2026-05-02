@@ -1,6 +1,6 @@
 # Bounded producer-consumer: semaphore controls buffer capacity
 source: 0001.ale
 expected_issues:
-  - none
+  - thread_leak
 timeout: 15
 max_runs: 5

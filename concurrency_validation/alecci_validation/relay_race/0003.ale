@@ -1,0 +1,23 @@
+// DEADLOCK: baton semaphore initialized to 0; leg1 never signals it,
+// so leg2 runners block forever waiting for a handoff that never comes
+procedure main(argc, argv)
+  shared mutable baton as semaphore := semaphore(0)
+  shared mutable team_count := 3
+  mutable i := 0
+  while i < team_count do
+    create_thread(leg1)
+    create_thread(leg2)
+    i := i + 1
+  end while
+end procedure
+
+procedure leg1()
+  sleep(rand() % 20)
+  print("leg1 done")
+  // BUG: missing signal(baton) — leg2 will block on wait(baton) forever
+end procedure
+
+procedure leg2()
+  wait(baton)
+  print("leg2 done")
+end procedure

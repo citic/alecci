@@ -4,6 +4,7 @@
 source: 0005.ale
 expected_issues:
   - data_race
+  - thread_leak
 stdin_file: input.txt
 timeout: 10
 max_runs: 20

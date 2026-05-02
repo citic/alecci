@@ -1,0 +1,16 @@
+// Relay race: correct version - mutex protects position, threads properly joined
+procedure main(argc, argv)
+  shared mutable team_count := 5
+  shared mutable position := 0
+  shared mutable pos_mutex as mutex := mutex()
+  mutable threads as thread_array := create_threads(team_count, run_stage)
+  join_threads(threads)
+end procedure
+
+procedure run_stage(thread_number as int)
+  sleep(rand() % 30)
+  lock(pos_mutex)
+  position := position + 1
+  print("team finished")
+  unlock(pos_mutex)
+end procedure

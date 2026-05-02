@@ -1,0 +1,27 @@
+// RACE CONDITION: packet_count updated without mutex — data race on shared counter
+// Semaphore correctly coordinates flow, but the counter is unprotected
+procedure main(argc, argv)
+  shared mutable packet_count := 0
+  shared mutable can_consume as semaphore := semaphore(0)
+  create_threads(2, produce)
+  create_threads(2, consume)
+end procedure
+
+procedure produce(thread_number as int)
+  for i := 0 to 5 do
+    sleep(rand() % 20)
+    // BUG: packet_count incremented without lock — data race
+    packet_count := packet_count + 1
+    signal(can_consume)
+  end for
+end procedure
+
+procedure consume(thread_number as int)
+  for i := 0 to 5 do
+    wait(can_consume)
+    // BUG: packet_count decremented without lock — data race
+    packet_count := packet_count - 1
+    sleep(rand() % 10)
+    print("Packet consumed")
+  end for
+end procedure

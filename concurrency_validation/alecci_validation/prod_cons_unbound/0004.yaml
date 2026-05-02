@@ -1,0 +1,7 @@
+# DEADLOCK: consumer holds queue mutex while waiting for semaphore;
+# producer cannot enqueue (needs mutex) to signal semaphore — circular wait
+source: 0004.ale
+expected_issues:
+  - deadlock
+timeout: 15
+max_runs: 5

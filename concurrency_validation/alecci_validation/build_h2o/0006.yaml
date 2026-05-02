@@ -3,7 +3,7 @@
 # rendezvous at each barrier. Semantically equivalent to 0001 and correct.
 source: 0006.ale
 expected_issues:
-  - none
+  - thread_leak
 stdin_file: input.txt
 timeout: 10
 max_runs: 5

@@ -1,6 +1,6 @@
 # Bounded network buffer: semaphore capacity controls production
 source: 0002.ale
 expected_issues:
-  - none
+  - thread_leak
 timeout: 15
 max_runs: 5

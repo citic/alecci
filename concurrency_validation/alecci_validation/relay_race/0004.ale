@@ -1,0 +1,21 @@
+// RACE CONDITION: best_time checked and updated without mutex — TOCTOU data race
+// Multiple threads may simultaneously read, compare, and overwrite best_time
+procedure main(argc, argv)
+  shared mutable team_count := 5
+  shared mutable best_time := 9999
+  mutable i := 0
+  while i < team_count do
+    create_thread(run_race)
+    i := i + 1
+  end while
+end procedure
+
+procedure run_race()
+  mutable my_time := rand() % 100
+  sleep(my_time)
+  // BUG: best_time checked and overwritten without mutex — data race (TOCTOU)
+  if my_time < best_time then
+    best_time := my_time
+    print("new best time")
+  end if
+end procedure

@@ -5,6 +5,7 @@
 source: 0009.ale
 expected_issues:
   - deadlock
+  - thread_leak
 stdin_file: input.txt
 timeout: 10
 max_runs: 3

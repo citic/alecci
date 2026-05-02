@@ -151,17 +151,8 @@ class CodeGenerator:
         Used to implement ``wait(sem, n)`` and ``signal(sem, n)``.
         Returns ``i32 0``.
         """
-        from .base_types import get_variant_type
-        variant_ty = get_variant_type()
-        # Unwrap count_val from variant if needed
-        if hasattr(count_val, 'type') and count_val.type == variant_ty:
-            tmp = self.builder.alloca(variant_ty, name=f"{label}_count_tmp")
-            self.builder.store(count_val, tmp)
-            count_val = self._extract_variant_value(tmp, 'int')
-        elif (hasattr(count_val, 'type') and
-              isinstance(count_val.type, ir.PointerType) and
-              count_val.type.pointee == variant_ty):
-            count_val = self._extract_variant_value(count_val, 'int')
+        # Unwrap variant if needed, coerce to i32
+        count_val = self._auto_extract_value(count_val, 'int')
         if hasattr(count_val, 'type') and isinstance(count_val.type, ir.IntType) and count_val.type.width != 32:
             count_val = self.builder.zext(count_val, ir.IntType(32))
 
@@ -915,7 +906,7 @@ class CodeGenerator:
             bargs = init_value_expr.get('arguments', [])
             if bargs:
                 try:
-                    cnt = self.visit(bargs[0])
+                    cnt = self._auto_extract_value(self.visit(bargs[0]), 'int')
                     if hasattr(cnt, 'type') and isinstance(cnt.type, ir.IntType) and cnt.type.width != 32:
                         cnt = (self.builder.trunc(cnt, ir.IntType(32))
                                if cnt.type.width > 32
@@ -1171,6 +1162,14 @@ class CodeGenerator:
                 else:
                     self._store_null_variant(ptr)
             else:
+                # If the target is a typed (int/float) variable but value is a variant,
+                # extract the concrete type before storing.
+                if hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType):
+                    target_pointee = ptr.type.pointee
+                    if isinstance(target_pointee, ir.IntType):
+                        value = self._auto_extract_value(value, 'int')
+                    elif isinstance(target_pointee, ir.DoubleType):
+                        value = self._auto_extract_value(value, 'float')
                 if self.is_shared_mutable_variable(target):
                     self.insert_yield()
                     size = (value.type.width // 8
@@ -1398,7 +1397,7 @@ class CodeGenerator:
         self.visit(node)
 
     def visit_if(self, node: Dict[str, Any]) -> None:
-        cond_val = self.visit(node['condition'])
+        cond_val = self._auto_extract_value(self.visit(node['condition']), 'int')
         # Convert i32/i8 condition to i1
         if hasattr(cond_val, 'type') and isinstance(cond_val.type, ir.IntType) and cond_val.type.width != 1:
             cond_val = self.builder.icmp_signed('!=', cond_val, ir.Constant(cond_val.type, 0))
@@ -1424,23 +1423,10 @@ class CodeGenerator:
         self.builder.position_at_start(end_bb)
 
     def visit_case(self, node: Dict[str, Any]) -> None:
-        from .base_types import get_variant_type
-
-        # Evaluate the switch expression
-        val = self.visit(node['expression'])
+        # Evaluate the switch expression; unwrap variant if needed
+        val = self._auto_extract_value(self.visit(node['expression']), 'int')
         if not hasattr(val, 'type'):
             self.semantic_error("case expression must evaluate to an integer or char value", node)
-
-        variant_ty = get_variant_type()
-
-        # If the value is a pointer to a variant struct, extract its integer value
-        if isinstance(val.type, ir.PointerType) and val.type.pointee == variant_ty:
-            val = self._extract_variant_value(val, 'int')
-        # If the value IS a variant struct (returned by value), store then extract
-        elif val.type == variant_ty:
-            temp_ptr = self.builder.alloca(variant_ty, name='case_variant_tmp')
-            self.builder.store(val, temp_ptr)
-            val = self._extract_variant_value(temp_ptr, 'int')
 
         # Coerce to i32 for the LLVM switch instruction
         if isinstance(val.type, ir.IntType) and val.type.width != 32:
@@ -1495,10 +1481,10 @@ class CodeGenerator:
         end_bb = self.builder.append_basic_block('while.end')
         self.builder.branch(cond_bb)
         self.builder.position_at_start(cond_bb)
-        cond_val = self.visit(node['condition'])
-        
+        cond_val = self._auto_extract_value(self.visit(node['condition']), 'int')
+
         # Convert condition to i1 if it's i32 (from comparison operators)
-        if hasattr(cond_val, 'type') and isinstance(cond_val.type, ir.IntType) and cond_val.type.width == 32:
+        if hasattr(cond_val, 'type') and isinstance(cond_val.type, ir.IntType) and cond_val.type.width != 1:
             cond_val = self.builder.icmp_signed('!=', cond_val, ir.Constant(ir.IntType(32), 0))
         
         self.builder.cbranch(cond_val, body_bb, end_bb)
@@ -1513,8 +1499,8 @@ class CodeGenerator:
     def visit_for(self, node: Dict[str, Any]) -> None:
         # Only support integer for-loops: for i := start to end
         var = node['iterator']
-        start = self.visit(node['start'])
-        end = self.visit(node['end'])
+        start = self._auto_extract_value(self.visit(node['start']), 'int')
+        end   = self._auto_extract_value(self.visit(node['end']),   'int')
         ptr = self.builder.alloca(ir.IntType(32), name=var)
         self.locals[var] = (ptr, 'int', False)  # for loop variables are mutable
         self.builder.store(start, ptr)
@@ -1962,18 +1948,12 @@ class CodeGenerator:
         rand_val    = self.builder.call(rand_r_func, [seed_var])
 
         def ensure_i32(val: ir.Value) -> ir.Value:
-            v = val
-            if not hasattr(v, 'type'):
-                raise Exception("rand() argument must be an integer expression")
-            if isinstance(v.type, ir.PointerType):
-                v = self.builder.load(v)
-            if not isinstance(v.type, ir.IntType):
+            v = self._auto_extract_value(val, 'int')
+            if not hasattr(v, 'type') or not isinstance(v.type, ir.IntType):
                 raise Exception("rand() argument must be an integer expression")
             if v.type.width == 32:
                 return v
-            if v.type.width < 32:
-                return self.builder.zext(v, i32)
-            return self.builder.trunc(v, i32)
+            return self.builder.zext(v, i32) if v.type.width < 32 else self.builder.trunc(v, i32)
 
         if len(args) == 0:
             return rand_val
@@ -2233,8 +2213,8 @@ class CodeGenerator:
             if len(args) == 0 or len(args) > 2:
                 raise Exception(f"sleep() requires 1 or 2 arguments, got {len(args)}")
 
-            # Duration (expects integer)
-            duration_val = self.visit(args[0])
+            # Duration (expects integer; unwrap variant if passed a local variable)
+            duration_val = self._auto_extract_value(self.visit(args[0]), 'int')
             if not hasattr(duration_val, 'type') or not isinstance(duration_val.type, ir.IntType):
                 raise Exception("sleep() duration must be an integer expression")
 

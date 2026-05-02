@@ -1,0 +1,6 @@
+# DEADLOCK: greedy philosopher never releases chopsticks; neighbors starve and deadlock
+source: 0005.ale
+expected_issues:
+  - deadlock
+timeout: 10
+max_runs: 5

@@ -1,6 +1,6 @@
 # Three-thread chain ordering
 source: 0002.ale
 expected_issues:
-  - none
+  - thread_leak
 timeout: 10
 max_runs: 20

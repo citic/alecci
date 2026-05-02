@@ -1,0 +1,8 @@
+# DEADLOCK + THREAD LEAK: producer holds queue mutex while waiting for semaphore;
+# consumer cannot release buffer slot (needs queue mutex) to unblock producer
+source: 0004.ale
+expected_issues:
+  - deadlock
+  - thread_leak
+timeout: 15
+max_runs: 5

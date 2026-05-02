@@ -1,0 +1,40 @@
+// RACE CONDITION + THREAD LEAK: no semaphore coordination, count unprotected, no join
+// Producers may overflow the queue, consumers may dequeue empty; count races
+procedure main(argc, argv)
+  shared mutable buffer_capacity := 4
+  shared mutable count := 0
+  shared mutable q as queue := queue(4)
+  shared mutable can_access_queue as mutex := mutex()
+  // BUG: no semaphores — producers may overflow queue, consumers may dequeue empty
+  // BUG: threads not joined — thread_leak
+  create_threads(2, produce)
+  create_threads(2, consume)
+end procedure
+
+procedure produce(thread_number as int)
+  mutable index := 0
+  while index < 5 do
+    sleep(rand() % 30)
+    // BUG: count not protected — data race between producers
+    count := count + 1
+    lock(can_access_queue)
+    enqueue(q, count)
+    unlock(can_access_queue)
+    print("Produced")
+    index := index + 1
+  end while
+end procedure
+
+procedure consume(thread_number as int)
+  mutable index := 0
+  while index < 5 do
+    sleep(rand() % 20)
+    lock(can_access_queue)
+    mutable item := dequeue(q)
+    unlock(can_access_queue)
+    // BUG: count not protected — data race between consumers and producers
+    count := count - 1
+    print("Consumed")
+    index := index + 1
+  end while
+end procedure

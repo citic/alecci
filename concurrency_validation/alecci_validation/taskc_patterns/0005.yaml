@@ -1,6 +1,6 @@
 # Semaphore-based mutex protecting shared counter
 source: 0005.ale
 expected_issues:
-  - none
+  - thread_leak
 timeout: 10
 max_runs: 20

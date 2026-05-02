@@ -1,0 +1,6 @@
+# RACE CONDITION: queue accessed without mutex; counters protected but enqueue/dequeue not
+source: 0002.ale
+expected_issues:
+  - data_race
+timeout: 15
+max_runs: 5

@@ -1,0 +1,51 @@
+// RACE CONDITION: next_unit and consumed_count updated without mutexes — data race
+// Queue operations are protected but shared counters are not
+procedure main(argc, argv)
+  shared mutable unit_count := 8
+  shared mutable next_unit := 0
+  shared mutable consumed_count := 0
+  shared mutable q as queue := queue(64)
+  shared mutable can_access_queue as mutex := mutex()
+  shared mutable can_consume as semaphore := semaphore(0)
+  mutable producers as thread_array := create_threads(2, produce)
+  mutable consumers as thread_array := create_threads(2, consume)
+  join_threads(producers)
+  join_threads(consumers)
+end procedure
+
+procedure produce(thread_number as int)
+  mutable running := 1
+  while running = 1 do
+    // BUG: next_unit checked and incremented without mutex — data race
+    if next_unit < unit_count then
+      next_unit := next_unit + 1
+      mutable my_unit := next_unit
+      sleep(rand() % 30)
+      lock(can_access_queue)
+      enqueue(q, my_unit)
+      unlock(can_access_queue)
+      print("Produced")
+      signal(can_consume)
+    else
+      running := 0
+    end if
+  end while
+end procedure
+
+procedure consume(thread_number as int)
+  mutable running := 1
+  while running = 1 do
+    // BUG: consumed_count checked and incremented without mutex — data race
+    if consumed_count < unit_count then
+      consumed_count := consumed_count + 1
+      wait(can_consume)
+      lock(can_access_queue)
+      mutable item := dequeue(q)
+      unlock(can_access_queue)
+      sleep(rand() % 20)
+      print("Consumed")
+    else
+      running := 0
+    end if
+  end while
+end procedure

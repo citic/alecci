@@ -1,0 +1,6 @@
+# Relay race: correct version with mutex-protected position and joined threads
+source: 0002.ale
+expected_issues:
+  - none
+timeout: 10
+max_runs: 20

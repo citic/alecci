@@ -1,0 +1,42 @@
+// DEADLOCK: producer holds queue mutex while waiting for can_produce semaphore;
+// consumer cannot dequeue (needs queue mutex) to free a slot and signal can_produce
+procedure main(argc, argv)
+  shared mutable buffer_capacity := 4
+  shared mutable count := 0
+  shared mutable q as queue := queue(4)
+  shared mutable can_access_queue as mutex := mutex()
+  shared mutable can_produce as semaphore := semaphore(4)
+  shared mutable can_consume as semaphore := semaphore(0)
+  create_threads(1, produce)
+  create_threads(1, consume)
+end procedure
+
+procedure produce(thread_number as int)
+  mutable index := 0
+  while index < 10 do
+    // BUG: acquires queue lock before checking for available slot
+    // once the buffer is full, consumer cannot dequeue to free a slot
+    // because it is blocked waiting for the queue lock the producer holds
+    lock(can_access_queue)
+    wait(can_produce)
+    count := count + 1
+    enqueue(q, count)
+    unlock(can_access_queue)
+    print("Produced")
+    signal(can_consume)
+    index := index + 1
+  end while
+end procedure
+
+procedure consume(thread_number as int)
+  mutable index := 0
+  while index < 10 do
+    wait(can_consume)
+    lock(can_access_queue)
+    mutable item := dequeue(q)
+    unlock(can_access_queue)
+    print("Consumed")
+    signal(can_produce)
+    index := index + 1
+  end while
+end procedure

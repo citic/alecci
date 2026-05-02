@@ -1,0 +1,7 @@
+# RACE CONDITION + THREAD LEAK: count unprotected, no semaphore flow control, threads not joined
+source: 0005.ale
+expected_issues:
+  - data_race
+  - thread_leak
+timeout: 15
+max_runs: 5
