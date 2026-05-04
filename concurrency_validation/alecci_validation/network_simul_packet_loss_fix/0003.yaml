@@ -1,4 +1,3 @@
-# RACE CONDITION + THREAD LEAK: packet_count updated without mutex, threads not joined
 source: 0003.ale
 expected_issues:
   - data_race

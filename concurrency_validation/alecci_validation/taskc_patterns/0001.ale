@@ -1,4 +1,3 @@
-// Two-thread simple signal/wait: thread_a must happen before thread_b
 procedure main(argc, argv)
   shared mutable a1_ready as semaphore := semaphore(0)
   create_thread(thread_a)

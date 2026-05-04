@@ -1,4 +1,3 @@
-# Bounded producer-consumer with random delays
 source: 0002.ale
 expected_issues:
   - thread_leak

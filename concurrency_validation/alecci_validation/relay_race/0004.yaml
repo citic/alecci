@@ -1,4 +1,3 @@
-# RACE CONDITION + THREAD LEAK: best_time updated without mutex (TOCTOU), threads not joined
 source: 0004.ale
 expected_issues:
   - data_race

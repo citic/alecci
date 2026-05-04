@@ -1,4 +1,3 @@
-# Network simulation: mutex-protected packet counter, semaphore signals
 source: 0001.ale
 expected_issues:
   - thread_leak

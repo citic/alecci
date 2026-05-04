@@ -1,4 +1,3 @@
-# Bounded network buffer: semaphore capacity controls production
 source: 0002.ale
 expected_issues:
   - thread_leak

@@ -1,4 +1,3 @@
-// Race condition: two threads write shared variable x without synchronization
 procedure main(argc, argv)
   shared mutable x := 0
   create_thread(thread_a)

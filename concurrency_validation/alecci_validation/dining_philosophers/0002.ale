@@ -1,4 +1,3 @@
-// Asymmetric dining philosophers with quota (max 4 at table simultaneously)
 procedure main(argc, argv)
   shared mutable chopsticks as array := array(5, semaphore(1))
   shared mutable quota as semaphore := semaphore(4)

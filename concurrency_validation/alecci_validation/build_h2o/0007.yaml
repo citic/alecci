@@ -1,7 +1,3 @@
-# Producer-consumer style: oxygen signals hydrogen_ready x2 and hydrogen
-# signals oxygen_ready before they proceed to bond(). Uses multi-argument
-# signal/wait calls (e.g. signal(sem, 2), wait(sem, 2)) which are not valid
-# Alecci syntax.
 source: 0007.ale
 expected_issues:
   - none

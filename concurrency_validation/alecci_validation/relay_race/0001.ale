@@ -1,4 +1,3 @@
-// Relay race: shared position incremented without synchronization - data race
 procedure main(argc, argv)
   shared mutable team_count := 5
   shared mutable position := 0

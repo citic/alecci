@@ -1,6 +1,3 @@
-# Uses non-standard 'create_barrier()' constructor and 'barrier_wait()' call
-# instead of 'barrier()' and 'wait()'. Logic is Group B (one sync point, no
-# trailing barrier wait), but compilation fails due to unknown identifiers.
 source: 0003.ale
 expected_issues:
   - none

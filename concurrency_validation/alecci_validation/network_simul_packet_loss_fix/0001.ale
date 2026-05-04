@@ -1,5 +1,3 @@
-// Network simulation: producers generate packets, consumers process them
-// Uses mutex-protected counter to model queue; semaphore signals available packets
 procedure main(argc, argv)
   shared mutable can_access_count as mutex := mutex()
   shared mutable packet_count := 0

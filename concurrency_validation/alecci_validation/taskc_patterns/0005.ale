@@ -1,4 +1,3 @@
-// Two-thread mutex: semaphore(1) used as mutex to protect shared counter
 procedure main(argc, argv)
   shared mutable count := 0
   shared mutable can_count as semaphore := semaphore(1)

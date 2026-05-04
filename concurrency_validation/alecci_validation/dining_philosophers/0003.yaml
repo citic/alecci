@@ -1,4 +1,3 @@
-# Symmetric philosophers: all pick same-side first - potential deadlock
 source: 0003.ale
 expected_issues:
   - deadlock

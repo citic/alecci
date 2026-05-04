@@ -1,4 +1,3 @@
-// Barrier(2) + mutex semaphore: pair rendezvous then synchronized dance
 procedure main(argc, argv)
   shared mutable male_queue as semaphore := semaphore(1)
   shared mutable female_queue as semaphore := semaphore(1)

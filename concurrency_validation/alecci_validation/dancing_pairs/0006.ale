@@ -1,4 +1,3 @@
-// Quartet pattern: semaphore(4) turnstile + sex-specific mutex + room multiplex
 procedure main(argc, argv)
   shared mutable dancers_barrier as semaphore := semaphore(4)
   shared mutable male_mutex as semaphore := semaphore(2)

@@ -1,5 +1,3 @@
-// RACE CONDITION: next_unit and consumed_count updated without mutexes — data race
-// Queue operations are protected but shared counters are not
 procedure main(argc, argv)
   shared mutable unit_count := 8
   shared mutable next_unit := 0
@@ -16,7 +14,6 @@ end procedure
 procedure produce(thread_number as int)
   mutable running := 1
   while running = 1 do
-    // BUG: next_unit checked and incremented without mutex — data race
     if next_unit < unit_count then
       next_unit := next_unit + 1
       mutable my_unit := next_unit
@@ -35,7 +32,6 @@ end procedure
 procedure consume(thread_number as int)
   mutable running := 1
   while running = 1 do
-    // BUG: consumed_count checked and incremented without mutex — data race
     if consumed_count < unit_count then
       consumed_count := consumed_count + 1
       wait(can_consume)

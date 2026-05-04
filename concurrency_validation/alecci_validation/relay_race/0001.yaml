@@ -1,4 +1,3 @@
-# Relay race: position shared without sync - data race expected
 source: 0001.ale
 expected_issues:
   - data_race

@@ -1,4 +1,3 @@
-# Three-thread chain ordering
 source: 0002.ale
 expected_issues:
   - thread_leak

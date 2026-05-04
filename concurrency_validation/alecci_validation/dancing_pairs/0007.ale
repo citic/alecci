@@ -1,4 +1,3 @@
-// Quartet barrier(4) + gender semaphores(2) + room capacity multiplex
 procedure main(argc, argv)
   shared mutable salon_de_baile as semaphore := semaphore(16)
   shared mutable esperar_equipo as barrier := barrier(4)

@@ -1,4 +1,3 @@
-// Direct signal/wait rendezvous: male and female signal each other's queues
 procedure main(argc, argv)
   shared mutable male_queue as semaphore := semaphore(0)
   shared mutable female_queue as semaphore := semaphore(0)

@@ -1,4 +1,3 @@
-// Symmetric dining philosophers: all pick right then left - potential deadlock
 procedure main(argc, argv)
   shared mutable chopsticks as array := array(5, semaphore(1))
   mutable threads as thread_array := create_threads(5, philosopher)

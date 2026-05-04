@@ -1,4 +1,3 @@
-// Three independent parallel threads with no shared state
 procedure main(argc, argv)
   create_thread(thread_a)
   create_thread(thread_b)

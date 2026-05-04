@@ -1,4 +1,3 @@
-# 4 right-handed + 1 left-handed philosophers: deadlock-free with role asymmetry
 source: 0004.ale
 expected_issues:
   - none

@@ -1,4 +1,3 @@
-# Quartet semaphore turnstile + room multiplex: correct synchronization
 source: 0006.ale
 expected_issues:
   - none

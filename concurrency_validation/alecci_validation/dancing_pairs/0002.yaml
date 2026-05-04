@@ -1,4 +1,3 @@
-# Barrier + mutex semaphore: correct pair synchronization
 source: 0002.ale
 expected_issues:
   - none

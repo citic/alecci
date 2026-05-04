@@ -1,4 +1,3 @@
-# Single barrier ensures Statement A completes before Statement B
 source: 0007.ale
 expected_issues:
   - thread_leak

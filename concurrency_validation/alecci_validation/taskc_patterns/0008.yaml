@@ -1,4 +1,3 @@
-# Double barrier loop: repeated A/B synchronization across rounds
 source: 0008.ale
 expected_issues:
   - thread_leak

@@ -1,4 +1,3 @@
-# Direct signal/wait rendezvous: no race
 source: 0001.ale
 expected_issues:
   - none

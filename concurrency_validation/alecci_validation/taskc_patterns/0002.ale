@@ -1,4 +1,3 @@
-// Three-thread chain: a1 -> b1 -> c1 enforced by semaphores
 procedure main(argc, argv)
   shared mutable a1_ready as semaphore := semaphore(0)
   shared mutable b1_ready as semaphore := semaphore(0)

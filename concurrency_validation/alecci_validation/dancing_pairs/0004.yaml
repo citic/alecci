@@ -1,4 +1,3 @@
-# Barrier(4) + dual semaphores + multiplex: correct synchronization
 source: 0004.ale
 expected_issues:
   - none

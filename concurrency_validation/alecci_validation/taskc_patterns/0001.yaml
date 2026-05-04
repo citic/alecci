@@ -1,4 +1,3 @@
-# Two-thread signal/wait ordering
 source: 0001.ale
 expected_issues:
   - thread_leak

@@ -1,4 +1,3 @@
-# Bounded concurrency: semaphore(3) limits concurrent skaters
 source: 0009.ale
 expected_issues:
   - thread_leak

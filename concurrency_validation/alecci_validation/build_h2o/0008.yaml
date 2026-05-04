@@ -1,7 +1,3 @@
-# Parameterized threads design: passes atom id to hydrogen/oxygen, and
-# bond() takes (is_oxygen, id). Uses non-standard 'create_semaphore()',
-# 'create_barrier()', non-shared semaphores, and 'bool seconds := atomic(false)'
-# which are all invalid Alecci syntax.
 source: 0008.ale
 expected_issues:
   - none

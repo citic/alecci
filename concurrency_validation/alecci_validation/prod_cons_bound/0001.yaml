@@ -1,4 +1,3 @@
-# Bounded producer-consumer: semaphore controls buffer capacity
 source: 0001.ale
 expected_issues:
   - thread_leak

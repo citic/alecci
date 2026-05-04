@@ -1,4 +1,3 @@
-// 5 philosophers: 4 right-handed + 1 left-handed (asymmetric by philosopher role)
 procedure main(argc, argv)
   shared mutable chopsticks as array := array(5, semaphore(1))
   mutable right_threads as thread_array := create_threads(4, philosopher_right)

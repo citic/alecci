@@ -1,4 +1,3 @@
-// Barrier(4) + dual semaphores(2) + room multiplex
 procedure main(argc, argv)
   shared mutable can_male as semaphore := semaphore(2)
   shared mutable can_fem as semaphore := semaphore(2)

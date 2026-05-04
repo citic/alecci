@@ -1,5 +1,3 @@
-// THREAD LEAK: position correctly protected by mutex but threads are never joined
-// Main exits while runners may still be active
 procedure main(argc, argv)
   shared mutable team_count := 5
   shared mutable position := 0
@@ -9,7 +7,6 @@ procedure main(argc, argv)
     create_thread(run_stage)
     i := i + 1
   end while
-  // BUG: threads not joined — main exits while runners may still be running
 end procedure
 
 procedure run_stage()

@@ -1,4 +1,3 @@
-# DEADLOCK + THREAD LEAK: both semaphores initialized to 0 — all threads block immediately
 source: 0004.ale
 expected_issues:
   - deadlock

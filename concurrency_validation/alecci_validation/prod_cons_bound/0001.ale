@@ -1,5 +1,3 @@
-// Bounded producer-consumer: two semaphores bound queue capacity, mutex protects queue
-// can_produce tracks available slots; can_consume tracks available items
 procedure main(argc, argv)
   shared mutable buffer_capacity := 5
   shared mutable rounds := 3

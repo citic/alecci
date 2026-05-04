@@ -1,5 +1,3 @@
-// RACE CONDITION: queue and count accessed without mutex — data race on shared state
-// Two producers and two consumers share queue without any locking
 procedure main(argc, argv)
   shared mutable buffer_capacity := 4
   shared mutable count := 0
@@ -15,7 +13,6 @@ procedure produce(thread_number as int)
   while index < 4 do
     wait(can_produce)
     sleep(rand() % 30)
-    // BUG: count incremented and enqueue called without mutex — data race
     count := count + 1
     enqueue(q, count)
     print("Produced")
@@ -29,7 +26,6 @@ procedure consume(thread_number as int)
   while index < 4 do
     wait(can_consume)
     sleep(rand() % 20)
-    // BUG: dequeue without mutex — data race on queue internals
     mutable item := dequeue(q)
     print("Consumed")
     signal(can_produce)

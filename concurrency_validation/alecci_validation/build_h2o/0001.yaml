@@ -1,4 +1,3 @@
-# No concurrency errors, but old notation
 source: 0001.ale
 expected_issues:
   - thread_leak

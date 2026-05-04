@@ -1,7 +1,3 @@
-# Asymmetric bug: hydrogen() ends with wait(hydrogen_multiplex) instead of
-# signal(hydrogen_multiplex). After the first molecule, hydrogen_multiplex
-# is at 0 and both H threads try to wait on it again, deadlocking forever.
-# Oxygen correctly signals oxygen_multiplex, so oxygen threads are unaffected.
 source: 0035.ale
 expected_issues:
   - deadlock

@@ -1,5 +1,3 @@
-// DEADLOCK: one greedy philosopher never releases chopsticks after eating;
-// neighbors who need those chopsticks will block forever
 procedure main(argc, argv)
   shared mutable chopsticks as array := array(5, semaphore(1))
   mutable greedy as thread_array := create_threads(1, philosopher_greedy)
@@ -16,7 +14,6 @@ procedure philosopher_greedy(thread_number as int)
     wait(chopsticks[thread_number])
     wait(chopsticks[(thread_number + 1) % 5])
     print("eating (greedy)")
-    // BUG: missing signal() calls — chopsticks are never released
   end for
 end procedure
 

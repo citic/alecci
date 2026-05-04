@@ -1,4 +1,3 @@
-# Quartet barrier(4) + gender semaphores + room multiplex: correct synchronization
 source: 0007.ale
 expected_issues:
   - none

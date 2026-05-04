@@ -1,4 +1,3 @@
-# DEADLOCK + THREAD LEAK: baton semaphore never signaled; leg2 threads block forever
 source: 0003.ale
 expected_issues:
   - deadlock

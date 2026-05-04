@@ -1,4 +1,3 @@
-// Referee/coordinator: both players must enter before clock starts
 procedure main(argc, argv)
   shared mutable player1_ready as semaphore := semaphore(0)
   shared mutable player2_ready as semaphore := semaphore(0)

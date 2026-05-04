@@ -1,4 +1,3 @@
-# RACE CONDITION: next_unit and consumed_count updated without mutexes; queue is protected
 source: 0003.ale
 expected_issues:
   - data_race

@@ -1,5 +1,3 @@
-// DEADLOCK: consumer holds queue mutex while waiting for can_consume semaphore;
-// producer cannot enqueue (needs queue mutex) to signal semaphore — circular wait
 procedure main(argc, argv)
   shared mutable unit_count := 8
   shared mutable next_unit := 0
@@ -44,7 +42,6 @@ procedure consume(thread_number as int)
     if consumed_count < unit_count then
       consumed_count := consumed_count + 1
       unlock(can_access_consumed)
-      // BUG: acquires queue lock before waiting for an item to exist
       // producer needs queue lock to enqueue → circular dependency → deadlock
       lock(can_access_queue)
       wait(can_consume)

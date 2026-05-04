@@ -1,5 +1,3 @@
-// RACE CONDITION: no semaphore coordination — producers and consumers race on next_unit
-// and the queue without proper ordering. Shows the need for semaphore signaling.
 procedure main(argc, argv)
   shared mutable unit_count := 8
   shared mutable next_unit := 0
@@ -28,7 +26,6 @@ procedure produce(thread_number as int)
       enqueue(q, my_unit)
       unlock(can_access_queue)
       print("Produced")
-      // BUG: no signal — consumers will dequeue from an empty queue
     else
       unlock(can_access_next)
       running := 0
@@ -43,7 +40,6 @@ procedure consume(thread_number as int)
     if consumed_count < unit_count then
       consumed_count := consumed_count + 1
       unlock(can_access_consumed)
-      // BUG: no wait — may dequeue from empty queue, getting garbage values
       lock(can_access_queue)
       mutable item := dequeue(q)
       unlock(can_access_queue)

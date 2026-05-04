@@ -1,4 +1,3 @@
-# Semaphore-based mutex protecting shared counter
 source: 0005.ale
 expected_issues:
   - thread_leak

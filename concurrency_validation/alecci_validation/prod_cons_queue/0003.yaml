@@ -1,4 +1,3 @@
-# Race condition: queue accessed without mutex — data race on queue's head/tail/count fields
 source: 0003.ale
 expected_issues:
   - data_race

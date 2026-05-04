@@ -1,4 +1,3 @@
-// Relay race: correct version - mutex protects position, threads properly joined
 procedure main(argc, argv)
   shared mutable team_count := 5
   shared mutable position := 0

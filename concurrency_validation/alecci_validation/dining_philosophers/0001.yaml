@@ -1,4 +1,3 @@
-# Asymmetric dining philosophers: deadlock-free
 source: 0001.ale
 expected_issues:
   - none
