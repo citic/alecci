@@ -2,4 +2,7 @@ global filename
 filename = "error"
 DEBUG = False
 
-debug_print = print if DEBUG else lambda *args, **kwargs: None
+def debug_print(*args, **kwargs):
+    """Always checks the current DEBUG flag, so importers never get a stale binding."""
+    if DEBUG:
+        print(*args, **kwargs)

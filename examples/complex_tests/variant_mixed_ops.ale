@@ -1,0 +1,63 @@
+// Complex test 7: Variant variable reassigned across int, float, and bool,
+// used in arithmetic, comparisons, and a case statement.
+// The same mutable variable goes through three distinct type identities
+// within a single procedure, then acts as an array index.
+//
+// Tests: variant type transitions (int → float → int),
+//        case statement on a mutable variant value,
+//        mutable variant used as an array index,
+//        mixed-type arithmetic and comparison.
+
+procedure main()
+    print "Variant mixed ops test start"
+
+    // Phase 1 — integer arithmetic on a variant
+    mutable v := 7
+    v := v * 3          // 21
+    v := v - 6          // 15
+    v := v + 0          // 15 (identity; tests redundant assignment path)
+    print `v after int ops = {v}`
+
+    // Phase 2 — reassign to float and continue arithmetic
+    v := 1.5
+    v := v * 4.0        // 6.0
+    v := v - 0.5        // 5.5
+    print `v after float ops = {v}`
+
+    // Comparison on float variant
+    mutable flag := v > 5.0
+    print `v > 5.0 is {flag}`
+
+    mutable flag2 := v < 10.0
+    print `v < 10.0 is {flag2}`
+
+    // Phase 3 — reassign back to int and use in case
+    v := 2
+    case v of
+        1:
+            print "one"
+        2:
+            print "two"
+        3:
+            print "three"
+    else:
+        print "other"
+    end case
+
+    // Phase 4 — variant used as an array index
+    mutable arr := array(5, int())
+    for i := 0 to 5 do
+        arr[i] := i * i
+    end for
+
+    // v is still 2 (int variant) — use it to index the array
+    const elem = arr[v]
+    print `arr[2] = {elem}`
+
+    // Reassign v to a different index and read again
+    v := 4
+    const elem2 = arr[v]
+    print `arr[4] = {elem2}`
+
+    print "Variant mixed ops test end"
+end procedure

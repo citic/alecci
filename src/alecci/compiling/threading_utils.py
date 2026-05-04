@@ -50,13 +50,13 @@ def create_thread(builder, module, target_func, thread_args=None):
     thread_arg_struct_type = ir.LiteralStructType(arg_types)
     
     # Create a wrapper function with pthread signature that calls the user function
-    wrapper_name = f"_thread_wrapper_{target_func.name}_with_args"
+    wrapper_name = f"_thread_wrapper_{target_func.name}_single"
     wrapper_func = module.globals.get(wrapper_name)
     if not wrapper_func:
-        # Create wrapper: void* wrapper(void* arg_struct_ptr) { 
+        # Create wrapper: void* wrapper(void* arg_struct_ptr) {
         #   struct* args = (struct*)arg_struct_ptr;
-        #   user_func(args->arg1, args->arg2, ...); 
-        #   return NULL; 
+        #   user_func(args->arg1, args->arg2, ...);
+        #   return NULL;
         # }
         # Note: For create_thread, we pass arguments as-is (no automatic thread_number)
         wrapper_ty = ir.FunctionType(voidptr_ty, [voidptr_ty])
@@ -430,7 +430,15 @@ def join_threads(builder, module, threads_ptr, thread_count):
     debug_print(f"[DEBUG] join_threads received threads_ptr: {threads_ptr}, type: {getattr(threads_ptr, 'type', type(threads_ptr))}")
     pthread_join, thread_type = _get_pthread_join(module)
     voidptr_ty = ir.IntType(8).as_pointer()
-    null_retval = ir.Constant(voidptr_ty.as_pointer(), None)
+
+    # Declare free() for reclaiming the heap-allocated retval the worker wrapper may produce
+    free_func = module.globals.get('free')
+    if not free_func:
+        free_ty = ir.FunctionType(ir.VoidType(), [voidptr_ty])
+        free_func = ir.Function(module, free_ty, name='free')
+
+    # Stack slot to receive the void* returned by pthread_join
+    retval_sink = builder.alloca(voidptr_ty, name="join_retval_sink")
     
     # If threads_ptr is a pointer to a pointer to an array, load it first
     if hasattr(threads_ptr, 'type') and isinstance(threads_ptr.type, ir.PointerType) and isinstance(threads_ptr.type.pointee, ir.PointerType):
@@ -469,7 +477,10 @@ def join_threads(builder, module, threads_ptr, thread_count):
     thread_ptr = builder.gep(threads_array_ptr, [ir.Constant(ir.IntType(32), 0), idx])
     thread_handle = builder.load(thread_ptr)
     debug_print(f"DEBUG: join_threads thread_handle type: {getattr(thread_handle, 'type', type(thread_handle))}")
-    builder.call(pthread_join, [thread_handle, null_retval])
+    builder.call(pthread_join, [thread_handle, retval_sink])
+    # Free the heap-allocated return value that the worker wrapper may have boxed
+    retval_ptr = builder.load(retval_sink)
+    builder.call(free_func, [retval_ptr])
     
     # Increment counter
     next_idx = builder.add(idx, ir.Constant(ir.IntType(32), 1))

@@ -40,8 +40,8 @@ def _walk_nodes(body: list):
 
         # Compound statement sub-bodies
         if node_type == 'if':
-            yield from _walk_nodes(node.get('then', []))
-            yield from _walk_nodes(node.get('else', []))
+            yield from _walk_nodes(node.get('then_body', []))
+            yield from _walk_nodes(node.get('else_body', []))
         elif node_type in ('while', 'for'):
             yield from _walk_nodes(node.get('body', []))
         elif node_type == 'case':

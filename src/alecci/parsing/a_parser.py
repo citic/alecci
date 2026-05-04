@@ -581,11 +581,19 @@ def pretty_print_ast(ast, indent=0):
  
 
 ############# main ############
+_cached_parser = None
+
+def _get_parser():
+    """Build the yacc parser once and return the cached instance on subsequent calls."""
+    global _cached_parser
+    if _cached_parser is None:
+        _cached_parser = yacc.yacc(debug=False)
+    return _cached_parser
+
 def toAst(code):
   if globals.DEBUG:
       print(f"Parsing code: {repr(code)}")
-  yacc.yacc(debug=False)  # Changed to False to reduce noise
-  ast = yacc.parse(code, debug=globals.DEBUG)  # Enable debug based on global flag
+  ast = _get_parser().parse(code, debug=globals.DEBUG)
   if globals.DEBUG:
       print(f"Parse result: {ast}")
   return ast

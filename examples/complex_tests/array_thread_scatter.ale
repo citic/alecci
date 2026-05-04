@@ -1,0 +1,36 @@
+// Complex test 6: Parallel array scatter.
+// Each thread writes its computed value (k*(k+1)) into its own slot of a shared
+// array (no index overlap, so no mutex needed for the writes themselves).
+// A barrier inside the worker ensures all threads have written before any exits.
+// After join_threads, main reads every slot and sums them.
+//
+// Expected: results[0..3] = 0, 2, 6, 12  → total = 20
+//
+// Tests: shared array element assignment in thread procedures,
+//        barrier synchronisation alongside array writes,
+//        array element reads with a for-loop index in main.
+
+procedure main()
+    shared mutable results as array := array(4, int())
+    shared mutable b as barrier := barrier(4)
+
+    print "Array scatter test start"
+    mutable threads := create_threads(4, scatter_worker)
+    join_threads(threads, 4)
+
+    // Read back and sum every slot
+    mutable total := 0
+    for i := 0 to 4 do
+        const v = results[i]
+        print `results[{i}] = {v}`
+        total := total + v
+    end for
+    print `Total = {total}`
+    print "Array scatter test end"
+end procedure
+
+procedure scatter_worker(thread_number as int)
+    // Each thread owns its own slot — no race condition
+    results[thread_number] := thread_number * (thread_number + 1)
+    barrier_wait(b)
+end procedure

@@ -9,6 +9,9 @@
 			"*.pseudo": "alecci",
 			"*.alecci": "alecci",
 			"*.ale": "alecci"
-		}
+		},
+		"python.defaultInterpreterPath": "/usr/bin/python3",
+		"python.testing.pytestEnabled": true,
+		"python.testing.pytestPath": "/usr/bin/pytest"
 	}
 }

@@ -1,0 +1,41 @@
+// Complex test 10: Parallel reduction over a pre-filled shared array.
+// Main populates a shared int array with values 1..8 before spawning threads.
+// Each of the 4 threads reads two consecutive elements at a computed offset
+// (thread_number*2 and thread_number*2+1), adds them, then accumulates the
+// partial result into a shared total under a mutex.
+//
+// data = [1, 2, 3, 4, 5, 6, 7, 8]
+// Thread 0: 1+2=3, Thread 1: 3+4=7, Thread 2: 5+6=11, Thread 3: 7+8=15
+// Expected total = 36
+//
+// Tests: threads reading shared array elements at (thread_number*2) and
+//        (thread_number*2 + 1) — a local variable used as array index,
+//        partial sum expression involving two shared array reads,
+//        shared accumulator updated under mutex.
+
+procedure main()
+    shared mutable data as array := array(8, int())
+    shared mutable total := 0
+    shared mutable m as mutex := mutex()
+
+    // Pre-fill the array before any thread starts
+    for i := 0 to 8 do
+        data[i] := i + 1
+    end for
+
+    print "Parallel reduce test start"
+    mutable threads := create_threads(4, reduce_worker)
+    join_threads(threads, 4)
+    print `Total = {total}`
+    print "Parallel reduce test end"
+end procedure
+
+procedure reduce_worker(thread_number as int)
+    mutable base := thread_number * 2
+    const lo = data[base]
+    const hi = data[base + 1]
+    mutable partial := lo + hi
+    lock(m)
+    total := total + partial
+    unlock(m)
+end procedure

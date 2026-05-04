@@ -1,141 +1,102 @@
 # Alecci Programming Language
 
-A modern programming language with built-in concurrency support, compiled to native code via LLVM.
+Alecci is a compiled programming language designed for teaching concurrent and parallel programming. It provides built-in primitives for threading, synchronization, and inter-thread communication, and compiles to native code via LLVM.
 
-## Features
+The language is used in operating systems and parallel programming courses to help students write, analyze, and debug concurrent programs without the overhead of a general-purpose systems language.
 
-- 🚀 **High Performance**: Compiles to optimized native code via LLVM
-- 🧵 **Built-in Concurrency**: Native threading, mutexes, barriers, and semaphores
-- 🔧 **Modern Syntax**: Clean, readable syntax with type inference
-- 🛡️ **Memory Safety**: Variant types and safe array operations
-- 🔄 **Sanitizer Support**: Built-in ThreadSanitizer for race conditions and AddressSanitizer for memory safety
-
-## Quick Start
-
-### Installation
+## Installation
 
 ```bash
-pip install alecci --break-system-packages
+pip install alecci
 ```
 
-**Note**: If the `alecci` command is not found after installation, you may need to add the user bin directory to your PATH:
+If the `alecci` command is not found after installation, add the user bin directory to your PATH:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-Alternatively, you can run the compiler directly:
+You can also invoke the compiler directly without installing the command:
+
 ```bash
 python3 -m alecci
 ```
 
-### Your First Program
+## System Requirements
 
-Create a file called `hello.ale`:
+- Python 3.8 or later
+- LLVM 14 or later (provided via `llvmlite`)
+- GCC or Clang for linking
+
+## Usage
+
+```bash
+alecci program.ale -o program
+./program
+```
+
+### Sanitizer options
+
+ThreadSanitizer is enabled by default to detect data races at runtime:
+
+```bash
+alecci program.ale -o program          # ThreadSanitizer enabled (default)
+alecci program.ale --no-tsan -o program  # Sanitizers disabled
+```
+
+## Language Overview
+
+### Variables
+
+```alecci
+mutable x := 42
+const message := "Hello"
+mutable arr := array(10, 0)
+```
+
+### Procedures and functions
 
 ```alecci
 procedure main(argc, argv)
-    print("Hello, Alecci!")
+  print("Hello, Alecci!")
 end procedure
 ```
 
-Compile and run:
-
-```bash
-alecci hello.ale -o hello
-./hello
-```
-
-#### Sanitizer Options
-
-- **Thread Sanitizer (default)**: Detects race conditions and threading issues
-  ```bash
-  alecci hello.ale -o hello  # TSan enabled by default
-  ```
-
-- **AddressSanitizer**: Detects memory errors like buffer overflows
-  ```bash
-  alecci hello.ale --use-asan -o hello
-  ```
-
-- **No Sanitizer**: Disable all sanitizers for maximum performance
-  ```bash
-  alecci hello.ale --no-tsan -o hello
-  ```
-
-### Threading Example
+### Threads
 
 ```alecci
 procedure worker(thread_number as int)
-    print `Worker {thread_number} is running`
+  print `Worker {thread_number} running`
 end procedure
 
 procedure main(argc, argv)
-    shared const thread_count := 4
-    
-    mutable threads := create_threads(thread_count, worker)
-    join_threads(threads)
-    
-    print("All workers completed!")
+  shared const thread_count := 4
+  mutable threads := create_threads(thread_count, worker)
+  join_threads(threads)
+  print("All workers done")
 end procedure
 ```
 
-## Language Features
+### Synchronization primitives
 
-### Variables and Types
-```alecci
-mutable x := 42          // Mutable integer
-const message := "Hello" // Immutable string
-mutable arr := array(10, 0) // Array of 10 zeros
-```
-
-### Functions
-```alecci
-function add(a as int, b as int) -> int
-    return a + b
-end function
-```
-
-### Concurrency
 ```alecci
 shared mutable counter := 0
-shared mutable mtx := mutex()
+shared mutable mtx as mutex := mutex()
 
-procedure increment()
-    lock(mtx)
-    counter := counter + 1
-    unlock(mtx)
+procedure increment(thread_number as int)
+  lock(mtx)
+  counter := counter + 1
+  unlock(mtx)
 end procedure
 ```
 
-## Installation from Source
+Available primitives: `mutex`, `semaphore`, `barrier`, `queue`, `thread`.
 
-If you want to build from source:
+## Concurrency Validation
 
-```bash
-git clone https://github.com/yourusername/alecci.git
-cd alecci
-pip install -e . --break-system-packages
-```
+The package includes a test suite (`concurrency_validation/`) with annotated example programs covering common concurrency patterns and bugs, including data races, deadlocks, and thread leaks. These are used to evaluate ThreadSanitizer detection rates.
 
-If needed, add the local bin directory to your PATH:
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
+## Source
 
-## Requirements
-
-- Python 3.8+
-- LLVM 14+ (for llvmlite)
-- GCC or Clang (for linking)
-
-## Documentation
-
-- [Language Reference](docs/language-reference.md)
-- [Concurrency Guide](docs/concurrency.md)
-- [Examples](examples/)
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
+Source code is available at [github.com/citic/alecci](https://github.com/citic/alecci).

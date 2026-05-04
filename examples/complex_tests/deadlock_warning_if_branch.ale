@@ -1,0 +1,12 @@
+// Complex test: deadlock analysis must inspect waits inside if branches.
+// This program should compile, but the compiler should emit a deadlock warning.
+
+procedure main()
+    shared mutable permits as semaphore := semaphore(1)
+
+    if true then
+        wait(permits, 2)
+    end if
+
+    print "Deadlock warning branch test end"
+end procedure

@@ -1,0 +1,14 @@
+// Complex test: typed string and float parameters on a user-defined procedure.
+// This should compile and preserve parameter types through signature creation,
+// call lowering, and local variable binding.
+
+procedure emit_values(label as string, ratio as float)
+    print "Typed params test start"
+    print `label = {label}`
+    print `ratio = {ratio}`
+    print "Typed params test end"
+end procedure
+
+procedure main()
+    emit_values("alpha", 2.5)
+end procedure

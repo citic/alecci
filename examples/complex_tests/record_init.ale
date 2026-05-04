@@ -1,0 +1,13 @@
+// Complex test: record declarations and record initializers should compile.
+// The parser already accepts both surfaces, so this should become a stable
+// end-to-end regression once backend support exists.
+
+record Pair of
+    left as int
+    right as int
+end record
+
+procedure main()
+    mutable pair as Pair := {3, 4}
+    print "Record init test end"
+end procedure

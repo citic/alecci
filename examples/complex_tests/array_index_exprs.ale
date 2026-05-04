@@ -1,0 +1,48 @@
+// Complex test 9: Array manipulation using computed index expressions.
+// Single-threaded; exercises the compiler's index-expression code paths
+// with stride-2 writes, in-place read-modify-write, and a linear scan.
+//
+// Fill pass 1 (even indices):  arr[i*2]   = i*i         → 0,_,1,_,4,_,9,_
+// Fill pass 2 (odd  indices):  arr[i*2+1] = 10 - i      → _,10,_,9,_,8,_,7
+// After fill:  arr = [0, 10, 1, 9, 4, 8, 9, 7]  → sum = 48
+// Double pass: arr[i] := arr[i] * 2               → sum = 96
+//
+// Tests: arr[i*2] := expr and arr[i*2+1] := expr (computed write index),
+//        arr[i] := arr[i] * expr (read-modify-write on same slot),
+//        mutable accumulator summing array elements in a for loop.
+
+procedure main()
+    mutable arr := array(8, int())
+
+    print "Array index expressions test start"
+
+    // Fill even slots: arr[0]=0, arr[2]=1, arr[4]=4, arr[6]=9
+    for i := 0 to 4 do
+        arr[i * 2] := i * i
+    end for
+
+    // Fill odd slots: arr[1]=10, arr[3]=9, arr[5]=8, arr[7]=7
+    for i := 0 to 4 do
+        arr[i * 2 + 1] := 10 - i
+    end for
+
+    // Print all 8 elements before transformation
+    for i := 0 to 8 do
+        const v = arr[i]
+        print `arr[{i}] = {v}`
+    end for
+
+    // Read-modify-write: double every element in-place
+    for i := 0 to 8 do
+        arr[i] := arr[i] * 2
+    end for
+
+    // Sum all doubled elements
+    mutable total := 0
+    for i := 0 to 8 do
+        total := total + arr[i]
+    end for
+    print `Total after doubling = {total}`
+
+    print "Array index expressions test end"
+end procedure

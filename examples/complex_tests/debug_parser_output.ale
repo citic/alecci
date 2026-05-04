@@ -1,0 +1,5 @@
+// Complex test: --debug should enable parser debug output before parsing.
+
+procedure main()
+    print "Debug parser output test end"
+end procedure

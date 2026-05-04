@@ -42,26 +42,32 @@ def main():
     except FileNotFoundError:
         print(f"File {globals.filename} not found.")
         sys.exit(1)
-    ast = parser.toAst(data)
-    if args.print_ast:
-        parser.pretty_print_ast(ast)
 
-    # Static deadlock analysis (runs before IR generation, non-fatal)
-    if not args.no_deadlock_check:
-        from .compiling.deadlock_analyzer import analyze as deadlock_analyze
-        deadlock_analyze(ast, globals.filename)
-
-    # Set debug mode if requested
+    # Enable debug mode before parsing so it affects the parser, compiler, and threading utils
     if args.debug:
+        globals.DEBUG = True
         compiler.set_debug(True)
 
-    # Generate LLVM IR code
-    # Pass performance_mode flag (enabled by default, disabled if --no-tsan)
-    performance_mode_enabled = not args.no_tsan and not args.use_asan
-    compiled_ir = compiler.CodeGenerator(
-        performance_mode=performance_mode_enabled,
-        source_filename=globals.filename
-    ).compile(ast)
+    try:
+        ast = parser.toAst(data)
+        if args.print_ast:
+            parser.pretty_print_ast(ast)
+
+        # Static deadlock analysis (runs before IR generation, non-fatal)
+        if not args.no_deadlock_check:
+            from .compiling.deadlock_analyzer import analyze as deadlock_analyze
+            deadlock_analyze(ast, globals.filename)
+
+        # Generate LLVM IR code
+        # Pass performance_mode flag (enabled by default, disabled if --no-tsan)
+        performance_mode_enabled = not args.no_tsan and not args.use_asan
+        compiled_ir = compiler.CodeGenerator(
+            performance_mode=performance_mode_enabled,
+            source_filename=globals.filename
+        ).compile(ast)
+    except compiler.AleError as exc:
+        print(f"{globals.filename}: {exc}", file=sys.stderr)
+        sys.exit(1)
     
     import os
     import tempfile

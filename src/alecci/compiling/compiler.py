@@ -8,6 +8,81 @@ from ..parsing.globals import debug_print
 from . import variant_utils
 
 
+# ---------------------------------------------------------------------------
+# Argument-type → LLVM type helper
+# ---------------------------------------------------------------------------
+
+# Types whose LLVM representation is a pointer to an opaque runtime struct.
+# These match the entries in base_types._SCALAR_TYPE_MAP.
+_OPAQUE_PTR_TYPES = frozenset({
+    'semaphore', 'mutex', 'barrier', 'thread', 'queue',
+    'array', 'string',
+})
+
+def _arg_type_to_llvm(arg_type) -> ir.Type:
+    """Map a parsed argument type (string or complex_type dict) to an LLVM type.
+
+    Rules:
+      - None / unrecognised scalar strings  → i32  (variant / untyped int)
+      - 'int'                               → i32
+      - 'float'                             → double
+      - 'char'                              → i8   (scalar byte, NOT a pointer)
+      - 'string'                            → i8*
+      - 'variant'                           → variant struct
+      - concurrency types (semaphore, mutex, barrier, thread, queue, array)
+                                            → i8*  (opaque runtime handle)
+      - complex_type dict (REFERENCE, etc.) → i8*  (opaque pointer, best effort)
+    """
+    if isinstance(arg_type, dict):
+        # e.g. {'type': 'reference_type', ...} or {'type': 'pointer_type', ...}
+        return ir.IntType(8).as_pointer()
+    if arg_type == 'float':
+        return ir.DoubleType()
+    if arg_type == 'char':
+        return ir.IntType(8)      # scalar byte — NOT a pointer
+    if arg_type == 'variant':
+        from .base_types import get_variant_type
+        return get_variant_type()
+    if arg_type in _OPAQUE_PTR_TYPES:
+        return ir.IntType(8).as_pointer()
+    # 'int', None, unknown named types → i32
+    return ir.IntType(32)
+
+
+class AleError(Exception):
+    """A clean, user-facing compiler error with optional source location."""
+    def __init__(self, message: str, node: Dict[str, Any] | None = None) -> None:
+        lineno = node.get('lineno') if isinstance(node, dict) else None
+        suffix = f" (line {lineno})" if lineno else ""
+        super().__init__(f"error: {message}{suffix}")
+
+
+# ---------------------------------------------------------------------------
+# Pre-compilation semantic check for unsupported grammar constructs
+# ---------------------------------------------------------------------------
+
+_UNSUPPORTED_NODE_TYPES = {
+    'record_init': 'record initialization',
+    'pointer_type': 'pointer types',
+    'dereference':  'dereference',
+    'reference':    'references',
+}
+
+def _check_unsupported_nodes(ast: Any) -> None:
+    """Walk the AST and raise AleError for any grammar construct that is parsed
+    but not yet lowered to LLVM IR.  Runs before any IR is emitted so the user
+    gets a clean diagnostic instead of a Python traceback."""
+    if isinstance(ast, dict):
+        node_type = ast.get('type')
+        if node_type in _UNSUPPORTED_NODE_TYPES:
+            feature = _UNSUPPORTED_NODE_TYPES[node_type]
+            raise AleError(f"'{feature}' is not yet supported", ast)
+        for value in ast.values():
+            _check_unsupported_nodes(value)
+    elif isinstance(ast, list):
+        for item in ast:
+            _check_unsupported_nodes(item)
+
 
 class CodeGenerator:
     def __init__(self, performance_mode: bool = True, source_filename: str = "program.ale") -> None:
@@ -408,6 +483,7 @@ class CodeGenerator:
             if self.performance_mode:
                 self._init_performance_intrinsics()
             self._init_debug_info()
+            _check_unsupported_nodes(ast)
             self.visit(ast)
             debug_print("DEBUG: AST compilation completed, verifying module...")
             self._debug_verify_module()
@@ -476,21 +552,13 @@ class CodeGenerator:
                     # Don't automatically add thread_number - let the programmer define it
                     param_types = []
                     for arg in decl.get('arguments', []):
-                        if arg.get('arg_type') == 'int' or arg.get('arg_type') is None:
-                            param_types.append(ir.IntType(32))
-                        # Add other parameter types as needed
+                        param_types.append(_arg_type_to_llvm(arg.get('arg_type')))
                     # Functions return values, procedures can also return values (default to variant)
                     if decl.get('type') == 'function':
-                        # Check if function has explicit return type annotation, otherwise default to variant
-                        return_type = decl.get('return_type')
-                        if return_type == 'int':
-                            func_ty = ir.FunctionType(ir.IntType(32), param_types)
-                        elif return_type == 'string':
-                            func_ty = ir.FunctionType(ir.IntType(8).as_pointer(), param_types)
-                        else:
-                            # Default to variant for functions without explicit return type
-                            from .base_types import get_variant_type
-                            func_ty = ir.FunctionType(get_variant_type(), param_types)
+                        # The parser does not emit return_type on function nodes; always use variant.
+                        # TODO: add '-> type' return-type syntax to the grammar when needed.
+                        from .base_types import get_variant_type
+                        func_ty = ir.FunctionType(get_variant_type(), param_types)
                     else:
                         # Procedures also return variant by default (can be used with or without return statements)
                         from .base_types import get_variant_type
@@ -568,10 +636,22 @@ class CodeGenerator:
                     for i, arg in enumerate(decl.get('arguments', [])):
                         param_name = arg['id']
                         param_value = func.args[i]
-                        param_ptr = self.builder.alloca(ir.IntType(32), name=param_name)
+                        # Use the LLVM type already on the IR argument (matches signature construction)
+                        param_llvm_type = param_value.type
+                        param_ptr = self.builder.alloca(param_llvm_type, name=param_name)
                         self.builder.store(param_value, param_ptr)
-                        self.locals[param_name] = (param_ptr, 'int', False)  # function parameters are mutable
-                        debug_print(f"DEBUG: Added parameter '{param_name}' to {decl['name']}")
+                        # Derive string type tag from declared arg_type (more accurate than inferring from LLVM type)
+                        arg_type_str = arg.get('arg_type')
+                        if isinstance(arg_type_str, str):
+                            type_tag = arg_type_str
+                        elif isinstance(param_llvm_type, ir.DoubleType):
+                            type_tag = 'float'
+                        elif isinstance(param_llvm_type, ir.PointerType):
+                            type_tag = 'string'
+                        else:
+                            type_tag = 'int'
+                        self.locals[param_name] = (param_ptr, type_tag, False)
+                        debug_print(f"DEBUG: Added parameter '{param_name}' ({type_tag}) to {decl['name']}")
 
                 # For main function, handle runtime initialization of shared variables
                 if decl['name'] == 'main' and self.shared_runtime_inits:
@@ -2560,20 +2640,17 @@ class CodeGenerator:
             self.builder.ret_void()
 
     def visit_record_init(self, node: Dict[str, Any]) -> None:
-        # Not implemented: just a stub for record initialization
-        raise NotImplementedError("Record initialization not implemented yet.")
+        # Reached only if _check_unsupported_nodes somehow missed this node
+        raise AleError("record initialization is not yet supported", node)
 
     def visit_pointer_type(self, node: Dict[str, Any]) -> None:
-        # Not implemented: just a stub for pointer types
-        raise NotImplementedError("Pointer types not implemented yet.")
+        raise AleError("pointer types are not yet supported", node)
 
     def visit_dereference(self, node: Dict[str, Any]) -> None:
-        # Not implemented: just a stub for dereferencing
-        raise NotImplementedError("Dereference not implemented yet.")
+        raise AleError("dereference is not yet supported", node)
 
     def visit_reference(self, node: Dict[str, Any]) -> None:
-        # Not implemented: just a stub for references
-        raise NotImplementedError("Reference not implemented yet.")
+        raise AleError("references are not yet supported", node)
 
     def _store_variant_value(self, variant_ptr, value, type_tag, type_hint=None):
         """Store *value* into the variant at *variant_ptr*. Delegates to variant_utils."""
