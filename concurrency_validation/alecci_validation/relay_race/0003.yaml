@@ -1,6 +1,5 @@
 source: 0003.ale
 expected_issues:
   - deadlock
-  - thread_leak
 timeout: 10
 max_runs: 5

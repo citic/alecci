@@ -142,6 +142,19 @@ EXAMPLES = {
         "skip_run": True,
         "debug": True,
     },
+    # Regression test for two compiler bugs fixed May 2026:
+    #   1. 'common' linkage zeroed shared globals with non-zero initialisers.
+    #   2. join_threads() only joined 1 thread regardless of array size.
+    "prod_cons_queue": {
+        "file": "prod_cons_queue.ale",
+        "expect": [
+            "Prod-cons queue test start",
+            "start_value = 10",
+            "Produced: 6",
+            "Consumed: 6",
+            "Prod-cons queue test end",
+        ],
+    },
 }
 
 
@@ -259,6 +272,13 @@ def test_complex_typed_params(repo_root: Path, bin_dir: Path, compile_pseudo_fn,
         "typed_params", EXAMPLES["typed_params"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn
     )
     print("[PASS] typed_params")
+
+
+def test_complex_prod_cons_queue(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    _compile_and_run_complex(
+        "prod_cons_queue", EXAMPLES["prod_cons_queue"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn
+    )
+    print("[PASS] prod_cons_queue")
 
 
 def test_complex_deadlock_warning_if_branch(repo_root: Path, bin_dir: Path, compile_pseudo_fn, capsys):

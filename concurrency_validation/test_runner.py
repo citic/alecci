@@ -247,23 +247,28 @@ def run_test(test_case: TestCase, exe_path: Path, verbose: bool = False) -> Tupl
         )
         
         execution_time = (time.time() - start_time) * 1000  # Convert to ms
+        prog_stdout = result.stdout
         output = result.stdout + result.stderr
         
-        return result.returncode, output, execution_time, False
+        return result.returncode, output, execution_time, False, prog_stdout
         
     except subprocess.TimeoutExpired as e:
         execution_time = (time.time() - start_time) * 1000
+        prog_stdout = ""
         output = ""
         if e.stdout:
-            output += e.stdout.decode('utf-8') if isinstance(e.stdout, bytes) else e.stdout
+            decoded = e.stdout.decode('utf-8') if isinstance(e.stdout, bytes) else e.stdout
+            prog_stdout += decoded
+            output += decoded
         if e.stderr:
-            output += e.stderr.decode('utf-8') if isinstance(e.stderr, bytes) else e.stderr
+            decoded = e.stderr.decode('utf-8') if isinstance(e.stderr, bytes) else e.stderr
+            output += decoded
         
-        return -1, output, execution_time, True
+        return -1, output, execution_time, True, prog_stdout
         
     except Exception as e:
         execution_time = (time.time() - start_time) * 1000
-        return -1, f"Execution error: {str(e)}", execution_time, False
+        return -1, f"Execution error: {str(e)}", execution_time, False, ""
 
 
 def validate_results(
@@ -321,6 +326,7 @@ def run_single_test(
     bin_dir: Path,
     verbose: bool = False,
     compile_semaphore: Optional[threading.Semaphore] = None,
+    output_dir: Optional[Path] = None,
 ) -> TestResult:
     """
     Run a complete test: compile, execute, parse, validate.
@@ -368,14 +374,20 @@ def run_single_test(
     max_runs = test_case.max_runs
     runs_with_detection = 0
     all_outputs = []
-    
+    last_prog_stdout = ""
+    last_exec_time = 0
+    last_timeout_occurred = False
+
     for run_number in range(max_runs):
         if verbose and max_runs > 1:
             print(f"  Run {run_number + 1}/{max_runs}...")
         
-        returncode, output, exec_time, timeout_occurred = run_test(test_case, exe_path, verbose and max_runs == 1)
+        returncode, output, exec_time, timeout_occurred, prog_stdout = run_test(test_case, exe_path, verbose and max_runs == 1)
         all_outputs.append(output)
-        
+        last_prog_stdout = prog_stdout
+        last_exec_time = exec_time
+        last_timeout_occurred = timeout_occurred
+
         # Check if race was detected in this run
         tsan_result = parse_tsan_output(output)
         if tsan_result['data_race'] or tsan_result['deadlock'] or \
@@ -384,9 +396,15 @@ def run_single_test(
         
         # For single runs or if we already detected the issue, stop early
         if max_runs == 1 or runs_with_detection > 0:
-            result.execution_time_ms = int(exec_time)
-            result.timeout_occurred = timeout_occurred
             break
+
+    result.execution_time_ms = int(last_exec_time)
+    result.timeout_occurred = last_timeout_occurred
+
+    # Save program stdout to output file if requested
+    if output_dir is not None:
+        out_file = output_dir / f"{test_case.exe_name}.txt"
+        out_file.write_text(last_prog_stdout)
     
     # Use the last output (or the one with detection) for analysis
     final_output = all_outputs[-1] if runs_with_detection == 0 else \
@@ -541,6 +559,15 @@ def main():
         metavar='N',
         help='Number of tests to run in parallel (default: number of CPU cores / 2)'
     )
+    parser.add_argument(
+        '--save-output',
+        type=Path,
+        nargs='?',
+        const=Path(''),  # sentinel: use default path
+        default=None,
+        metavar='DIR',
+        help='Save each program\'s stdout to DIR/<test>.txt (default dir: results/outputs/<timestamp>/)'
+    )
 
     args = parser.parse_args()
     
@@ -552,6 +579,17 @@ def main():
     # Ensure directories exist
     bin_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve output directory for program stdout
+    output_dir: Optional[Path] = None
+    if args.save_output is not None:
+        if args.save_output == Path(''):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = results_dir / f"outputs_{timestamp}"
+        else:
+            output_dir = args.save_output.resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Program outputs will be saved to: {output_dir}")
     
     # Discover test cases
     print(f"Discovering test cases in: {test_dir}")
@@ -581,7 +619,8 @@ def main():
 
     def _run(idx: int, test_case: TestCase) -> None:
         result = run_single_test(
-            test_case, bin_dir, args.verbose, compile_semaphore=_compile_sem
+            test_case, bin_dir, args.verbose, compile_semaphore=_compile_sem,
+            output_dir=output_dir,
         )
         ordered_results[idx] = result
         if not args.verbose:

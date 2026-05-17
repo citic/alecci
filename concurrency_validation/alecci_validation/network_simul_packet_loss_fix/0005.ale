@@ -1,13 +1,15 @@
 procedure main(argc, argv)
   shared mutable packet_count := 0
   shared mutable dropped_count := 0
-  create_threads(3, produce)
-  create_threads(3, consume)
+  mutable producers as thread_array := create_threads(3, produce)
+  mutable consumers as thread_array := create_threads(3, consume)
+  join_threads(producers)
+  join_threads(consumers)
 end procedure
 
 procedure produce(thread_number as int)
   for i := 0 to 4 do
-    sleep(rand() % 20)
+    sleep(rand() % 20, "ms")
     packet_count := packet_count + 1
     print("Packet sent")
   end for
@@ -15,7 +17,7 @@ end procedure
 
 procedure consume(thread_number as int)
   for i := 0 to 4 do
-    sleep(rand() % 15)
+    sleep(rand() % 15, "ms")
     if packet_count > 0 then
       packet_count := packet_count - 1
       print("Packet received")

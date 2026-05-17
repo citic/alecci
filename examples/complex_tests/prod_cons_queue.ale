@@ -1,0 +1,86 @@
+// Complex test: Multi-threaded producer-consumer with bounded queue.
+//
+// Regression test for two compiler bugs fixed in May 2026:
+//   1. Shared mutable globals with non-zero initializers were silently
+//      zero-initialised at runtime because 'common' linkage ignores the
+//      initialiser.  Here unit_count must remain 6 and start_value must
+//      remain 10 — if either reads as 0, the wrong branch is taken and
+//      the expected output is never produced.
+//   2. join_threads() only joined 1 thread per array regardless of how
+//      many were created, causing the main thread to destroy shared
+//      primitives while workers were still running (data race / missed
+//      output).  With 2 producers and 2 consumers the test hangs or
+//      produces wrong counts without the fix.
+//
+// Expected output (exact counts, order may vary):
+//   Prod-cons queue test start
+//   start_value = 10          <- non-zero shared global initialiser
+//   Produced: 6               <- total units produced across 2 threads
+//   Consumed: 6               <- total units consumed across 2 threads
+//   Prod-cons queue test end
+
+procedure main(argc, argv)
+    shared mutable unit_count := 6        // non-zero initialiser — regression guard
+    shared mutable start_value := 10      // second non-zero initialiser — extra guard
+    shared mutable next_unit := 0
+    shared mutable produced_count := 0
+    shared mutable consumed_count := 0
+    shared mutable q as queue := queue(16)
+    shared mutable qmutex as mutex := mutex()
+    shared mutable next_mutex as mutex := mutex()
+    shared mutable prod_mutex as mutex := mutex()
+    shared mutable cons_mutex as mutex := mutex()
+    shared mutable can_consume as semaphore := semaphore(0)
+
+    print "Prod-cons queue test start"
+    print `start_value = {start_value}`
+
+    mutable producers as thread_array := create_threads(2, producer)
+    mutable consumers as thread_array := create_threads(2, consumer)
+    join_threads(producers)
+    join_threads(consumers)
+
+    print `Produced: {produced_count}`
+    print `Consumed: {consumed_count}`
+    print "Prod-cons queue test end"
+end procedure
+
+procedure producer(thread_number as int)
+    mutable running := 1
+    while running = 1 do
+        lock(next_mutex)
+        if next_unit < unit_count then
+            next_unit := next_unit + 1
+            mutable my_unit := next_unit
+            unlock(next_mutex)
+            lock(qmutex)
+            enqueue(q, my_unit)
+            unlock(qmutex)
+            lock(prod_mutex)
+            produced_count := produced_count + 1
+            unlock(prod_mutex)
+            signal(can_consume)
+        else
+            unlock(next_mutex)
+            running := 0
+        end if
+    end while
+end procedure
+
+procedure consumer(thread_number as int)
+    mutable running := 1
+    while running = 1 do
+        lock(cons_mutex)
+        if consumed_count < unit_count then
+            consumed_count := consumed_count + 1
+            unlock(cons_mutex)
+            wait(can_consume)
+            lock(qmutex)
+            mutable item := dequeue(q)
+            unlock(qmutex)
+        else
+            unlock(cons_mutex)
+            running := 0
+        end if
+    end while
+end procedure

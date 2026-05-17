@@ -1,20 +1,18 @@
 procedure main(argc, argv)
   shared mutable baton as semaphore := semaphore(0)
   shared mutable team_count := 3
-  mutable i := 0
-  while i < team_count do
-    create_thread(leg1)
-    create_thread(leg2)
-    i := i + 1
-  end while
+  mutable t1 as thread_array := create_threads(team_count, leg1)
+  mutable t2 as thread_array := create_threads(team_count, leg2)
+  join_threads(t1)
+  join_threads(t2)
 end procedure
 
-procedure leg1()
-  sleep(rand() % 20)
+procedure leg1(thread_number as int)
+  sleep(rand() % 20, "ms")
   print("leg1 done")
 end procedure
 
-procedure leg2()
+procedure leg2(thread_number as int)
   wait(baton)
   print("leg2 done")
 end procedure

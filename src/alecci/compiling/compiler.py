@@ -104,6 +104,7 @@ class CodeGenerator:
         self.current_di_location = None
         self.has_explicit_return: bool = False
         self.loop_exit_stack: List[ir.Block] = []  # stack of loop-exit blocks for break
+        self.thread_array_counts = {}  # var_name -> LLVM value for thread count
         # Performance mode: insert sched_yield() and TSan instrumentation for race detection
         self.performance_mode: bool = performance_mode
         self.sched_yield_fn = None  # Will be initialized in compile()
@@ -830,9 +831,7 @@ class CodeGenerator:
 
         llvm_type = get_type(var_type)
         g = ir.GlobalVariable(self.module, llvm_type, name=name)
-        g.linkage = 'common' if not is_constant else 'internal'
-        if not is_constant:
-            g.storage_class = 'default'
+        g.linkage = 'internal' if not is_constant else 'internal'
 
         if isinstance(value, dict) and value.get('type') == 'literal':
             g.initializer = ir.Constant(llvm_type, value['value'])
@@ -1111,6 +1110,37 @@ class CodeGenerator:
                 if isinstance(val, dict) and val.get('type') == 'function_call' and val.get('name') == 'create_threads':
                     self.visit(val)
                 return
+            elif var_type == 'array_semaphore' and self.current_function_name == 'main':
+                # Emit a sem_init loop for every element in the array.
+                init = node['init']
+                init_value_expr = init.get('value')
+                args = init_value_expr.get('arguments', []) if isinstance(init_value_expr, dict) else []
+                array_size = self._resolve_shared_array_size(args[0]) if args else 1
+                # Extract initial semaphore value from the element constructor: array(N, semaphore(V))
+                sem_val = 0
+                if len(args) >= 2:
+                    elem_node = args[1]
+                    if isinstance(elem_node, dict) and elem_node.get('name') == 'semaphore':
+                        ea = elem_node.get('arguments', [])
+                        if ea and ea[0].get('type') == 'literal':
+                            sem_val = int(ea[0]['value'])
+                array_ptr, _, _ = self.globals[name]
+                opaque_ty = ir.IntType(8).as_pointer()
+                sem_init_fn = self._declare_external_fn(
+                    'sem_init', ir.IntType(32),
+                    [opaque_ty, ir.IntType(32), ir.IntType(32)])
+                elem_size = 32  # sem_t is 32 bytes
+                elem_ty = ir.ArrayType(ir.IntType(8), elem_size)
+                for idx in range(array_size):
+                    elem_ptr = self.builder.gep(
+                        array_ptr,
+                        [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)])
+                    elem_i8_ptr = self.builder.bitcast(elem_ptr, opaque_ty)
+                    self.builder.call(sem_init_fn, [
+                        elem_i8_ptr,
+                        ir.Constant(ir.IntType(32), 0),
+                        ir.Constant(ir.IntType(32), sem_val)])
+                return
             else:
                 return
 
@@ -1197,11 +1227,18 @@ class CodeGenerator:
             if evaluated_value is None:
                 raise Exception(f"thread_array '{name}' must be initialised with create_threads()")
             self.locals[name] = (evaluated_value, 'thread_array', is_constant)
+            # Store the thread count so join_threads can find it by variable name
+            if isinstance(init_value_expr, dict) and init_value_expr.get('name') == 'create_threads':
+                count_arg = init_value_expr['arguments'][0]
+                self.thread_array_counts[name] = self.visit(count_arg)
             return
 
         if var_type == 'thread':
             if evaluated_value is not None:
-                self.locals[name] = (evaluated_value, 'thread', is_constant)
+                # Store the thread handle in an alloca so visit_ID can load it correctly
+                handle_alloca = self.builder.alloca(evaluated_value.type, name=name)
+                self.builder.store(evaluated_value, handle_alloca)
+                self.locals[name] = (handle_alloca, 'thread', is_constant)
             return
 
         # Generic typed variable (int, float, string, …)
@@ -1901,14 +1938,8 @@ class CodeGenerator:
         """Handle join_threads(threads_arr [, count]) built-in."""
         threads_arg = node['arguments'][0]
 
-        if len(node['arguments']) > 1:
-            thread_count = self.visit(node['arguments'][1])
-        elif 'thread_count' in self.globals:
-            ptr, _, _ = self.globals['thread_count']
-            thread_count = self.builder.load(ptr)
-        else:
-            thread_count = ir.Constant(ir.IntType(32), 1)
-
+        # Resolve thread array pointer and name first
+        threads_name = None
         if isinstance(threads_arg, dict) and threads_arg.get('type') in ('literal', 'ID'):
             threads_name = threads_arg['value']
             if threads_name in self.locals:
@@ -1921,6 +1952,17 @@ class CodeGenerator:
                 raise Exception(f"Undefined thread array variable: {threads_name}")
         else:
             threads_ptr = self.visit(threads_arg)
+
+        # Resolve thread count: explicit arg > stored count from create_threads > legacy global > default
+        if len(node['arguments']) > 1:
+            thread_count = self.visit(node['arguments'][1])
+        elif threads_name is not None and threads_name in self.thread_array_counts:
+            thread_count = self.thread_array_counts[threads_name]
+        elif 'thread_count' in self.globals:
+            ptr, _, _ = self.globals['thread_count']
+            thread_count = self.builder.load(ptr)
+        else:
+            thread_count = ir.Constant(ir.IntType(32), 1)
 
         join_threads(self.builder, self.module, threads_ptr, thread_count)
         return ir.Constant(ir.IntType(32), 0)

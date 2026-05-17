@@ -1,7 +1,9 @@
 procedure main(argc, argv)
   shared mutable a1_ready as semaphore := semaphore(0)
-  create_thread(thread_a)
-  create_thread(thread_b)
+  mutable ta := create_thread(thread_a)
+  mutable tb := create_thread(thread_b)
+  join_thread(ta)
+  join_thread(tb)
 end procedure
 
 procedure thread_a()

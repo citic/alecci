@@ -6,8 +6,10 @@ procedure main(argc, argv)
   shared mutable can_access_queue as mutex := mutex()
   shared mutable can_produce as semaphore := semaphore(4)
   shared mutable can_consume as semaphore := semaphore(0)
-  create_threads(1, produce)
-  create_threads(1, consume)
+  mutable producers as thread_array := create_threads(1, produce)
+  mutable consumers as thread_array := create_threads(1, consume)
+  join_threads(producers)
+  join_threads(consumers)
 end procedure
 
 procedure produce(thread_number as int)
@@ -16,7 +18,7 @@ procedure produce(thread_number as int)
     mutable index := 0
     while index < buffer_capacity do
       wait(can_produce)
-      sleep(rand() % 50)
+      sleep(rand() % 50, "ms")
       count := count + 1
       lock(can_access_queue)
       enqueue(q, count)
@@ -35,7 +37,7 @@ procedure consume(thread_number as int)
     mutable index := 0
     while index < buffer_capacity do
       wait(can_consume)
-      sleep(rand() % 40)
+      sleep(rand() % 40, "ms")
       lock(can_access_queue)
       mutable item := dequeue(q)
       unlock(can_access_queue)

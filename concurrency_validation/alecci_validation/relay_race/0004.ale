@@ -1,16 +1,13 @@
 procedure main(argc, argv)
   shared mutable team_count := 5
   shared mutable best_time := 9999
-  mutable i := 0
-  while i < team_count do
-    create_thread(run_race)
-    i := i + 1
-  end while
+  mutable t as thread_array := create_threads(team_count, run_race)
+  join_threads(t)
 end procedure
 
-procedure run_race()
+procedure run_race(thread_number as int)
   mutable my_time := rand() % 100
-  sleep(my_time)
+  sleep(my_time, "ms")
   if my_time < best_time then
     best_time := my_time
     print("new best time")

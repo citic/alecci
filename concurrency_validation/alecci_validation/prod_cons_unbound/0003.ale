@@ -17,7 +17,7 @@ procedure produce(thread_number as int)
     if next_unit < unit_count then
       next_unit := next_unit + 1
       mutable my_unit := next_unit
-      sleep(rand() % 30)
+      sleep(rand() % 30, "ms")
       lock(can_access_queue)
       enqueue(q, my_unit)
       unlock(can_access_queue)
@@ -38,7 +38,7 @@ procedure consume(thread_number as int)
       lock(can_access_queue)
       mutable item := dequeue(q)
       unlock(can_access_queue)
-      sleep(rand() % 20)
+      sleep(rand() % 20, "ms")
       print("Consumed")
     else
       running := 0

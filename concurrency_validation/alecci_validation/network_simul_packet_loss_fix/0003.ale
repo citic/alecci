@@ -1,13 +1,15 @@
 procedure main(argc, argv)
   shared mutable packet_count := 0
   shared mutable can_consume as semaphore := semaphore(0)
-  create_threads(2, produce)
-  create_threads(2, consume)
+  mutable producers as thread_array := create_threads(2, produce)
+  mutable consumers as thread_array := create_threads(2, consume)
+  join_threads(producers)
+  join_threads(consumers)
 end procedure
 
 procedure produce(thread_number as int)
   for i := 0 to 5 do
-    sleep(rand() % 20)
+    sleep(rand() % 20, "ms")
     packet_count := packet_count + 1
     signal(can_consume)
   end for
@@ -17,7 +19,7 @@ procedure consume(thread_number as int)
   for i := 0 to 5 do
     wait(can_consume)
     packet_count := packet_count - 1
-    sleep(rand() % 10)
+    sleep(rand() % 10, "ms")
     print("Packet consumed")
   end for
 end procedure

@@ -3,14 +3,16 @@ procedure main(argc, argv)
   shared mutable count := 0
   shared mutable q as queue := queue(4)
   shared mutable can_access_queue as mutex := mutex()
-  create_threads(2, produce)
-  create_threads(2, consume)
+  mutable producers as thread_array := create_threads(2, produce)
+  mutable consumers as thread_array := create_threads(2, consume)
+  join_threads(producers)
+  join_threads(consumers)
 end procedure
 
 procedure produce(thread_number as int)
   mutable index := 0
   while index < 5 do
-    sleep(rand() % 30)
+    sleep(rand() % 30, "ms")
     count := count + 1
     lock(can_access_queue)
     enqueue(q, count)
@@ -23,7 +25,7 @@ end procedure
 procedure consume(thread_number as int)
   mutable index := 0
   while index < 5 do
-    sleep(rand() % 20)
+    sleep(rand() % 20, "ms")
     lock(can_access_queue)
     mutable item := dequeue(q)
     unlock(can_access_queue)

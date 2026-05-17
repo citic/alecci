@@ -2,15 +2,12 @@ procedure main(argc, argv)
   shared mutable team_count := 5
   shared mutable position := 0
   shared mutable pos_mutex as mutex := mutex()
-  mutable i := 0
-  while i < team_count do
-    create_thread(run_stage)
-    i := i + 1
-  end while
+  mutable t as thread_array := create_threads(team_count, run_stage)
+  join_threads(t)
 end procedure
 
-procedure run_stage()
-  sleep(rand() % 30)
+procedure run_stage(thread_number as int)
+  sleep(rand() % 30, "ms")
   lock(pos_mutex)
   position := position + 1
   print("team finished")

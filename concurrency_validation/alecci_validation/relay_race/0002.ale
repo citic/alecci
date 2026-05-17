@@ -7,7 +7,7 @@ procedure main(argc, argv)
 end procedure
 
 procedure run_stage(thread_number as int)
-  sleep(rand() % 30)
+  sleep(rand() % 30, "ms")
   lock(pos_mutex)
   position := position + 1
   print("team finished")

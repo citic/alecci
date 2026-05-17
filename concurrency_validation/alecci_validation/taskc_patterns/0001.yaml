@@ -1,5 +1,5 @@
 source: 0001.ale
 expected_issues:
-  - thread_leak
+  - none
 timeout: 10
 max_runs: 20
