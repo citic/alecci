@@ -2539,7 +2539,22 @@ class CodeGenerator:
             func = self.module.globals.get(func_name)
         if func is None:
             raise Exception(f"Function '{func_name}' not found in user functions or module.globals.")
-        
+
+        # Coerce arguments to match declared parameter types (e.g. char literal i32 → i8 char param)
+        ftype = func.type.pointee if isinstance(func.type, ir.PointerType) else func.type
+        if hasattr(ftype, 'args'):
+            coerced = []
+            for idx, (arg, expected) in enumerate(zip(args, ftype.args)):
+                if hasattr(arg, 'type') and arg.type != expected:
+                    if isinstance(expected, ir.IntType) and isinstance(arg.type, ir.IntType):
+                        if arg.type.width > expected.width:
+                            arg = self.builder.trunc(arg, expected)
+                        else:
+                            arg = self.builder.zext(arg, expected)
+                coerced.append(arg)
+            # Preserve any extra args (varargs)
+            args = coerced + args[len(ftype.args):]
+
         debug_print(f"DEBUG: About to call function '{func_name}' with {len(args)} args")
         try:
             result = self.builder.call(func, args)

@@ -1,5 +1,6 @@
 source: 0008.ale
 expected_issues:
   - none
+stdin_file: input.txt
 timeout: 10
 max_runs: 1

@@ -1,0 +1,19 @@
+// Regression test: char literal (i32 in IR) passed to char parameter (i8)
+// should be automatically truncated — not a type error.
+
+procedure greet(c as char)
+  if c = 'H' then
+    print "hydrogen"
+  else if c = 'O' then
+    print "oxygen"
+  else
+    print "other"
+  end if
+  end if
+end procedure
+
+procedure main()
+  greet('H')
+  greet('O')
+  greet('N')
+end procedure

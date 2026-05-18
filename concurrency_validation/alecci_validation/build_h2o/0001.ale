@@ -2,6 +2,10 @@ procedure main()
   shared mutable device_barrier as barrier := barrier(3)
   shared mutable hydrogen_multiplex as semaphore := semaphore(2)
   shared mutable oxigen_multiplex as semaphore := semaphore(1)  // mutex
+  shared mutable h_count := 0
+  shared mutable o_count := 0
+  shared mutable molecule_count := 0
+  shared mutable bond_mutex as mutex := mutex()
   mutable atom as char
   while scan `{atom}` do
     case atom of
@@ -11,14 +15,31 @@ procedure main()
   end while
 end procedure
 
-procedure bond()
-  print `bond()`
+procedure bond(atom as char)
+  lock(bond_mutex)
+  if atom = 'H' then
+    h_count := h_count + 1
+  else if atom = 'O' then
+    o_count := o_count + 1
+  else
+    print "Error: invalid atom type"
+  end if
+  end if
+  if h_count = 2 and o_count = 1 then
+    molecule_count := molecule_count + 1
+    h_count := 0
+    o_count := 0
+    unlock(bond_mutex)
+    print `H2O molecule {molecule_count} formed`
+  else
+    unlock(bond_mutex)
+  end if
 end procedure
 
 procedure hydrogen()
   wait(hydrogen_multiplex)
   barrier_wait(device_barrier)
-  bond()
+  bond('H')
   barrier_wait(device_barrier)
   signal(hydrogen_multiplex)
 end procedure
@@ -26,7 +47,7 @@ end procedure
 procedure oxygen()
   wait(oxigen_multiplex)
   barrier_wait(device_barrier)
-  bond()
+  bond('O')
   barrier_wait(device_barrier)
   signal(oxigen_multiplex)
 end procedure

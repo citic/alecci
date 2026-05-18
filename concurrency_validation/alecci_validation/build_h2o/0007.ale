@@ -3,6 +3,10 @@ procedure main()
   shared mutable oxygen_in := semaphore(1)
   shared mutable oxygen_ready := semaphore(0)
   shared mutable hydrogen_ready := semaphore(0)
+  shared mutable h_count := 0
+  shared mutable o_count := 0
+  shared mutable molecule_count := 0
+  shared mutable bond_mutex as mutex := mutex()
   mutable atom as char
   while scan `{atom}` do
     case atom of
@@ -12,15 +16,32 @@ procedure main()
   end while
 end procedure
 
-procedure bond()
-  print `bond()`
+procedure bond(atom as char)
+  lock(bond_mutex)
+  if atom = 'H' then
+    h_count := h_count + 1
+  else if atom = 'O' then
+    o_count := o_count + 1
+  else
+    print "Error: invalid atom type"
+  end if
+  end if
+  if h_count = 2 and o_count = 1 then
+    molecule_count := molecule_count + 1
+    h_count := 0
+    o_count := 0
+    unlock(bond_mutex)
+    print `H2O molecule {molecule_count} formed`
+  else
+    unlock(bond_mutex)
+  end if
 end procedure
 
 procedure hydrogen()
   wait(hydrogen_in)
   signal(hydrogen_ready)
   wait(oxygen_ready)
-  bond()
+  bond('H')
   signal(hydrogen_in, 2)
 end procedure
 
@@ -28,6 +49,6 @@ procedure oxygen()
   wait(oxygen_in)
   signal(oxygen_ready, 2)
   wait(hydrogen_ready, 2)
-  bond()
+  bond('O')
   signal(oxygen_in)
 end procedure
