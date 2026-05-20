@@ -47,6 +47,8 @@ reserved = {
     'mutex' : 'MUTEX',
     'barrier' : 'BARRIER',
     'queue' : 'QUEUE',
+    'parallel' : 'PARALLEL',
+    'with' : 'WITH',
     # Dynamic typing
     'variant' : 'VARIANT',
     # Boolean literals

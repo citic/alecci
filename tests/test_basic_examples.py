@@ -136,6 +136,15 @@ EXAMPLES = {
             "For loop test end",
         ],
     },
+    "parallel_for": {
+        "file": "parallel_for.ale",
+        "expect": [
+            "parallel for sum (12 elems, 4 threads) = 132",
+            "parallel for sum (10 elems, 3 threads) = 55",
+            "parallel for sum (sequential passes) = 64",
+            "Parallel for test completed successfully",
+        ],
+    },
     "queue": {
         "file": "queue.ale",
         "expect": [
@@ -318,6 +327,11 @@ def test_example_queue(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_ex
 def test_example_case(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
     out = _compile_and_run("case", EXAMPLES["case"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] case")
+
+
+def test_example_parallel_for(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    out = _compile_and_run("parallel_for", EXAMPLES["parallel_for"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] parallel_for")
 
 
 def test_example_undefined_variable_scan(repo_root: Path, bin_dir: Path, compile_pseudo_fn, capsys):

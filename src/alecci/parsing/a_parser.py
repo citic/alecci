@@ -134,6 +134,7 @@ def p_statement(p):
                 |  RETURN expression
                 |  if_condition
                 |  for_loop
+                |  parallel_for_loop
                 |  while_loop
                 |  case_statement
                 |  BREAK WHILE
@@ -175,6 +176,18 @@ def p_for_loop(p):
         'start': p[4],
         'end': p[6],
         'body': p[8]
+    }
+
+def p_parallel_for_loop(p):
+    ''' parallel_for_loop : PARALLEL FOR ID ASSIGN expression TO expression WITH expression THREAD DO body END PARALLEL FOR
+    '''
+    p[0] = {
+        'type': 'parallel_for',
+        'iterator': p[3],
+        'start': p[5],
+        'end': p[7],
+        'num_threads': p[9],
+        'body': p[12]
     }
 
 def p_while_loop(p):

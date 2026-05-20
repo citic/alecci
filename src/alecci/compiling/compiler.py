@@ -3,7 +3,7 @@ from llvmlite import ir
 import sys
 
 from .base_types import get_type
-from .threading_utils import create_threads, create_thread, join_threads, join_thread
+from .threading_utils import create_threads, create_thread, join_threads, join_thread, _get_pthread_create
 from ..parsing.globals import debug_print
 from . import variant_utils
 
@@ -105,6 +105,7 @@ class CodeGenerator:
         self.has_explicit_return: bool = False
         self.loop_exit_stack: List[ir.Block] = []  # stack of loop-exit blocks for break
         self.thread_array_counts = {}  # var_name -> LLVM value for thread count
+        self._pfor_counter = 0  # unique suffix for generated parallel-for helpers
         # Performance mode: insert sched_yield() and TSan instrumentation for race detection
         self.performance_mode: bool = performance_mode
         self.sched_yield_fn = None  # Will be initialized in compile()
@@ -1332,7 +1333,14 @@ class CodeGenerator:
                     value = self.builder.load(value)
 
             debug_print(f"DEBUG: Array assignment - store value={value} → {element_ptr}")
+            if self.is_shared_mutable_variable(array_name):
+                elem_size = (4 if array_type in ('array_int', 'int') else
+                             8 if array_type in ('array_float', 'float') else 4)
+                self.insert_yield()
+                self.insert_tsan_call(element_ptr, elem_size, is_write=True)
             self.builder.store(value, element_ptr)
+            if self.is_shared_mutable_variable(array_name):
+                self.insert_yield()
         else:
             raise Exception(f"Unsupported assignment target type: {target}")
 
@@ -1639,6 +1647,175 @@ class CodeGenerator:
             self.builder.store(next_idx, ptr)
             self.builder.branch(cond_bb)
         self.builder.position_at_start(end_bb)
+
+    def visit_parallel_for(self, node: Dict[str, Any]) -> None:
+        i32 = ir.IntType(32)
+        voidptr_ty = ir.IntType(8).as_pointer()
+
+        # Evaluate range/count in the caller's context before spawning
+        num_threads_val = self._auto_extract_value(self.visit(node['num_threads']), 'int')
+        range_start_val = self._auto_extract_value(self.visit(node['start']), 'int')
+        range_end_val   = self._auto_extract_value(self.visit(node['end']), 'int')
+
+        counter = self._pfor_counter
+        self._pfor_counter += 1
+        worker_name  = f'_pfor_worker_{counter}'
+        wrapper_name = f'_pfor_wrapper_{counter}'
+
+        from .base_types import get_variant_type, get_variant_type_tag_enum
+        variant_ty = get_variant_type()
+
+        # Worker: (thread_number, n_threads, range_start, range_end) -> variant
+        worker_ty   = ir.FunctionType(variant_ty, [i32, i32, i32, i32])
+        worker_func = ir.Function(self.module, worker_ty, name=worker_name)
+        self.funcs[worker_name] = worker_func
+
+        # ----- compile body into worker -----
+        worker_block = worker_func.append_basic_block('entry')
+
+        old_builder    = self.builder
+        old_locals     = self.locals.copy()
+        old_func_name  = self.current_function_name
+        old_ret        = self.has_explicit_return
+        old_loop_stack = self.loop_exit_stack[:]
+        old_mutexes    = self.local_mutexes[:]
+        old_semaphores = self.local_semaphores[:]
+        old_barriers   = self.local_barriers[:]
+
+        self.builder               = ir.IRBuilder(worker_block)
+        self.locals                = {}
+        self.current_function_name = worker_name
+        self.has_explicit_return   = False
+        self.loop_exit_stack       = []
+        self.local_mutexes         = []
+        self.local_semaphores      = []
+        self.local_barriers        = []
+
+        thread_num_arg, n_threads_arg, r_start_arg, r_end_arg = worker_func.args
+
+        # Expose thread_number as a readable local
+        thread_num_ptr = self.builder.alloca(i32, name='thread_number')
+        self.builder.store(thread_num_arg, thread_num_ptr)
+        self.locals['thread_number'] = (thread_num_ptr, 'int', False)
+
+        # Compute per-thread slice; last thread absorbs any remainder
+        one         = ir.Constant(i32, 1)
+        span        = self.builder.sub(r_end_arg, r_start_arg)
+        chunk       = self.builder.sdiv(span, n_threads_arg)
+        my_start    = self.builder.add(r_start_arg, self.builder.mul(thread_num_arg, chunk))
+        regular_end = self.builder.add(my_start, chunk)
+        is_last     = self.builder.icmp_signed('==', thread_num_arg,
+                                               self.builder.sub(n_threads_arg, one))
+        my_end      = self.builder.select(is_last, r_end_arg, regular_end)
+
+        # Loop variable
+        iterator = node['iterator']
+        iter_ptr = self.builder.alloca(i32, name=iterator)
+        self.builder.store(my_start, iter_ptr)
+        self.locals[iterator] = (iter_ptr, 'int', False)
+
+        cond_bb = self.builder.append_basic_block('pfor.cond')
+        body_bb = self.builder.append_basic_block('pfor.body')
+        end_bb  = self.builder.append_basic_block('pfor.end')
+
+        self.builder.branch(cond_bb)
+        self.builder.position_at_start(cond_bb)
+        idx  = self.builder.load(iter_ptr)
+        cond = self.builder.icmp_signed('<', idx, my_end)
+        self.builder.cbranch(cond, body_bb, end_bb)
+
+        self.builder.position_at_start(body_bb)
+        self.loop_exit_stack.append(end_bb)
+        self.visit(node['body'])
+        self.loop_exit_stack.pop()
+        if not self.builder.block.is_terminated:
+            idx = self.builder.load(iter_ptr)
+            self.builder.store(self.builder.add(idx, one), iter_ptr)
+            self.builder.branch(cond_bb)
+
+        self.builder.position_at_start(end_bb)
+        type_tags = get_variant_type_tag_enum()
+        null_variant = ir.Constant(variant_ty, [
+            ir.Constant(i32, type_tags['null']),
+            ir.Constant(ir.ArrayType(ir.IntType(8), 16), [ir.Constant(ir.IntType(8), 0)] * 16)
+        ])
+        self.builder.ret(null_variant)
+
+        # Restore caller context
+        self.builder               = old_builder
+        self.locals                = old_locals
+        self.current_function_name = old_func_name
+        self.has_explicit_return   = old_ret
+        self.loop_exit_stack       = old_loop_stack
+        self.local_mutexes         = old_mutexes
+        self.local_semaphores      = old_semaphores
+        self.local_barriers        = old_barriers
+
+        # ----- pthread wrapper: void* wrapper(void* arg) -----
+        arg_struct_type = ir.LiteralStructType([i32, i32, i32, i32])
+        wrapper_ty      = ir.FunctionType(voidptr_ty, [voidptr_ty])
+        wrapper_func    = ir.Function(self.module, wrapper_ty, name=wrapper_name)
+
+        w_block   = wrapper_func.append_basic_block('entry')
+        w_builder = ir.IRBuilder(w_block)
+        struct_ptr = w_builder.bitcast(wrapper_func.args[0], arg_struct_type.as_pointer())
+        fields = [
+            w_builder.load(w_builder.gep(struct_ptr,
+                                         [ir.Constant(i32, 0), ir.Constant(i32, fi)]))
+            for fi in range(4)
+        ]
+        # fields = [thread_number, n_threads, range_start, range_end]
+        w_builder.call(worker_func, fields)
+        w_builder.ret(ir.Constant(voidptr_ty, None))
+
+        # ----- spawn loop -----
+        pthread_create, thread_type, _ = _get_pthread_create(self.module)
+        pthread_join_fn = self._declare_external_fn(
+            'pthread_join', i32, [thread_type, voidptr_ty.as_pointer()])
+
+        threads_arr = self.builder.alloca(
+            ir.ArrayType(thread_type, 1024), name=f'_pfor_threads_{counter}')
+        args_arr = self.builder.alloca(
+            ir.ArrayType(arg_struct_type, 1024), name=f'_pfor_args_{counter}')
+
+        cur_func = self.builder.function
+
+        def _emit_loop(label, limit, body_fn):
+            cond_bb_ = cur_func.append_basic_block(f'{label}_cond')
+            body_bb_ = cur_func.append_basic_block(f'{label}_body')
+            end_bb_  = cur_func.append_basic_block(f'{label}_end')
+            idx_ptr  = self.builder.alloca(i32, name=f'{label}_idx')
+            self.builder.store(ir.Constant(i32, 0), idx_ptr)
+            self.builder.branch(cond_bb_)
+            self.builder.position_at_start(cond_bb_)
+            k = self.builder.load(idx_ptr)
+            self.builder.cbranch(self.builder.icmp_signed('<', k, limit),
+                                 body_bb_, end_bb_)
+            self.builder.position_at_start(body_bb_)
+            k = self.builder.load(idx_ptr)
+            body_fn(k)
+            self.builder.store(self.builder.add(k, ir.Constant(i32, 1)), idx_ptr)
+            self.builder.branch(cond_bb_)
+            self.builder.position_at_start(end_bb_)
+
+        def spawn_body(k):
+            t_slot  = self.builder.gep(threads_arr, [ir.Constant(i32, 0), k])
+            a_slot  = self.builder.gep(args_arr,    [ir.Constant(i32, 0), k])
+            for fi, val in enumerate([k, num_threads_val, range_start_val, range_end_val]):
+                fptr = self.builder.gep(a_slot, [ir.Constant(i32, 0), ir.Constant(i32, fi)])
+                self.builder.store(val, fptr)
+            a_void = self.builder.bitcast(a_slot, voidptr_ty)
+            self.builder.call(pthread_create,
+                              [t_slot, ir.Constant(voidptr_ty, None), wrapper_func, a_void])
+
+        def join_body(k):
+            t_slot   = self.builder.gep(threads_arr, [ir.Constant(i32, 0), k])
+            t_handle = self.builder.load(t_slot)
+            self.builder.call(pthread_join_fn,
+                              [t_handle, ir.Constant(voidptr_ty.as_pointer(), None)])
+
+        _emit_loop(f'pfor_spawn_{counter}', num_threads_val, spawn_body)
+        _emit_loop(f'pfor_join_{counter}',  num_threads_val, join_body)
 
     def visit_print(self, node: Dict[str, Any]) -> None:
         expression = node.get('expression')
@@ -2663,8 +2840,17 @@ class CodeGenerator:
         if isinstance(element_type, str):
             actual = element_type.removeprefix('array_')
             if actual in _LOAD_TYPES:
-                return self.builder.load(element_ptr)
+                if actual != 'thread' and self.is_shared_mutable_variable(array_name):
+                    elem_size = 8 if actual == 'float' else 4
+                    self.insert_yield()
+                    self.insert_tsan_call(element_ptr, elem_size, is_write=False)
+                loaded = self.builder.load(element_ptr)
+                if actual != 'thread' and self.is_shared_mutable_variable(array_name):
+                    self.insert_yield()
+                return loaded
             return element_ptr
+        if self.is_shared_mutable_variable(array_name):
+            self.insert_tsan_call(element_ptr, 4, is_write=False)
         return self.builder.load(element_ptr)
 
     def visit_return(self, node: Dict[str, Any]) -> None:
