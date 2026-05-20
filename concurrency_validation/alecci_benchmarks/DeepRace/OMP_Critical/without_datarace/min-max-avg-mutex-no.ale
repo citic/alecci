@@ -1,0 +1,24 @@
+// No race: parallel for computes array values and updates three shared scalars inside one mutex
+// Inspired by OMP_Critical/without_datarace/lab2_openmp_-_main.c
+// No race: entire block (min, max, avg update) is serialized by a single mutex
+procedure main()
+    shared mutable c := array(10, 0)
+    shared mutable smallest := 100
+    shared mutable largest := 0
+    shared mutable total := 0
+    shared mutable mtx as mutex := mutex()
+    for i := 0 to 10 do
+        c[i] := (i * 7) mod 10
+    end for
+    parallel for i := 0 to 10 with 4 thread do
+        lock(mtx)
+        if c[i] < smallest then
+            smallest := c[i]
+        end if
+        if c[i] > largest then
+            largest := c[i]
+        end if
+        total := total + c[i]
+        unlock(mtx)
+    end parallel for
+end procedure

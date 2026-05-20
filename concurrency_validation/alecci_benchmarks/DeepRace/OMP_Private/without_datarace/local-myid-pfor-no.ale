@@ -1,0 +1,9 @@
+// No race: parallel for, myid is a local variable; result[i] written at unique index per iteration
+// Inspired by OMP_Private/without_datarace/hello_for_-_main.c (private(myid, num_thds) in omp parallel for)
+procedure main()
+    shared mutable result := array(16, 0)
+    parallel for i := 0 to 16 with 4 thread do
+        mutable myid := thread_number
+        result[i] := myid
+    end parallel for
+end procedure

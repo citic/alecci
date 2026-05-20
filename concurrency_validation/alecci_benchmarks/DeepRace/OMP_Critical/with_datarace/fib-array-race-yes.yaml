@@ -1,0 +1,7 @@
+# fib-array-race-yes – parallel for computes Fibonacci, fib[i]=fib[i-1]+fib[i-2], loop-carried race
+# Inspired by fibomp_-_main.c (parallel fib, loop-carried dependence, no synchronization)
+# Expected: data race on fib array elements
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

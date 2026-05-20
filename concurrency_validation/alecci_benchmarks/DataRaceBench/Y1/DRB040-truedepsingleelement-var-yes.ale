@@ -1,0 +1,14 @@
+// DRB040 – True dependence on single element (variant): larger array
+// Race: a[0] (read) vs a[0] (written when i=0)
+// label: Y1
+procedure main()
+    shared mutable a := array(500, 0)
+    a[0] := 2
+    for i := 1 to 500 do
+        a[i] := i
+    end for
+
+    parallel for i := 0 to 500 with 4 thread do
+        a[i] := a[i] + a[0]
+    end parallel for
+end procedure

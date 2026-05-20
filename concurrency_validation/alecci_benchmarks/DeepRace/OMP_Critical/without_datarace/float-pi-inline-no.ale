@@ -1,0 +1,12 @@
+// No race: parallel for PI computation, each iteration updates sum inside critical section
+// Inspired by OMP_Critical/without_datarace/intel_pi_-_main.c (omp critical sum += 4/(1+x*x) per iter)
+procedure main()
+    shared mutable sum as float := 0.0
+    shared mutable mtx as mutex := mutex()
+    parallel for i := 0 to 100000 with 4 thread do
+        mutable x as float := i * 0.00001 + 0.000005
+        lock(mtx)
+        sum := sum + 4.0 / (1.0 + (x * x))
+        unlock(mtx)
+    end parallel for
+end procedure

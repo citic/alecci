@@ -1,0 +1,17 @@
+// Race: each thread accumulates local s to 10000, then adds to shared m without lock
+// Inspired by OMP_Critical/with_datarace/datasharing_-_main.c (firstprivate(s), m += s no critical)
+procedure main()
+    shared mutable m := 0
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable s := 0
+    mutable i := 0
+    while i < 10000 do
+        s := s + 1
+        i := i + 1
+    end while
+    m := m + s
+end procedure

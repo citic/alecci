@@ -1,0 +1,12 @@
+// DRB017 – Output dependence (variant): same race, different array size
+// Race: x (write) vs x (write/read)
+// label: Y1
+procedure main()
+    shared mutable a := array(200, 0)
+    shared mutable x := 10
+
+    parallel for i := 0 to 200 with 4 thread do
+        a[i] := x
+        x := i
+    end parallel for
+end procedure

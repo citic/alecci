@@ -1,0 +1,12 @@
+// DRB022 – Missing reduction (variant): same race, nested loop over flattened 2D array
+// Race: sum (write) vs sum (write/read)
+// label: Y2
+procedure main()
+    shared mutable u := array(10000, 1)
+    shared mutable sum := 0
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 100 do
+            sum := sum + u[i * 100 + j]
+        end for
+    end parallel for
+end procedure

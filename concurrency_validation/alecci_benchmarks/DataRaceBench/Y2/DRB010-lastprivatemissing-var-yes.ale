@@ -1,0 +1,10 @@
+// DRB010 – Missing lastprivate (variant): x written without protection
+// Race: x (write) vs x (write) across threads — no synchronization
+// label: Y2
+procedure main()
+    shared mutable x := 0
+
+    parallel for i := 0 to 10000 with 4 thread do
+        x := i
+    end parallel for
+end procedure

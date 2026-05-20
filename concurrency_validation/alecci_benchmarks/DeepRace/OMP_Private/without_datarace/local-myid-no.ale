@@ -1,0 +1,13 @@
+// No race: myid is a local (mutable) variable in each worker, writes to unique result slot
+// Inspired by OMP_Private/without_datarace/1.1-hello_-_main.c (private(myid, nthreads))
+procedure main()
+    shared mutable result := array(4, 0)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable myid := thread_number
+    mutable nthreads := 4
+    result[myid] := myid * nthreads
+end procedure

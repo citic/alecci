@@ -1,0 +1,6 @@
+# float-pi-partial-no – parallel for PI with local partial_sum, critical section merges into sum
+# Inspired by pi1_-_main.c (omp parallel for schedule(static), local partial_sum, omp critical sum += partial_sum)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

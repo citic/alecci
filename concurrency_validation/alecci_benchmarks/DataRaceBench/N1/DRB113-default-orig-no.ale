@@ -1,0 +1,18 @@
+// DRB113 – Default shared/private: two independent DOALL loops over separate arrays
+// No race: a and b are disjoint; each iteration touches a unique element in its array
+// label: N1
+procedure main()
+    shared mutable a := array(10000, 0)
+    shared mutable b := array(10000, 0)
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 100 do
+            a[i * 100 + j] := a[i * 100 + j] + 1
+        end for
+    end parallel for
+
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 100 do
+            b[i * 100 + j] := b[i * 100 + j] + 1
+        end for
+    end parallel for
+end procedure

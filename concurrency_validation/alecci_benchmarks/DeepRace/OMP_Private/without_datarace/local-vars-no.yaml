@@ -1,0 +1,6 @@
+# local-vars-no – parallel for with fully independent per-index operations
+# Inspired by for-loop_-_main.c (private(i), no shared accumulator)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

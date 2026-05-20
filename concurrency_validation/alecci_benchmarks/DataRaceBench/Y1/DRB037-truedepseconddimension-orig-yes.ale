@@ -1,0 +1,19 @@
+// DRB037 – True dependence second dimension: b[i*100+j] = b[i*100+(j-1)], outer i sequential, inner j parallel
+// Race: thread writes b[i*100+j], next thread reads b[i*100+(j-1)] = b[i*100+chunk_boundary]
+// label: Y1
+procedure main()
+    shared mutable b := array(10000, 0)
+    shared mutable row_i := 0
+    for i := 0 to 100 do
+        for j := 0 to 100 do
+            b[i * 100 + j] := i * 100 + j
+        end for
+    end for
+
+    for i := 0 to 100 do
+        row_i := i
+        parallel for j := 1 to 100 with 4 thread do
+            b[row_i * 100 + j] := b[row_i * 100 + (j - 1)]
+        end parallel for
+    end for
+end procedure

@@ -1,0 +1,17 @@
+// Race: threads compute local sums then merge into total without critical section
+// Inspired by OMP_Critical/with_datarace/hitung_-_main.c
+// Race: total (write) vs total (read/write) across threads
+procedure main()
+    shared mutable total := 0
+    parallel for k := 0 to 4 with 4 thread do
+        mutable local_total := 0
+        mutable start := thread_number * 25 + 1
+        mutable end_val := (thread_number + 1) * 25
+        mutable i := start
+        while i <= end_val do
+            local_total := local_total + i
+            i := i + 1
+        end while
+        total := total + local_total
+    end parallel for
+end procedure

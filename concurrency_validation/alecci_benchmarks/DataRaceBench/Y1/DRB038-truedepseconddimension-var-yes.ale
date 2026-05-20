@@ -1,0 +1,19 @@
+// DRB038 – True dependence second dimension (variant): same pattern, smaller array
+// Race: same boundary race as DRB037
+// label: Y1
+procedure main()
+    shared mutable b := array(2500, 0)
+    shared mutable row_i := 0
+    for i := 0 to 50 do
+        for j := 0 to 50 do
+            b[i * 50 + j] := i * 50 + j
+        end for
+    end for
+
+    for i := 0 to 50 do
+        row_i := i
+        parallel for j := 1 to 50 with 4 thread do
+            b[row_i * 50 + j] := b[row_i * 50 + (j - 1)]
+        end parallel for
+    end for
+end procedure

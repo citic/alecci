@@ -1,0 +1,10 @@
+// Race: all parallel for threads write to shared variable x (should be private)
+// Inspired by OMP_Private/with_datarace/lec4_-_main.c
+// In OpenMP: x is shared by default; missing private(x) causes concurrent writes
+// Race: x (write) vs x (read/write) across threads
+procedure main()
+    shared mutable x := 0
+    parallel for i := 0 to 100 with 4 thread do
+        x := thread_number
+    end parallel for
+end procedure

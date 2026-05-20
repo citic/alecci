@@ -1,0 +1,6 @@
+# float-pi-cyclic-no – 4 threads compute cyclic PI partial sums, merge with mutex
+# Inspired by 5_pi_smp_critical_-_main.c (local s per thread, omp critical sum += s)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

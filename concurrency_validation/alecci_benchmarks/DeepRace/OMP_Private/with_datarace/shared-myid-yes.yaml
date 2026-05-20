@@ -1,0 +1,7 @@
+# shared-myid-yes – all threads write thread ID to shared myid (missing private)
+# Inspired by 1.2-hello-single_-_main.c, for-work-sharing_-_main.c, single_master_-_main.c
+# Expected: data race on myid
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

@@ -1,0 +1,7 @@
+# shared-a-pfor-yes – parallel for writes i+1 to shared scalar a without mutex
+# Inspired by exemple_OMP_22_-_main.c (omp parallel for private(i) shared(a), a = i+1 no critical)
+# Expected: data race on a
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

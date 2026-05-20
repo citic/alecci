@@ -1,0 +1,7 @@
+# array-max-nolock2-yes – parallel for finds max of 10-element array without mutex
+# Inspired by a_-_main.c (omp parallel for schedule(static), no critical on max update)
+# Expected: data race on max
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

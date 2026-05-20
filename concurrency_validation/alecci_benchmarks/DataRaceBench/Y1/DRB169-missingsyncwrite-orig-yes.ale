@@ -1,0 +1,23 @@
+// DRB169 – Missing sync write: multiple threads write r1[k] concurrently
+// Race: r1[k] (write by thread i1,j1) vs r1[k] (write by thread i2,j2) — same k
+// label: Y1
+procedure main()
+    shared mutable r1 := array(8, 0)
+    shared mutable r := array(512, 0)
+
+    for i := 0 to 8 do
+        for j := 0 to 8 do
+            for k := 0 to 8 do
+                r[i * 64 + j * 8 + k] := i
+            end for
+        end for
+    end for
+
+    parallel for i := 1 to 7 with 4 thread do
+        for j := 1 to 7 do
+            for k := 0 to 8 do
+                r1[k] := r[i * 64 + (j - 1) * 8 + k] + r[i * 64 + (j + 1) * 8 + k] + r[(i - 1) * 64 + j * 8 + k] + r[(i + 1) * 64 + j * 8 + k]
+            end for
+        end for
+    end parallel for
+end procedure

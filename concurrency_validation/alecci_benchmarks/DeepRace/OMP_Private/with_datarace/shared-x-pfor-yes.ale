@@ -1,0 +1,14 @@
+// Race: parallel for writes c[i] * 10 to shared x without mutex across all iterations
+// Inspired by OMP_Private/with_datarace/array_sum_-_main.c (x = c[i]*10 in omp parallel for, x shared)
+procedure main()
+    shared mutable c := array(100, 0)
+    shared mutable x := 0
+    mutable i := 0
+    while i < 100 do
+        c[i] := i + 1
+        i := i + 1
+    end while
+    parallel for i := 0 to 100 with 4 thread do
+        x := c[i] * 10
+    end parallel for
+end procedure

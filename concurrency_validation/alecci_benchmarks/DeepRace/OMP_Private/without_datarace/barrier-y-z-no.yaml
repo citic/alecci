@@ -1,0 +1,6 @@
+# barrier-y-z-no – thread 0 sets y, thread 1 sets z, barrier synchronizes before array fill
+# Inspired by barrier1_-_main.c (thread 0: y=10, thread 1: z=20, omp barrier, then omp for x[k]=y+z+k)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

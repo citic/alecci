@@ -1,0 +1,16 @@
+// DRB170 – Nested loops with private temporary: tmp1 is local (private), no sharing
+// No race: outer i parallel; a[i*144+j*12+k] accessed by exactly one thread;
+//   tmp1 is a local variable (naturally private in Alecci)
+// label: N2
+procedure main()
+    shared mutable a := array(1728, 0)
+
+    parallel for i := 0 to 12 with 4 thread do
+        for j := 0 to 12 do
+            for k := 0 to 12 do
+                mutable tmp1 := 2
+                a[i * 144 + j * 12 + k] := tmp1 + 4
+            end for
+        end for
+    end parallel for
+end procedure

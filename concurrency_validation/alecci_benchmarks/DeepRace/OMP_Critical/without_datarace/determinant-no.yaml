@@ -1,0 +1,6 @@
+# determinant-no – 2 threads compute 2x2 matrix permanent products, mutex-protected merge into sum_p
+# Inspired by determ_-_main.c (omp parallel num_threads(n), omp critical around product and sum_p += sum)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

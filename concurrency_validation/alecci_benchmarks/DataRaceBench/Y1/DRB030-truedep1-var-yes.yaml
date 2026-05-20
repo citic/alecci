@@ -1,0 +1,7 @@
+# DRB benchmark: DRB030-truedep1-var-yes
+# Expected: data race (racy benchmark from DataRaceBench)
+
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

@@ -1,0 +1,26 @@
+// No race: 4 threads compute partial array sums, merge into global sum with mutex
+// Inspired by POSIX_Lock_Primitives/without_datarace/010_mutex_array_sum.c
+// No race: each thread owns a separate array segment; mutex guards global merge
+procedure main()
+    shared mutable arr := array(500, 0)
+    shared mutable sum := 0
+    shared mutable mtx as mutex := mutex()
+    for i := 0 to 500 do
+        arr[i] := i
+    end for
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable local_sum := 0
+    mutable start := thread_number * 125
+    mutable i := 0
+    while i < 125 do
+        local_sum := local_sum + arr[start + i]
+        i := i + 1
+    end while
+    lock(mtx)
+    sum := sum + local_sum
+    unlock(mtx)
+end procedure

@@ -1,0 +1,6 @@
+# array-negate-no – parallel for negates each element x[i] := -y[i], independent writes
+# Inspired by looptest_1_-_main.c (omp parallel default(none) shared(x,y,n) private(i), x[i]=-1*y[i])
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

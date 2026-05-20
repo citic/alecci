@@ -1,0 +1,8 @@
+// Race: parallel for, each thread increments totalPoints without mutex
+// Inspired by OMP_Critical/with_datarace/5.40_-_main.c (Monte Carlo PI, totalPoints++ no critical)
+procedure main()
+    shared mutable total_points := 0
+    parallel for i := 0 to 10000 with 4 thread do
+        total_points := total_points + 1
+    end parallel for
+end procedure

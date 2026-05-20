@@ -1,0 +1,7 @@
+# float-pi-nolock-yes – 2 threads compute cyclic PI partial sums, add to shared pi without lock
+# Inspired by exercise_3_-_main.c (parallel pi += sum * step, no critical)
+# Expected: data race on pi
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

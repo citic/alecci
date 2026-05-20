@@ -1,0 +1,20 @@
+// Race: 4 threads compute PI partial sums and add directly to shared sum without lock
+// Inspired by OMP_Private/with_datarace/PiReduction_-_main.c (missing reduction clause on sum)
+procedure main()
+    shared mutable sum as float := 0.0
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable h as float := 0.0001
+    mutable chunk := 2500
+    mutable ini := thread_number * chunk
+    mutable fin := ini + chunk
+    mutable i := ini
+    while i < fin do
+        mutable x as float := i * h + h * 0.5
+        sum := sum + 4.0 / (1.0 + (x * x))
+        i := i + 1
+    end while
+end procedure

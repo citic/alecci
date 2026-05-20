@@ -1,0 +1,15 @@
+// Race: parallel for computes local private_sum from array, adds to shared total without lock
+// Inspired by OMP_Critical/with_datarace/mapexpCritical_-_main.c (sum += private_sum, no critical)
+procedure main()
+    shared mutable x := array(1000, 0)
+    shared mutable total := 0
+    mutable i := 0
+    while i < 1000 do
+        x[i] := i + 1
+        i := i + 1
+    end while
+    parallel for i := 0 to 1000 with 4 thread do
+        mutable private_sum := x[i]
+        total := total + private_sum
+    end parallel for
+end procedure

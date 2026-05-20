@@ -1,0 +1,6 @@
+# local-tmp-no – mutable local tmp inside parallel for (private per iteration)
+# Corrected version of shared-tmp-yes.ale: tmp is local (mutable) not shared
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

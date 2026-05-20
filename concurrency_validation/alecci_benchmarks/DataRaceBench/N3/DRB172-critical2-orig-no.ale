@@ -1,0 +1,28 @@
+// DRB172 – Critical + barrier + single: parallel init, then critical update q[9],
+//   barrier, then single correction of q[9]
+// No race: critical serializes all q[9] updates; barrier before single ensures ordering
+// label: N2, N3
+procedure main()
+    shared mutable q := array(10, 0)
+    shared mutable qq := array(10, 0)
+    shared mutable mtx as mutex := mutex()
+    shared mutable b as barrier := barrier(4)
+    for i := 0 to 10 do
+        qq[i] := i
+        q[i] := i
+    end for
+
+    parallel for i := 0 to 10 with 4 thread do
+        q[i] := q[i] + qq[i]
+    end parallel for
+
+    parallel for k := 0 to 4 with 4 thread do
+        lock(mtx)
+        q[9] := q[9] + 1
+        unlock(mtx)
+        barrier_wait(b)
+        if thread_number = 0 then
+            q[9] := q[9] - 1
+        end if
+    end parallel for
+end procedure

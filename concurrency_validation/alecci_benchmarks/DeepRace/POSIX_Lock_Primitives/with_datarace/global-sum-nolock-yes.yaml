@@ -1,0 +1,6 @@
+# global-sum-nolock-yes – 4 threads merge local sums into total without mutex
+# Expected: data race on total
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

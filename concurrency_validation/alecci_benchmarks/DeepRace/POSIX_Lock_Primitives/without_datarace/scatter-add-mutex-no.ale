@@ -1,0 +1,24 @@
+// No race: 4 threads each add a scaled vector to shared result array, mutex-protected per element
+// Inspired by POSIX_Lock_Primitives/without_datarace/tp5_2.c (matrix-vector product, one column per thread)
+// No race: each result[i] update is serialized by the mutex
+procedure main()
+    shared mutable values := array(10, 0)
+    shared mutable result := array(10, 0)
+    shared mutable mtx as mutex := mutex()
+    for i := 0 to 10 do
+        values[i] := i + 1
+    end for
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable factor := thread_number + 1
+    mutable i := 0
+    while i < 10 do
+        lock(mtx)
+        result[i] := result[i] + factor * values[i]
+        unlock(mtx)
+        i := i + 1
+    end while
+end procedure

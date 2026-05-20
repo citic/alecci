@@ -1,0 +1,6 @@
+# array-max-critical2-no – parallel for finds max among elements divisible by 7, mutex-protected update
+# Inspired by omp12_-_main.c (omp parallel for shared(max), omp critical around max update)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

@@ -1,0 +1,12 @@
+// Race: 5 threads each write their thread ID to shared i without mutex
+// Inspired by OMP_Critical/with_datarace/hola_-_main.c (shared(i), i = thread_id)
+procedure main()
+    shared mutable i := 0
+    mutable threads := create_threads(5, worker)
+    join_threads(threads, 5)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable id := thread_number
+    i := id
+end procedure

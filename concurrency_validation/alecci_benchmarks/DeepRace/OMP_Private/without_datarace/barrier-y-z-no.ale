@@ -1,0 +1,24 @@
+// No race: thread 0 sets y, thread 1 sets z, barrier ensures both visible before array fill
+// Inspired by OMP_Private/without_datarace/barrier1_-_main.c (thread 0: y=10, thread 1: z=20, omp barrier)
+procedure main()
+    shared mutable y := 0
+    shared mutable z := 0
+    shared mutable x := array(10, 0)
+    shared mutable bar as barrier := barrier(2)
+    mutable threads := create_threads(2, worker)
+    join_threads(threads, 2)
+end procedure
+
+procedure worker(thread_number as int)
+    if thread_number = 0 then
+        y := 10
+    else
+        z := 20
+    end if
+    barrier_wait(bar)
+    mutable k := thread_number
+    while k < 10 do
+        x[k] := y + z + k
+        k := k + 2
+    end while
+end procedure

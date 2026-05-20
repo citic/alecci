@@ -1,0 +1,21 @@
+// No race: each thread updates local_max[thread_number], each slot written by exactly one thread
+// Inspired by OMP_Private/without_datarace/examQuestion_-_main.c (local_max[thread] per-thread arrays)
+procedure main()
+    shared mutable data := array(100, 0)
+    shared mutable local_max := array(4, 0)
+    mutable i := 0
+    while i < 100 do
+        if i < 5 then
+            data[i] := (i + 1) * 30
+        else
+            data[i] := i
+        end if
+        i := i + 1
+    end while
+    parallel for i := 0 to 100 with 4 thread do
+        mutable t := thread_number
+        if data[i] > local_max[t] then
+            local_max[t] := data[i]
+        end if
+    end parallel for
+end procedure

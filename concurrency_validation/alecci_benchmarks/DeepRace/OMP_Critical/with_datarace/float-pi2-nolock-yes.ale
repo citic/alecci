@@ -1,0 +1,19 @@
+// Race: 2 threads compute cyclic PI partial sums, add to shared pi without lock
+// Inspired by OMP_Critical/with_datarace/intepar2_-_main.c (same pattern, different source)
+procedure main()
+    shared mutable pi as float := 0.0
+    mutable threads := create_threads(2, worker)
+    join_threads(threads, 2)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable step as float := 0.00001
+    mutable s as float := 0.0
+    mutable i := thread_number
+    while i < 100000 do
+        mutable x as float := i * step + step * 0.5
+        s := s + 4.0 / (1.0 + (x * x))
+        i := i + 2
+    end while
+    pi := pi + s * step
+end procedure

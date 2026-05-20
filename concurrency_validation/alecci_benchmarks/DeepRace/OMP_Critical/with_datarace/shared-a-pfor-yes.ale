@@ -1,0 +1,8 @@
+// Race: parallel for writes i+1 to shared scalar a without mutex
+// Inspired by OMP_Critical/with_datarace/exemple_OMP_22_-_main.c (shared a = i+1 in omp parallel for)
+procedure main()
+    shared mutable a := 0
+    parallel for i := 0 to 8 with 4 thread do
+        a := i + 1
+    end parallel for
+end procedure

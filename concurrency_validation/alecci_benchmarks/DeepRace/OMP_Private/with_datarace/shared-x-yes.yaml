@@ -1,0 +1,7 @@
+# shared-x-yes – all threads write to shared x (missing private clause)
+# Inspired by lec4_-_main.c (x = omp_get_thread_num() with shared x)
+# Expected: data race on x
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

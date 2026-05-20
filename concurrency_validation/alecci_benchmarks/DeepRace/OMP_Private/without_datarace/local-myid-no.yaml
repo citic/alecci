@@ -1,0 +1,6 @@
+# local-myid-no – each thread has local myid and nthreads, writes to unique array slot
+# Inspired by 1.1-hello_-_main.c (omp parallel private(myid, nthreads), myid = omp_get_thread_num())
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

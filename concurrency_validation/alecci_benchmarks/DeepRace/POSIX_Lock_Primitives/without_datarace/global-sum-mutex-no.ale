@@ -1,0 +1,23 @@
+// No race: 4 threads accumulate partial sums into total with mutex-protected merge
+// Inspired by POSIX_Lock_Primitives/without_datarace patterns
+// No race: mutex ensures atomic read-modify-write on total
+procedure main()
+    shared mutable a := array(1000, 1)
+    shared mutable total := 0
+    shared mutable mtx as mutex := mutex()
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable local_sum := 0
+    mutable start := thread_number * 250
+    mutable i := 0
+    while i < 250 do
+        local_sum := local_sum + a[start + i]
+        i := i + 1
+    end while
+    lock(mtx)
+    total := total + local_sum
+    unlock(mtx)
+end procedure

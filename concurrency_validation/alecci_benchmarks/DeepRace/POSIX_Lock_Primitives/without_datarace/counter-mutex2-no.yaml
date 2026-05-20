@@ -1,0 +1,6 @@
+# counter-mutex2-no – 2 threads increment shared counter with mutex protection
+# Inspired by W9mutex1.c (2 pthreads, PTHREAD_MUTEX_INITIALIZER, counter++ in critical section)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

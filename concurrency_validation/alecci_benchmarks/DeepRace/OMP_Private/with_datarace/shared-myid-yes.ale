@@ -1,0 +1,10 @@
+// Race: all threads write their thread ID to shared scalar myid without synchronization
+// Inspired by OMP_Private/with_datarace/1.2-hello-single_-_main.c, for-work-sharing_-_main.c, single_master_-_main.c
+// In OpenMP: myid declared outside parallel — shared by default; missing private(myid) causes race
+// Race: myid (write) vs myid (read/write) across threads
+procedure main()
+    shared mutable myid := 0
+    parallel for i := 0 to 100 with 4 thread do
+        myid := thread_number
+    end parallel for
+end procedure

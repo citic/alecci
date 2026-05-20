@@ -1,0 +1,7 @@
+# shared-tid-pfor-yes – parallel for writes thread ID to shared tid without mutex
+# Inspired by for-work-sharing_-_main.c (omp for schedule(static), tid = omp_get_thread_num() shared)
+# Expected: data race on tid
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

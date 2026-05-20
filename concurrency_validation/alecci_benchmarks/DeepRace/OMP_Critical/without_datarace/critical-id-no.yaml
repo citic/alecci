@@ -1,0 +1,6 @@
+# critical-id-no – threads write thread ID to shared id under critical section (mutex)
+# Inspired by 2.hello_-_main.c (omp critical around id = omp_get_thread_num())
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

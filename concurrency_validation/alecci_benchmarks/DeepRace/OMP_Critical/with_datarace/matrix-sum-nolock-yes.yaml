@@ -1,0 +1,7 @@
+# matrix-sum-nolock-yes – parallel for accumulates flattened matrix elements into shared sum without lock
+# Inspired by dynamic2_-_main.c (suma_parallel += a[j][i] inside omp parallel for, no critical)
+# Expected: data race on suma_parallel
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

@@ -1,0 +1,14 @@
+// DRB065 – Pi reduction: parallel accumulation with mutex protection
+// Adapted: integer sum (Alecci has no float); simulates reduction(+:pi)
+// No race: mutex protects every update to shared sum
+// label: N7
+procedure main()
+    shared mutable sum := 0
+    shared mutable mtx as mutex := mutex()
+
+    parallel for i := 0 to 1000 with 4 thread do
+        lock(mtx)
+        sum := sum + i
+        unlock(mtx)
+    end parallel for
+end procedure

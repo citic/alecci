@@ -1,0 +1,6 @@
+# local-myid-pfor-no – parallel for with local myid, result[i] written at unique index
+# Inspired by hello_for_-_main.c (omp parallel for private(myid, num_thds), each i unique)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

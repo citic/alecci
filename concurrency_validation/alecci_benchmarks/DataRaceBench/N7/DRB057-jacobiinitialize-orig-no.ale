@@ -1,0 +1,14 @@
+// DRB057 – Jacobi initialization: parallel initialization of 2D arrays u and f
+// No race: outer i parallel, inner j sequential; each (i,j) written by exactly one thread
+// label: N7
+procedure main()
+    shared mutable u := array(400, 0)
+    shared mutable f := array(400, 0)
+
+    parallel for i := 0 to 20 with 4 thread do
+        for j := 0 to 20 do
+            u[i * 20 + j] := 0
+            f[i * 20 + j] := 0
+        end for
+    end parallel for
+end procedure

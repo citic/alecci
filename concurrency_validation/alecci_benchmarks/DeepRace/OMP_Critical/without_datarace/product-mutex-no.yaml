@@ -1,0 +1,6 @@
+# product-mutex-no – shared scalar multiplied by each thread inside critical section
+# Inspired by VarCompPrivModificado_-_main.c (s = s * (id+1) under #pragma omp critical)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

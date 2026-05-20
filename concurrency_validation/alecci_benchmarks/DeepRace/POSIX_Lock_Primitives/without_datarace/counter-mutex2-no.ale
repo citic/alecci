@@ -1,0 +1,14 @@
+// No race: 2 threads each increment shared counter once with mutex protection
+// Inspired by POSIX_Lock_Primitives/without_datarace/W9mutex1.c (pthread_mutex_lock, counter++)
+procedure main()
+    shared mutable counter := 0
+    shared mutable mtx as mutex := mutex()
+    mutable threads := create_threads(2, worker)
+    join_threads(threads, 2)
+end procedure
+
+procedure worker(thread_number as int)
+    lock(mtx)
+    counter := counter + 1
+    unlock(mtx)
+end procedure

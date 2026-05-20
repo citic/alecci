@@ -1,0 +1,6 @@
+# pi-integral-mutex-no – cyclic parallel sum with mutex-protected merge
+# Inspired by sync-integrate_-_main.c (correctly uses #pragma omp critical)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

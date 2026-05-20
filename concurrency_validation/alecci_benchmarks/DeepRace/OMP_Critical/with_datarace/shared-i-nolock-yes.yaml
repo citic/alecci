@@ -1,0 +1,7 @@
+# shared-i-nolock-yes – 5 threads write thread ID to shared i without mutex
+# Inspired by hola_-_main.c (parallel shared(i), i = omp_get_thread_num())
+# Expected: data race on i
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

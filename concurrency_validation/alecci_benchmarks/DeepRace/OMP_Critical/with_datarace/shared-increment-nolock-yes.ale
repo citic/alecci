@@ -1,0 +1,10 @@
+// Race: all threads increment shared x without any critical section
+// Inspired by OMP_Critical/with_datarace/05_omp_crit_-_main.c
+// In OpenMP: x = x + 1 inside parallel region with shared(x) — missing critical
+// Race: x (write) vs x (read/write) across threads
+procedure main()
+    shared mutable x := 0
+    parallel for i := 0 to 100 with 4 thread do
+        x := x + 1
+    end parallel for
+end procedure

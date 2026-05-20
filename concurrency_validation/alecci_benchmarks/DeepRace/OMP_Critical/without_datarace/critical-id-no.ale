@@ -1,0 +1,14 @@
+// No race: threads assign thread ID to shared id inside critical section (mutex)
+// Inspired by OMP_Critical/without_datarace/2.hello_-_main.c (omp critical, id = thread_num)
+procedure main()
+    shared mutable id := 0
+    shared mutable mtx as mutex := mutex()
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    lock(mtx)
+    id := thread_number
+    unlock(mtx)
+end procedure

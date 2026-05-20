@@ -1,0 +1,7 @@
+# shared-increment-nolock-yes – all threads do x = x+1 without critical section
+# Inspired by 05_omp_crit_-_main.c (x = x + 1 in parallel region, missing critical)
+# Expected: data race on x
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

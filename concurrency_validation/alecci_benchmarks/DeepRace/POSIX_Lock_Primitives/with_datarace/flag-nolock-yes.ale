@@ -1,0 +1,16 @@
+// Race: 2 threads simultaneously write to shared flag without synchronization
+// Inspired by POSIX_Lock_Primitives/with_datarace (TwoThreadLoop.c base pattern without condvar)
+// Race: flag (write) vs flag (read/write) across threads
+procedure main()
+    shared mutable flag := 0
+    mutable threads := create_threads(2, worker)
+    join_threads(threads, 2)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable i := 0
+    while i < 500 do
+        flag := thread_number
+        i := i + 1
+    end while
+end procedure

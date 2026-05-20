@@ -1,0 +1,15 @@
+// Race: threads update global maximum without critical section
+// Inspired by OMP_Critical/with_datarace/global_max_-_main.c
+// Race: global_max (read/write) vs global_max (read/write) across threads
+procedure main()
+    shared mutable data := array(100, 0)
+    shared mutable global_max := 0
+    for i := 0 to 100 do
+        data[i] := i * 3
+    end for
+    parallel for i := 0 to 100 with 4 thread do
+        if data[i] > global_max then
+            global_max := data[i]
+        end if
+    end parallel for
+end procedure

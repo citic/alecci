@@ -1,0 +1,21 @@
+// No race: cyclic parallel sum with mutex-protected accumulation
+// Inspired by OMP_Critical/without_datarace/sync-integrate_-_main.c
+// No race: lock/unlock serializes all updates to sum
+procedure main()
+    shared mutable sum := 0
+    shared mutable mtx as mutex := mutex()
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable thread_sum := 0
+    mutable i := thread_number
+    while i < 10000 do
+        thread_sum := thread_sum + i
+        i := i + 4
+    end while
+    lock(mtx)
+    sum := sum + thread_sum
+    unlock(mtx)
+end procedure

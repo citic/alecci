@@ -1,0 +1,7 @@
+# count-incdec-nolock-yes – parallel for, odd threads increment count, even decrement, no mutex
+# Inspired by hw8_p1a_-_main.c (count++ or count-- based on thread parity, no critical)
+# Expected: data race on count
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

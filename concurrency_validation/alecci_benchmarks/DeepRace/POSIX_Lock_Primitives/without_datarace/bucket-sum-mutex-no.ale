@@ -1,0 +1,21 @@
+// No race: 7 threads accumulate values into shared sum array, mutex-protected per access
+// Inspired by POSIX_Lock_Primitives/with_datarace/dana.c (per-bucket mutex array, sum_rest[x%10] += x)
+// Note: dana.c appears mislabeled in with_datarace — it uses proper mutex synchronization
+procedure main()
+    shared mutable sum_rest := array(10, 0)
+    shared mutable mtx as mutex := mutex()
+    mutable threads := create_threads(7, worker)
+    join_threads(threads, 7)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable i := 0
+    while i < 100 do
+        mutable x := (thread_number * 100 + i) mod 10000
+        mutable bucket := x mod 10
+        lock(mtx)
+        sum_rest[bucket] := sum_rest[bucket] + x
+        unlock(mtx)
+        i := i + 1
+    end while
+end procedure

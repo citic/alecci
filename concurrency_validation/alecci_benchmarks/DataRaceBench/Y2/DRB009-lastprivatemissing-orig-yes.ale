@@ -1,0 +1,9 @@
+// DRB009 – Missing lastprivate: all threads write to shared x without synchronization
+// Race: x (write) vs x (write) across threads
+// label: Y2
+procedure main()
+    shared mutable x := 0
+    parallel for i := 0 to 10000 with 4 thread do
+        x := i
+    end parallel for
+end procedure

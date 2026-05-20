@@ -1,0 +1,6 @@
+# local-max-per-thread-no – parallel for updates local_max[thread_number], each slot owned by one thread
+# Inspired by examQuestion_-_main.c (local_max[thread] and local_min[thread] per-thread arrays, no race)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

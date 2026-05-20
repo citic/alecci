@@ -1,0 +1,20 @@
+// DRB012 – Missing critical (variant): unprotected decrement, smaller array
+// Race: numNodes2 (write) vs numNodes2 (write/read)
+// label: Y3
+procedure main()
+    shared mutable x := array(50, 0)
+    shared mutable numNodes2 := 0
+    for i := 0 to 50 do
+        if i mod 2 = 0 then
+            x[i] := 5
+        else
+            x[i] := -5
+        end if
+    end for
+
+    parallel for i := 0 to 50 with 4 thread do
+        if x[i] <= 0 then
+            numNodes2 := numNodes2 - 1
+        end if
+    end parallel for
+end procedure

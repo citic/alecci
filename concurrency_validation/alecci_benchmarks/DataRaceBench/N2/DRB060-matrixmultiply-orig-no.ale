@@ -1,0 +1,23 @@
+// DRB060 – Matrix multiply: C[i*20+k] += A[i*20+j] * B[j*20+k], outer i parallel
+// No race: each thread owns its range of rows in C; A and B are read-only
+// label: N2
+procedure main()
+    shared mutable a := array(400, 0)
+    shared mutable b := array(400, 0)
+    shared mutable c := array(400, 0)
+    for i := 0 to 20 do
+        for j := 0 to 20 do
+            a[i * 20 + j] := i + j
+            b[i * 20 + j] := i - j
+            c[i * 20 + j] := 0
+        end for
+    end for
+
+    parallel for i := 0 to 20 with 4 thread do
+        for k := 0 to 20 do
+            for j := 0 to 20 do
+                c[i * 20 + k] := c[i * 20 + k] + a[i * 20 + j] * b[j * 20 + k]
+            end for
+        end for
+    end parallel for
+end procedure

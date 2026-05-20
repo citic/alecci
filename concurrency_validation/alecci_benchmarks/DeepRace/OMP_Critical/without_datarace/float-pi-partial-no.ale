@@ -1,0 +1,13 @@
+// No race: parallel for PI, local partial_sum per iteration, critical section merge
+// Inspired by OMP_Critical/without_datarace/pi1_-_main.c (partial_sum local, omp critical sum += partial_sum)
+procedure main()
+    shared mutable sum as float := 0.0
+    shared mutable mtx as mutex := mutex()
+    parallel for i := 0 to 100000 with 4 thread do
+        mutable x as float := i * 0.00001 + 0.000005
+        mutable partial_sum as float := 4.0 / (1.0 + (x * x))
+        lock(mtx)
+        sum := sum + partial_sum
+        unlock(mtx)
+    end parallel for
+end procedure

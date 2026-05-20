@@ -1,0 +1,10 @@
+// Race: parallel for computes per-iteration soma, then pi += soma * step without lock
+// Inspired by OMP_Critical/with_datarace/Calculo_PI_em_paralelo_WorkSharing_-_main.c
+procedure main()
+    shared mutable pi as float := 0.0
+    parallel for i := 0 to 10000 with 4 thread do
+        mutable x as float := i * 0.0001 + 0.00005
+        mutable soma as float := 4.0 / (1.0 + (x * x))
+        pi := pi + soma * 0.0001
+    end parallel for
+end procedure

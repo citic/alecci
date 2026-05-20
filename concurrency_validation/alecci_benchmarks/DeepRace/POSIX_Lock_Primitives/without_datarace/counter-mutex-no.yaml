@@ -1,0 +1,5 @@
+# counter-mutex-no – 4 threads increment counter safely with mutex
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

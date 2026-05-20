@@ -1,0 +1,7 @@
+# firstprivate-sum-nolock-yes – 4 threads each compute s=10000, then m += s without lock
+# Inspired by datasharing_-_main.c (firstprivate(s), shared(m), m += s no critical)
+# Expected: data race on m
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

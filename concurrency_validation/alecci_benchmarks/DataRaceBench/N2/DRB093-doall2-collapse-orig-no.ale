@@ -1,0 +1,12 @@
+// DRB093 – DOALL2 collapse: each element a[i*100+j] independently incremented
+// No race: outer i parallel, inner j sequential; disjoint writes per thread
+// label: N2
+procedure main()
+    shared mutable a := array(10000, 0)
+
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 100 do
+            a[i * 100 + j] := a[i * 100 + j] + 1
+        end for
+    end parallel for
+end procedure

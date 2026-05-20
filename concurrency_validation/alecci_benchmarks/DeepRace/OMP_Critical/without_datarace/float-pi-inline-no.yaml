@@ -1,0 +1,6 @@
+# float-pi-inline-no – parallel for PI, each iteration updates shared sum inside critical section
+# Inspired by intel_pi_-_main.c (omp parallel for, omp critical sum += 4/(1+x*x) per iteration)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

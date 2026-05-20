@@ -1,0 +1,6 @@
+# flag-nolock-yes – 2 threads write to shared flag without any synchronization
+# Expected: data race on flag
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

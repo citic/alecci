@@ -1,0 +1,7 @@
+# global-max-nolock-yes – parallel max update without critical section
+# Inspired by global_max_-_main.c (globalMax updated without #pragma omp critical)
+# Expected: data race on global_max
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

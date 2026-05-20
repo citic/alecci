@@ -1,0 +1,9 @@
+// Race: parallel for accumulates p += i without any mutex (missing critical)
+// Inspired by OMP_Critical/with_datarace/for_-_main.c
+// Race: p (write) vs p (read/write) across threads
+procedure main()
+    shared mutable p := 0
+    parallel for i := 1 to 10001 with 4 thread do
+        p := p + i
+    end parallel for
+end procedure

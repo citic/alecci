@@ -1,0 +1,13 @@
+// DRB034 – True dependence linear (variant): a[2*i+1] = a[i] + 1 on larger array
+// Race: a[2*i+1] (write at i) vs a[i] (= a[2*(i/2)+1] read from adjacent iteration)
+// label: Y1
+procedure main()
+    shared mutable a := array(4000, 0)
+    for i := 0 to 4000 do
+        a[i] := i
+    end for
+
+    parallel for i := 0 to 2000 with 4 thread do
+        a[2 * i + 1] := a[i] + 1
+    end parallel for
+end procedure

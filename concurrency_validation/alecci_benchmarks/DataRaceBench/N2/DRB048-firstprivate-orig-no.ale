@@ -1,0 +1,10 @@
+// DRB048 – Firstprivate: g is a constant passed to each thread (private copy)
+// In Alecci the parallel-for body is a separate function, so any non-shared
+// value used as a literal is inherently private. No race.
+// label: N2
+procedure main()
+    shared mutable a := array(100, 0)
+    parallel for i := 0 to 100 with 4 thread do
+        a[i] := a[i] + 7
+    end parallel for
+end procedure

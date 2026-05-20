@@ -1,0 +1,17 @@
+// DRB031 – True dependence first dimension: b[i*100+j] = b[(i-1)*100+(j-1)]
+// Race: b[(i-1)*100+(j-1)] read by thread i races with thread i-1 writing it
+// label: Y1
+procedure main()
+    shared mutable b := array(10000, 0)
+    for i := 0 to 100 do
+        for j := 0 to 100 do
+            b[i * 100 + j] := 1
+        end for
+    end for
+
+    parallel for i := 1 to 100 with 4 thread do
+        for j := 1 to 100 do
+            b[i * 100 + j] := b[(i - 1) * 100 + (j - 1)]
+        end for
+    end parallel for
+end procedure

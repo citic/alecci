@@ -1,0 +1,6 @@
+# counter-mutex3-no – 4 threads each increment counter 100 times with mutex protection
+# Inspired by withmutex.c (4 pthreads, each loops 100 times, pthread_mutex_lock/unlock around counter++)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

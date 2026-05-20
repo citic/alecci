@@ -1,0 +1,12 @@
+// Race: shared mutable temp written inside parallel for (should be thread-private)
+// Inspired by OMP_Private/with_datarace/outter_-_main.c
+// In OpenMP: s_seq declared outside parallel region becomes shared; missing private(s_seq)
+// Race: temp (write) vs temp (read/write) across threads
+procedure main()
+    shared mutable a := array(1000, 0)
+    shared mutable temp := 0
+    parallel for i := 0 to 1000 with 4 thread do
+        temp := i * 2
+        a[i] := temp + 1
+    end parallel for
+end procedure

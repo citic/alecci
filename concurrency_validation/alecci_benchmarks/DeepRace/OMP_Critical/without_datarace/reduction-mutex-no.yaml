@@ -1,0 +1,6 @@
+# reduction-mutex-no – parallel reduction with mutex-protected critical merge
+# Inspired by pi1_-_main.c (correctly uses #pragma omp critical { sum += partial_sum })
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

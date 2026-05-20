@@ -1,0 +1,7 @@
+# shared-threadnum-nolock-yes – parallel for writes thread ID to shared thread_num without mutex
+# Inspired by conditional_-_main.c (thread_num = omp_get_thread_num(), shared, no critical)
+# Expected: data race on thread_num
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

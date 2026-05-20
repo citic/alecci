@@ -1,0 +1,25 @@
+// DRB120 – Proper barrier: two-phase update of a shared variable
+// Phase 1: thread 0 increments var; barrier; Phase 2: thread 1 increments var
+// Mutex + conditional ensures only one thread executes each phase; barrier orders them
+// No race: explicit synchronization prevents concurrent access
+// label: N3
+procedure main()
+    shared mutable var := 0
+    shared mutable mtx as mutex := mutex()
+    shared mutable b as barrier := barrier(4)
+    parallel for i := 0 to 4 with 4 thread do
+        if thread_number = 0 then
+            lock(mtx)
+            var := var + 1
+            unlock(mtx)
+        end if
+
+        barrier_wait(b)
+
+        if thread_number = 1 then
+            lock(mtx)
+            var := var + 1
+            unlock(mtx)
+        end if
+    end parallel for
+end procedure

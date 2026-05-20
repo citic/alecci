@@ -1,0 +1,11 @@
+// DRB021 – Missing reduction: sum accumulated without synchronization
+// Adapted: 1D int array instead of 2D float (race pattern is identical)
+// Race: sum (write) vs sum (write/read) across threads
+// label: Y2
+procedure main()
+    shared mutable u := array(10000, 1)
+    shared mutable sum := 0
+    parallel for i := 0 to 10000 with 4 thread do
+        sum := sum + u[i]
+    end parallel for
+end procedure

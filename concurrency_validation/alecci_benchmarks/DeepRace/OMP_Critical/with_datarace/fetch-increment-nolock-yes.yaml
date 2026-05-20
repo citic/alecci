@@ -1,0 +1,7 @@
+# fetch-increment-nolock-yes – shared work counter gi read+incremented without lock
+# Inspired by for_dynamic_-_main.c (i = gi; gi++ unprotected)
+# Expected: data race on gi (and potentially A)
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

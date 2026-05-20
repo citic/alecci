@@ -1,0 +1,5 @@
+# global-sum-mutex-no – 4 threads merge local sums into total with mutex
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

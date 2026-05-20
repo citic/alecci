@@ -1,0 +1,19 @@
+// DRB141 – Proper reduction with barrier: thread 0 initializes a, barrier ensures
+//   all threads see the write before any thread starts the reduction
+// No race: barrier_wait separates master write from reduction reads
+// label: N3
+procedure main()
+    shared mutable a := 0
+    shared mutable mtx as mutex := mutex()
+    shared mutable b as barrier := barrier(4)
+
+    parallel for i := 0 to 4 with 4 thread do
+        if thread_number = 0 then
+            a := 0
+        end if
+        barrier_wait(b)
+        lock(mtx)
+        a := a + i
+        unlock(mtx)
+    end parallel for
+end procedure

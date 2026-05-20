@@ -1,0 +1,6 @@
+# counter-mutex4-no – 2 threads increment shared counter with mutex protection (variant source)
+# Inspired by muxtex_anpham.c (same pattern as W9mutex1.c, different author/source)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

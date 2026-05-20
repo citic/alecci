@@ -1,0 +1,6 @@
+# float-pi-syncintegrate-no – cyclic PI, 4 threads accumulate local sums, critical section merges
+# Inspired by sync-integrate_-_main.c (cyclic distribution, local thread_sum, omp critical sum += thread_sum)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

@@ -1,0 +1,7 @@
+# for-sum-nolock-yes – parallel for sum without critical section
+# Inspired by for_-_main.c (missing #pragma omp critical)
+# Expected: data race on p
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

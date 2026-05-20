@@ -1,0 +1,7 @@
+# isum-nolock-yes – parallel for accumulates shared isum without mutex (missing private/reduction)
+# Inspired by data_range2_-_main.c (isum = isum + i inside omp parallel for, no reduction)
+# Expected: data race on isum
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

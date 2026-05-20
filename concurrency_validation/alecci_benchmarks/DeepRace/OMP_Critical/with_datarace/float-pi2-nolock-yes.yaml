@@ -1,0 +1,7 @@
+# float-pi2-nolock-yes – 2 threads compute cyclic PI sums, add to shared pi without lock
+# Inspired by intepar2_-_main.c (same pattern as exercise_3_, different source)
+# Expected: data race on pi
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

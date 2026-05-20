@@ -1,0 +1,7 @@
+# DRB benchmark: DRB036-truedepscalar-var-yes
+# Expected: data race (racy benchmark from DataRaceBench)
+
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

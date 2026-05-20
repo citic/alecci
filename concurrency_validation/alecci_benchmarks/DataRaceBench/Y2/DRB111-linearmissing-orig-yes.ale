@@ -1,0 +1,19 @@
+// DRB111 – Missing linear: shared j counter incremented by all threads without protection
+// Race: j (write) vs j (read/write) across threads; c[j] also racy
+// label: Y2
+procedure main()
+    shared mutable a := array(100, 0)
+    shared mutable b := array(100, 0)
+    shared mutable c := array(100, 0)
+    shared mutable j := 0
+    for i := 0 to 100 do
+        a[i] := i
+        b[i] := i
+        c[i] := 0
+    end for
+
+    parallel for i := 0 to 100 with 4 thread do
+        c[j] := c[j] + a[i] * b[i]
+        j := j + 1
+    end parallel for
+end procedure

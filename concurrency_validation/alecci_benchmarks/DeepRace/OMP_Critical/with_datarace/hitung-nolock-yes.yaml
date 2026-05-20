@@ -1,0 +1,7 @@
+# hitung-nolock-yes – local-to-global sum merge without critical section
+# Inspired by hitung_-_main.c (missing critical before total += local_total)
+# Expected: data race on total
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

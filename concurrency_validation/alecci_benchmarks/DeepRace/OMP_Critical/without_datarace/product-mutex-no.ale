@@ -1,0 +1,12 @@
+// No race: each thread multiplies shared s by (thread_number + 1) inside a critical section
+// Inspired by OMP_Critical/without_datarace/VarCompPrivModificado_-_main.c
+// No race: mutex serializes all reads and writes to s
+procedure main()
+    shared mutable s := 1
+    shared mutable mtx as mutex := mutex()
+    parallel for k := 0 to 4 with 4 thread do
+        lock(mtx)
+        s := s * (thread_number + 1)
+        unlock(mtx)
+    end parallel for
+end procedure

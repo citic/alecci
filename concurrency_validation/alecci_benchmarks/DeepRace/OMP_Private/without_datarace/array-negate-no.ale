@@ -1,0 +1,14 @@
+// No race: parallel for x[i] := 0 - y[i], each index independent
+// Inspired by OMP_Private/without_datarace/looptest_1_-_main.c (omp parallel for, x[i] = -1 * y[i])
+procedure main()
+    shared mutable y := array(10, 0)
+    shared mutable x := array(10, 0)
+    mutable i := 0
+    while i < 10 do
+        y[i] := i * 2
+        i := i + 1
+    end while
+    parallel for i := 0 to 10 with 4 thread do
+        x[i] := 0 - y[i]
+    end parallel for
+end procedure

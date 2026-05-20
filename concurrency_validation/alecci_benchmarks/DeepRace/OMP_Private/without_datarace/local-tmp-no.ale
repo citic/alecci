@@ -1,0 +1,10 @@
+// No race: mutable local tmp is thread-private (contrasts shared-tmp-yes.ale)
+// Correct version of OMP_Private/with_datarace/outter_-_main.c pattern
+// No race: tmp declared with mutable (local) inside parallel for body → private per iteration
+procedure main()
+    shared mutable a := array(1000, 0)
+    parallel for i := 0 to 1000 with 4 thread do
+        mutable tmp := i * 2
+        a[i] := tmp + 1
+    end parallel for
+end procedure

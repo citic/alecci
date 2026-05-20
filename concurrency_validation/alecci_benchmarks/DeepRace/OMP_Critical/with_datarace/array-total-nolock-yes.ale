@@ -1,0 +1,17 @@
+// Race: threads compute local sums of array, merge into shared total without critical
+// Inspired by OMP_Critical/with_datarace/array_total_-_main.c
+// Race: total (write) vs total (read/write) across threads
+procedure main()
+    shared mutable a := array(1000, 1)
+    shared mutable total := 0
+    parallel for k := 0 to 4 with 4 thread do
+        mutable my_sum := 0
+        mutable start := thread_number * 250
+        mutable i := 0
+        while i < 250 do
+            my_sum := my_sum + a[start + i]
+            i := i + 1
+        end while
+        total := total + my_sum
+    end parallel for
+end procedure

@@ -1,0 +1,12 @@
+// Race: parallel for, odd threads increment count, even threads decrement, no mutex
+// Inspired by OMP_Critical/with_datarace/hw8_p1a_-_main.c (count++ or count-- no critical)
+procedure main()
+    shared mutable count := 0
+    parallel for i := 0 to 10000 with 4 thread do
+        if thread_number mod 2 = 1 then
+            count := count + 1
+        else
+            count := count - 1
+        end if
+    end parallel for
+end procedure

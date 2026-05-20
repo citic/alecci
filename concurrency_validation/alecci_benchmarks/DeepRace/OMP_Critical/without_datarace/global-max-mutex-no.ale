@@ -1,0 +1,18 @@
+// No race: threads update global maximum with mutex-protected critical section
+// Inspired by OMP_Critical/without_datarace/global_max_-_main.c (corrected version)
+// No race: mutex serializes all global_max reads and writes
+procedure main()
+    shared mutable data := array(100, 0)
+    shared mutable global_max := 0
+    shared mutable mtx as mutex := mutex()
+    for i := 0 to 100 do
+        data[i] := i * 3
+    end for
+    parallel for i := 0 to 100 with 4 thread do
+        lock(mtx)
+        if data[i] > global_max then
+            global_max := data[i]
+        end if
+        unlock(mtx)
+    end parallel for
+end procedure

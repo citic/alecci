@@ -1,0 +1,6 @@
+# array-fill-tid-no – parallel for fills array with thread IDs; independent per index
+# Inspired by fill_-_main.c (a[i] = tid with parallel for, private i)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

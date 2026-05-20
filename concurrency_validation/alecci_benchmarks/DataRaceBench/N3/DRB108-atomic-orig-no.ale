@@ -1,0 +1,13 @@
+// DRB108 – Atomic update: mutex-protected increment (simulates omp atomic)
+// No race: mutex ensures only one thread increments a at a time
+// label: N3
+procedure main()
+    shared mutable a := 0
+    shared mutable mtx as mutex := mutex()
+
+    parallel for i := 0 to 4 with 4 thread do
+        lock(mtx)
+        a := a + 1
+        unlock(mtx)
+    end parallel for
+end procedure

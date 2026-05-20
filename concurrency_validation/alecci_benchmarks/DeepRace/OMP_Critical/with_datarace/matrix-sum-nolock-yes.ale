@@ -1,0 +1,18 @@
+// Race: parallel for accumulates flattened 2D array into shared sum without lock
+// Inspired by OMP_Critical/with_datarace/dynamic2_-_main.c (suma_parallel += a[j][i], no critical)
+procedure main()
+    shared mutable a := array(169, 0)
+    shared mutable suma_parallel := 0
+    mutable i := 0
+    while i < 13 do
+        mutable j := 0
+        while j < 13 do
+            a[i * 13 + j] := i + j
+            j := j + 1
+        end while
+        i := i + 1
+    end while
+    parallel for k := 0 to 169 with 4 thread do
+        suma_parallel := suma_parallel + a[k]
+    end parallel for
+end procedure

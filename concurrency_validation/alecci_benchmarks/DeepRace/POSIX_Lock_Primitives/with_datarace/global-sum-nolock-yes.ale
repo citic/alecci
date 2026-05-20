@@ -1,0 +1,20 @@
+// Race: 4 threads each compute a local partial sum then merge into total without mutex
+// Inspired by POSIX_Lock_Primitives/with_datarace (e.g., 02_printf_g_thread.c accumulation pattern)
+// Race: total (write) vs total (read/write) across threads
+procedure main()
+    shared mutable a := array(1000, 1)
+    shared mutable total := 0
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable local_sum := 0
+    mutable start := thread_number * 250
+    mutable i := 0
+    while i < 250 do
+        local_sum := local_sum + a[start + i]
+        i := i + 1
+    end while
+    total := total + local_sum
+end procedure

@@ -1,0 +1,11 @@
+// DRB035 – True dependence via shared scalar: a[i] = tmp; tmp = a[i]+i
+// Race: tmp (write) vs tmp (read/write) across threads
+// label: Y1
+procedure main()
+    shared mutable a := array(100, 0)
+    shared mutable tmp := 10
+    parallel for i := 0 to 100 with 4 thread do
+        a[i] := tmp
+        tmp := a[i] + i
+    end parallel for
+end procedure

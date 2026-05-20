@@ -1,0 +1,6 @@
+# float-pi-padded-no – 4 threads compute block PI sums locally (padded), merge with mutex
+# Inspired by helloWorldParallel_Atomic_-_main.c (per-thread block sum, omp critical sum += threadSum)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

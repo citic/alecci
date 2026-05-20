@@ -1,0 +1,7 @@
+# sum-private-nolock-yes – parallel for accumulates private sums into shared total without lock
+# Inspired by mapexpCritical_-_main.c (private_sum computed per thread, sum += private_sum no critical)
+# Expected: data race on total
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

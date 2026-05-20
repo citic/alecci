@@ -1,0 +1,22 @@
+// No race: cyclic PI, each thread accumulates local thread_sum, critical section merges
+// Inspired by OMP_Critical/without_datarace/sync-integrate_-_main.c (cyclic, local thread_sum, omp critical)
+procedure main()
+    shared mutable sum as float := 0.0
+    shared mutable mtx as mutex := mutex()
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable step as float := 0.0000001
+    mutable thread_sum as float := 0.0
+    mutable i := thread_number
+    while i < 10000000 do
+        mutable x as float := i * step + step * 0.5
+        thread_sum := thread_sum + 4.0 / (1.0 + (x * x))
+        i := i + 4
+    end while
+    lock(mtx)
+    sum := sum + thread_sum
+    unlock(mtx)
+end procedure

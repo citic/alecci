@@ -1,0 +1,9 @@
+// DRB045 – DOALL: each iteration accesses a distinct array element
+// No race: a[i] written and read only by the thread assigned to iteration i
+// label: N1
+procedure main()
+    shared mutable a := array(100, 0)
+    parallel for i := 0 to 100 with 4 thread do
+        a[i] := a[i] + 1
+    end parallel for
+end procedure

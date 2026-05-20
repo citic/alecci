@@ -1,0 +1,6 @@
+# combined-array-count-no – array fill (independent) + mutex-protected counter
+# Inspired by simple_combined_pfor_-_main.c (a[i]=i safe; count++ inside critical)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

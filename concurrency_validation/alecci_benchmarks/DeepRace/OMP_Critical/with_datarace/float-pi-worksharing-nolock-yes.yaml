@@ -1,0 +1,7 @@
+# float-pi-worksharing-nolock-yes – parallel for PI, pi += soma * step without lock per iteration
+# Inspired by Calculo_PI_em_paralelo_WorkSharing_-_main.c (omp for, pi += soma*step, no critical)
+# Expected: data race on pi
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

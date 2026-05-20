@@ -1,0 +1,7 @@
+# monte-carlo-nolock-yes – parallel for increments shared totalPoints without mutex
+# Inspired by 5.40_-_main.c (Monte Carlo PI, totalPoints++ unprotected inside omp for)
+# Expected: data race on total_points
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

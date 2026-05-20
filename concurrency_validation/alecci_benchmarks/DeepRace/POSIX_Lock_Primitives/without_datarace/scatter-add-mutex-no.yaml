@@ -1,0 +1,6 @@
+# scatter-add-mutex-no – 4 threads scatter-add scaled values into result array with mutex
+# Inspired by tp5_2.c (matrix-vector product: each thread handles one column, mutex on result[i])
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

@@ -1,0 +1,9 @@
+// No race: parallel for fills a[i] with thread_number; each thread owns distinct indices
+// Inspired by OMP_Private/without_datarace/fill_-_main.c (a[i] = tid with private i)
+// No race: each iteration writes to a unique index → no two threads share an element
+procedure main()
+    shared mutable a := array(100, 0)
+    parallel for i := 0 to 100 with 4 thread do
+        a[i] := thread_number
+    end parallel for
+end procedure

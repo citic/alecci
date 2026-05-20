@@ -1,0 +1,17 @@
+// DRB140 – Missing barrier before reduction: thread 0 sets a=0 without barrier,
+//   other threads may read/write a via reduction before thread 0 finishes
+// Race: a (write by thread 0, unprotected) vs a (write/read by other threads via mutex)
+// label: Y3
+procedure main()
+    shared mutable a := 0
+    shared mutable mtx as mutex := mutex()
+
+    parallel for i := 0 to 4 with 4 thread do
+        if thread_number = 0 then
+            a := 0
+        end if
+        lock(mtx)
+        a := a + i
+        unlock(mtx)
+    end parallel for
+end procedure

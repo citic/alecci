@@ -1,0 +1,25 @@
+// No race: 2 threads compute products of 2x2 matrix permanent diagonals, mutex-protected merge
+// Inspired by OMP_Critical/without_datarace/determ_-_main.c (omp critical around product and sum merge)
+procedure main()
+    shared mutable m := array(4, 0)
+    shared mutable sum_p := 0
+    shared mutable mtx as mutex := mutex()
+    m[0] := 3
+    m[1] := 2
+    m[2] := 1
+    m[3] := 4
+    mutable threads := create_threads(2, worker)
+    join_threads(threads, 2)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable sum := 1
+    mutable j := 0
+    while j < 2 do
+        sum := sum * m[j * 2 + (j + thread_number) mod 2]
+        j := j + 1
+    end while
+    lock(mtx)
+    sum_p := sum_p + sum
+    unlock(mtx)
+end procedure

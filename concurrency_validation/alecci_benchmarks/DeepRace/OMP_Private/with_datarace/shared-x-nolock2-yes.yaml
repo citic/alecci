@@ -1,0 +1,7 @@
+# shared-x-nolock2-yes – 3 threads write thread ID to shared x without mutex
+# Inspired by lec4_-_main.c (omp parallel shared(y,z), x = omp_get_thread_num(), x shared)
+# Expected: data race on x
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

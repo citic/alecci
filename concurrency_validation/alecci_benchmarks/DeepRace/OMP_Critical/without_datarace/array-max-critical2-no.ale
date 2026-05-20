@@ -1,0 +1,21 @@
+// No race: parallel for finds max among elements divisible by 7, updates max under mutex
+// Inspired by OMP_Critical/without_datarace/omp12_-_main.c (omp critical around conditional max update)
+procedure main()
+    shared mutable a := array(100, 0)
+    shared mutable max := -1
+    shared mutable mtx as mutex := mutex()
+    mutable i := 0
+    while i < 100 do
+        a[i] := (i * 7) mod 300
+        i := i + 1
+    end while
+    parallel for i := 0 to 100 with 4 thread do
+        if a[i] mod 7 = 0 then
+            lock(mtx)
+            if max < a[i] then
+                max := a[i]
+            end if
+            unlock(mtx)
+        end if
+    end parallel for
+end procedure

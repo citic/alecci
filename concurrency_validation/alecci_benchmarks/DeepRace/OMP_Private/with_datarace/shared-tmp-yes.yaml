@@ -1,0 +1,7 @@
+# shared-tmp-yes – shared temp used as intermediate in parallel for (missing private)
+# Inspired by outter_-_main.c (s_seq shared across parallel iterations)
+# Expected: data race on temp
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

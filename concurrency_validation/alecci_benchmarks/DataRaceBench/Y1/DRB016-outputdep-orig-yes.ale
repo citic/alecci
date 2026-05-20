@@ -1,0 +1,12 @@
+// DRB016 – Output dependence: a[i] = x; x = i (race on shared scalar x)
+// Race: x (write) vs x (write/read) across threads; no protection
+// label: Y1
+procedure main()
+    shared mutable a := array(100, 0)
+    shared mutable x := 10
+
+    parallel for i := 0 to 100 with 4 thread do
+        a[i] := x
+        x := i
+    end parallel for
+end procedure

@@ -1,0 +1,12 @@
+// DRB046 – DOALL 2D: outer loop parallelized, inner sequential per thread
+// 2D array a[100][100] flattened to a[10000]
+// No race: each outer index i is owned by one thread; inner j is sequential within that thread
+// label: N1
+procedure main()
+    shared mutable a := array(10000, 0)
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 100 do
+            a[i * 100 + j] := a[i * 100 + j] + 1
+        end for
+    end parallel for
+end procedure

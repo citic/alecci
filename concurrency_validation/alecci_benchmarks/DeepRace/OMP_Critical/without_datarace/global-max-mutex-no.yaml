@@ -1,0 +1,6 @@
+# global-max-mutex-no – parallel max update with mutex-protected critical section
+# Inspired by global_max_-_main.c (corrected with #pragma omp critical)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

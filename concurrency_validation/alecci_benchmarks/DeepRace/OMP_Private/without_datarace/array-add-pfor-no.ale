@@ -1,0 +1,16 @@
+// No race: parallel for c[i] := a[i] + b[i], each index independent
+// Inspired by OMP_Private/without_datarace/for-loop_-_main.c (omp parallel for, c[i]=a[i]+b[i])
+procedure main()
+    shared mutable a := array(1000, 0)
+    shared mutable b := array(1000, 0)
+    shared mutable c := array(1000, 0)
+    mutable i := 0
+    while i < 1000 do
+        a[i] := i
+        b[i] := i
+        i := i + 1
+    end while
+    parallel for i := 0 to 1000 with 4 thread do
+        c[i] := a[i] + b[i]
+    end parallel for
+end procedure

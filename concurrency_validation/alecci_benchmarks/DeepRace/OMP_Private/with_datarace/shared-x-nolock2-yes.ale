@@ -1,0 +1,11 @@
+// Race: 3 threads each write their thread ID to shared x without mutex
+// Inspired by OMP_Private/with_datarace/lec4_-_main.c (shared x = omp_get_thread_num())
+procedure main()
+    shared mutable x := 0
+    mutable threads := create_threads(3, worker)
+    join_threads(threads, 3)
+end procedure
+
+procedure worker(thread_number as int)
+    x := thread_number
+end procedure

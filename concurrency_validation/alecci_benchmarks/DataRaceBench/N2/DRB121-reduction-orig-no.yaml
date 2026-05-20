@@ -1,0 +1,6 @@
+# DRB benchmark: DRB121-reduction-orig-no
+# Expected: no concurrency issues (race-free benchmark from DataRaceBench)
+
+expected_issues:
+  - none
+timeout: 10

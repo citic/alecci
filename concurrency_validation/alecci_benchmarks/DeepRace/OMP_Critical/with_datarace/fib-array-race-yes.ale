@@ -1,0 +1,10 @@
+// Race: parallel for computes fib[i] = fib[i-1] + fib[i-2], loop-carried dependency
+// Inspired by OMP_Critical/with_datarace/fibomp_-_main.c (parallel fib generation, no barrier)
+procedure main()
+    shared mutable fib := array(50, 0)
+    fib[0] := 0
+    fib[1] := 1
+    parallel for i := 2 to 50 with 4 thread do
+        fib[i] := fib[i - 1] + fib[i - 2]
+    end parallel for
+end procedure

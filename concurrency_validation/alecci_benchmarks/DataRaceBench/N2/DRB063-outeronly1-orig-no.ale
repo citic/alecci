@@ -1,0 +1,18 @@
+// DRB063 – Outer-only parallelism: outer i parallelized; inner j sequential per thread
+// b[100][100] flattened; b[i][j] = b[i][j+1] shifts each row left (sequential, no cross-row dep)
+// No race: each thread owns its range of rows; inner loop is sequential within a thread
+// label: N2
+procedure main()
+    shared mutable b := array(10000, 0)
+    for i := 0 to 100 do
+        for j := 0 to 100 do
+            b[i * 100 + j] := i * 100 + j
+        end for
+    end for
+
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 99 do
+            b[i * 100 + j] := b[i * 100 + j + 1]
+        end for
+    end parallel for
+end procedure

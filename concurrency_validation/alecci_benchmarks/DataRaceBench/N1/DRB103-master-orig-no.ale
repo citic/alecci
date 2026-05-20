@@ -1,0 +1,12 @@
+// DRB103 – Master construct: only thread 0 accesses num_threads (simulates omp master)
+// No race: only thread 0 reads/writes num_threads; no other thread touches it
+// label: N1
+procedure main()
+    shared mutable num_threads := 0
+
+    parallel for i := 0 to 4 with 4 thread do
+        if thread_number = 0 then
+            num_threads := 4
+        end if
+    end parallel for
+end procedure

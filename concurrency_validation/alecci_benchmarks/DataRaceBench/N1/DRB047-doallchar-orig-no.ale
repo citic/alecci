@@ -1,0 +1,9 @@
+// DRB047 – DOALL on char-sized elements (translated to int)
+// No race: each thread writes to its own slice of the array
+// label: N1
+procedure main()
+    shared mutable a := array(100, 0)
+    parallel for i := 0 to 100 with 4 thread do
+        a[i] := a[i] + 1
+    end parallel for
+end procedure

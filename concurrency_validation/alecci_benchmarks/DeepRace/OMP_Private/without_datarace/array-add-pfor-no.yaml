@@ -1,0 +1,6 @@
+# array-add-pfor-no – parallel for adds two arrays element-wise, each index independent
+# Inspired by for-loop_-_main.c (omp parallel for shared(a,b,c) private(i), c[i]=a[i]+b[i])
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

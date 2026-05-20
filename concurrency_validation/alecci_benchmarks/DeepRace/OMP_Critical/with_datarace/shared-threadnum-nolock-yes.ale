@@ -1,0 +1,8 @@
+// Race: parallel for, shared thread_num := thread_number without mutex
+// Inspired by OMP_Critical/with_datarace/conditional_-_main.c (shared thread_num = omp_get_thread_num())
+procedure main()
+    shared mutable thread_num := 0
+    parallel for i := 0 to 20 with 4 thread do
+        thread_num := thread_number
+    end parallel for
+end procedure

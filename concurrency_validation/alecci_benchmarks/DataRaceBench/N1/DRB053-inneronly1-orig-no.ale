@@ -1,0 +1,15 @@
+// DRB053 – Inner-only parallelism: outer loop sequential, inner loop parallel
+// a[20][20] flattened; for each i, threads share j-slices of row i, reading row i+1
+// No race: outer loop is sequential (row_i set before each parallel for);
+//   each j-slice in row i is written by exactly one thread; row i+1 is only read
+// label: N1
+procedure main()
+    shared mutable a := array(400, 1)
+    shared mutable row_i := 0
+    for i := 0 to 19 do
+        row_i := i
+        parallel for j := 0 to 20 with 4 thread do
+            a[row_i * 20 + j] := a[row_i * 20 + j] + a[(row_i + 1) * 20 + j]
+        end parallel for
+    end for
+end procedure

@@ -1,0 +1,6 @@
+# min-max-avg-mutex-no – parallel min/max/total update under a single mutex
+# Inspired by lab2_openmp_-_main.c (#pragma omp critical protecting all three scalars)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

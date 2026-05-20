@@ -1,0 +1,6 @@
+# DRB benchmark: DRB113-default-orig-no
+# Expected: no concurrency issues (race-free benchmark from DataRaceBench)
+
+expected_issues:
+  - none
+timeout: 10

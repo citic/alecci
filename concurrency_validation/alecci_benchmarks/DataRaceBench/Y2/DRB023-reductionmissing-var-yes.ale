@@ -1,0 +1,15 @@
+// DRB023 – Concurrent writes race: two threads write to shared i without sync
+// Adapted from sections pattern: 2-thread parallel for, each thread writes i
+// Race: i (write by thread 0) vs i (write by thread 1)
+// label: Y2
+procedure main()
+    shared mutable i := 0
+
+    parallel for k := 0 to 2 with 2 thread do
+        if thread_number = 0 then
+            i := 1
+        else
+            i := 2
+        end if
+    end parallel for
+end procedure

@@ -1,0 +1,20 @@
+// DRB054 – Inner-only parallelism (2): b[i*100+j] = b[(i-1)*100+(j-1)], outer sequential
+// No race: row_i set before each parallel for (sequential outer loop);
+//   each j-slot written by exactly one thread; previous row only read
+// label: N1
+procedure main()
+    shared mutable b := array(10000, 0)
+    shared mutable row_i := 0
+    for i := 0 to 100 do
+        for j := 0 to 100 do
+            b[i * 100 + j] := i * j
+        end for
+    end for
+
+    for i := 1 to 100 do
+        row_i := i
+        parallel for j := 1 to 100 with 4 thread do
+            b[row_i * 100 + j] := b[(row_i - 1) * 100 + (j - 1)]
+        end parallel for
+    end for
+end procedure

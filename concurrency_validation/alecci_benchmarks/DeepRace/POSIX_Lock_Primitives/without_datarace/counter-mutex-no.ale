@@ -1,0 +1,19 @@
+// No race: 4 threads increment shared counter with mutex protection
+// Inspired by POSIX_Lock_Primitives/without_datarace/withmutex.c
+// No race: mutex serializes all counter accesses
+procedure main()
+    shared mutable counter := 0
+    shared mutable mtx as mutex := mutex()
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable i := 0
+    while i < 1000 do
+        lock(mtx)
+        counter := counter + 1
+        unlock(mtx)
+        i := i + 1
+    end while
+end procedure

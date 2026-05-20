@@ -1,0 +1,7 @@
+# array-total-nolock-yes – parallel array reduction without critical section
+# Inspired by array_total_-_main.c (total += my_sum without critical)
+# Expected: data race on total
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

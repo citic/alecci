@@ -1,0 +1,6 @@
+# array-sum-mutex-no – 4 threads sum disjoint array segments, mutex-protected merge
+# Inspired by 010_mutex_array_sum.c
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

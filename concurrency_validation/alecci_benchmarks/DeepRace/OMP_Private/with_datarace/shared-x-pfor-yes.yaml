@@ -1,0 +1,7 @@
+# shared-x-pfor-yes – parallel for writes c[i]*10 to shared scalar x without mutex
+# Inspired by array_sum_-_main.c (omp parallel for, x = c[i]*10 shared, no private clause on x)
+# Expected: data race on x
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

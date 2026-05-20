@@ -1,0 +1,19 @@
+// Race: threads fetch-and-increment a shared work counter gi without lock
+// Inspired by OMP_Critical/with_datarace/for_dynamic_-_main.c
+// In OpenMP: i = gi; gi++ is not atomic — concurrent threads read stale gi
+// Race: gi (write) vs gi (read/write) across threads; A[i] may be written twice
+procedure main()
+    shared mutable gi := 0
+    shared mutable A := array(100, 0)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable i := gi
+    while i < 100 do
+        gi := gi + 1
+        A[i] := i * 2
+        i := gi
+    end while
+end procedure

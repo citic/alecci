@@ -1,0 +1,19 @@
+// No race: parallel partial sums accumulated into sum with critical section
+// Inspired by OMP_Critical/without_datarace/pi1_-_main.c
+// No race: mutex ensures correct reduction into shared sum
+procedure main()
+    shared mutable sum := 0
+    shared mutable mtx as mutex := mutex()
+    parallel for k := 0 to 4 with 4 thread do
+        mutable partial_sum := 0
+        mutable start := thread_number * 250
+        mutable i := 0
+        while i < 250 do
+            partial_sum := partial_sum + (start + i)
+            i := i + 1
+        end while
+        lock(mtx)
+        sum := sum + partial_sum
+        unlock(mtx)
+    end parallel for
+end procedure

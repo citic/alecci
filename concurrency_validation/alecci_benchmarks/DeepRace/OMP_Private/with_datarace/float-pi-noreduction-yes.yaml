@@ -1,0 +1,7 @@
+# float-pi-noreduction-yes – 4 threads compute PI partial sums, directly add to shared sum (no lock)
+# Inspired by PiReduction_-_main.c (omp parallel num_threads(NH) reduction(+:sum) — without reduction it races)
+# Expected: data race on sum
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

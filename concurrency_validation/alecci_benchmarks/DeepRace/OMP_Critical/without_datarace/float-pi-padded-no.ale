@@ -1,0 +1,24 @@
+// No race: 4 threads compute block-partitioned PI sums locally, merge with mutex
+// Inspired by OMP_Critical/without_datarace/helloWorldParallel_Atomic_-_main.c (per-thread block sum, critical merge)
+procedure main()
+    shared mutable sum as float := 0.0
+    shared mutable mtx as mutex := mutex()
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable step as float := 0.000005
+    mutable steps_per_thread := 50000
+    mutable start := steps_per_thread * thread_number
+    mutable thread_sum as float := 0.0
+    mutable i := start
+    while i < start + steps_per_thread do
+        mutable x as float := i * step + step * 0.5
+        thread_sum := thread_sum + 3.0 / (1.0 + (x * x))
+        i := i + 1
+    end while
+    lock(mtx)
+    sum := sum + thread_sum
+    unlock(mtx)
+end procedure

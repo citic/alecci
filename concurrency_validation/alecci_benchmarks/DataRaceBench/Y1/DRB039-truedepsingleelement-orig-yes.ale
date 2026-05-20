@@ -1,0 +1,14 @@
+// DRB039 – True dependence on single element: a[i] = a[i] + a[0]
+// Race: a[0] (read by all iterations) vs a[0] (written when i=0)
+// label: Y1
+procedure main()
+    shared mutable a := array(1000, 0)
+    a[0] := 2
+    for i := 1 to 1000 do
+        a[i] := i
+    end for
+
+    parallel for i := 0 to 1000 with 4 thread do
+        a[i] := a[i] + a[0]
+    end parallel for
+end procedure
