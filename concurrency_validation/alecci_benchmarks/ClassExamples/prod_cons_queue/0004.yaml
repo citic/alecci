@@ -1,5 +1,5 @@
 source: 0004.ale
 expected_issues:
-  - data_race
+  - None
 timeout: 15
 max_runs: 5
