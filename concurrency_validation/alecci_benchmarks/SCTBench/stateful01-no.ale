@@ -1,0 +1,31 @@
+// SCTBench benchmark: concurrent-software-benchmarks/stateful01_ok.c
+// Two threads operate on data1 and data2, all accesses under the same mutex.
+// Expected: no data race.
+
+procedure thread1(thread_number as int)
+    lock(ma)
+    data1 := data1 + 1
+    unlock(ma)
+    lock(ma)
+    data2 := data2 + 1
+    unlock(ma)
+end procedure
+
+procedure thread2(thread_number as int)
+    lock(ma)
+    data1 := data1 + 5
+    unlock(ma)
+    lock(ma)
+    data2 := data2 - 6
+    unlock(ma)
+end procedure
+
+procedure main()
+    shared mutable ma as mutex := mutex()
+    shared mutable data1 := 10
+    shared mutable data2 := 10
+    mutable t1 := create_threads(1, thread1)
+    mutable t2 := create_threads(1, thread2)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+end procedure

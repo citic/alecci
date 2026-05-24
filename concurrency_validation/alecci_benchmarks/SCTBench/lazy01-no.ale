@@ -1,0 +1,34 @@
+// SCTBench benchmark: concurrent-software-benchmarks/lazy01_bad.c
+// Atomicity violation: thread1 adds 1, thread2 adds 2, thread3 checks if data >= 3.
+// Bug: if thread3 runs after both thread1 and thread2, data==3 triggers assertion.
+// All accesses are under the same mutex — no data race.
+// TSan cannot detect this class of bug.
+
+procedure thread1(thread_number as int)
+    lock(mtx)
+    data := data + 1
+    unlock(mtx)
+end procedure
+
+procedure thread2(thread_number as int)
+    lock(mtx)
+    data := data + 2
+    unlock(mtx)
+end procedure
+
+procedure thread3(thread_number as int)
+    lock(mtx)
+    mutable val := data
+    unlock(mtx)
+end procedure
+
+procedure main()
+    shared mutable mtx as mutex := mutex()
+    shared mutable data := 0
+    mutable t1 := create_threads(1, thread1)
+    mutable t2 := create_threads(1, thread2)
+    mutable t3 := create_threads(1, thread3)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+    join_threads(t3, 1)
+end procedure

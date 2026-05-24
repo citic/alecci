@@ -1,0 +1,13 @@
+// SCTBench benchmark: inspect_examples/race01.c
+// Two threads concurrently increment a shared variable without synchronization.
+// Expected: data race on variable data.
+
+procedure worker(thread_number as int)
+    data := data + 1
+end procedure
+
+procedure main()
+    shared mutable data := 0
+    mutable threads := create_threads(2, worker)
+    join_threads(threads, 2)
+end procedure

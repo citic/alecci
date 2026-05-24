@@ -1,0 +1,7 @@
+# SCTBench benchmark: concurrent-software-benchmarks/stateful01_ok.c
+# Two threads operate on data1 and data2, all accesses under the same mutex.
+# Expected: no concurrency issues.
+
+expected_issues:
+  - none
+timeout: 10

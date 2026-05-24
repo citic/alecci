@@ -1,0 +1,27 @@
+// SCTBench benchmark: concurrent-software-benchmarks/wronglock_bad.c
+// funcA protects dataValue with mtx_data; funcB uses mtx_this instead.
+// Using different mutexes for the same shared variable causes a data race.
+// Expected: data race on variable data_value.
+
+procedure funcA(thread_number as int)
+    lock(mtx_data)
+    mutable x := data_value
+    data_value := data_value + 1
+    unlock(mtx_data)
+end procedure
+
+procedure funcB(thread_number as int)
+    lock(mtx_this)
+    data_value := data_value + 1
+    unlock(mtx_this)
+end procedure
+
+procedure main()
+    shared mutable mtx_data as mutex := mutex()
+    shared mutable mtx_this as mutex := mutex()
+    shared mutable data_value := 0
+    mutable t_a := create_threads(1, funcA)
+    mutable t_b := create_threads(7, funcB)
+    join_threads(t_a, 1)
+    join_threads(t_b, 7)
+end procedure

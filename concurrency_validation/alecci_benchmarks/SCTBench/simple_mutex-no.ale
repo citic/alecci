@@ -1,0 +1,24 @@
+// SCTBench benchmark: inspect_examples/simple1.c
+// Two threads increment a shared counter, both using the same mutex.
+// Expected: no data race.
+
+procedure thread1(thread_number as int)
+    lock(g_mutex)
+    counter := counter + 1
+    unlock(g_mutex)
+end procedure
+
+procedure thread2(thread_number as int)
+    lock(g_mutex)
+    counter := counter + 1
+    unlock(g_mutex)
+end procedure
+
+procedure main()
+    shared mutable g_mutex as mutex := mutex()
+    shared mutable counter := 0
+    mutable t1 := create_threads(1, thread1)
+    mutable t2 := create_threads(1, thread2)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+end procedure

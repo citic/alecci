@@ -1,0 +1,7 @@
+# SCTBench benchmark: inspect_examples/simple1.c
+# Two threads increment a shared counter protected by the same mutex.
+# Expected: no concurrency issues.
+
+expected_issues:
+  - none
+timeout: 10

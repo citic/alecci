@@ -1,0 +1,7 @@
+# SCTBench benchmark: concurrent-software-benchmarks/wronglock_bad.c
+# funcA uses mtx_data; funcB uses mtx_this — different mutexes for same shared variable.
+# Expected: data race detected by TSan.
+
+expected_issues:
+  - data_race
+timeout: 10

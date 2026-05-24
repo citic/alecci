@@ -1,0 +1,39 @@
+// SCTBench benchmark: concurrent-software-benchmarks/account_ok.c
+// Three threads (deposit, withdraw, check_result) share one mutex protecting balance.
+// Expected: no data race.
+
+procedure deposit(thread_number as int)
+    lock(m)
+    balance := balance + y
+    deposit_done := 1
+    unlock(m)
+end procedure
+
+procedure withdraw(thread_number as int)
+    lock(m)
+    balance := balance - z
+    withdraw_done := 1
+    unlock(m)
+end procedure
+
+procedure check_result(thread_number as int)
+    lock(m)
+    mutable dd := deposit_done
+    mutable wd := withdraw_done
+    unlock(m)
+end procedure
+
+procedure main()
+    shared mutable m as mutex := mutex()
+    shared mutable balance := 100
+    shared mutable y := 10
+    shared mutable z := 20
+    shared mutable deposit_done := 0
+    shared mutable withdraw_done := 0
+    mutable t1 := create_threads(1, deposit)
+    mutable t2 := create_threads(1, withdraw)
+    mutable t3 := create_threads(1, check_result)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+    join_threads(t3, 1)
+end procedure

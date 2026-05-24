@@ -1,0 +1,8 @@
+# SCTBench benchmark: concurrent-software-benchmarks/twostage_bad.c
+# Atomicity violation: funcA sets two values under separate locks; funcB reads them.
+# All accesses are mutex-protected — TSan cannot detect this atomicity violation.
+# Included as a known-buggy benchmark that exercises a beyond-data-race bug class.
+
+expected_issues:
+  - none
+timeout: 10

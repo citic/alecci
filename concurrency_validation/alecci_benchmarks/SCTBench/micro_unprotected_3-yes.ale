@@ -1,0 +1,17 @@
+// SCTBench benchmark: concurrent-software-benchmarks/micro_3_ok.c
+// Three threads each perform 100 increments on a shared counter without any lock.
+// Expected: data race on variable x.
+
+procedure worker(thread_number as int)
+    mutable i := 0
+    while i < 100 do
+        x := x + 1
+        i := i + 1
+    end while
+end procedure
+
+procedure main()
+    shared mutable x := 0
+    mutable threads := create_threads(3, worker)
+    join_threads(threads, 3)
+end procedure

@@ -1,0 +1,23 @@
+// SCTBench benchmark: concurrent-software-benchmarks/reorder_4_bad.c
+// Set threads write a and b without synchronization; check thread reads them.
+// Uses 3 set threads + 1 check thread (iSet=3, iCheck=1).
+// Expected: data race on variables a and b.
+
+procedure set_worker(thread_number as int)
+    a := 1
+    b := -1
+end procedure
+
+procedure check_worker(thread_number as int)
+    mutable x := a
+    mutable y := b
+end procedure
+
+procedure main()
+    shared mutable a := 0
+    shared mutable b := 0
+    mutable t_set := create_threads(3, set_worker)
+    mutable t_check := create_threads(1, check_worker)
+    join_threads(t_set, 3)
+    join_threads(t_check, 1)
+end procedure

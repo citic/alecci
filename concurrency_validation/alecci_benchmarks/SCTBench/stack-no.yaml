@@ -1,0 +1,8 @@
+# SCTBench benchmark: concurrent-software-benchmarks/stack_bad.c
+# Atomicity violation: t2 may pop from empty stack after seeing flag=1.
+# All accesses are protected by the same mutex — TSan cannot detect this bug.
+# Included as a known-buggy benchmark that exercises a beyond-data-race bug class.
+
+expected_issues:
+  - none
+timeout: 10

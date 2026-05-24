@@ -1,0 +1,34 @@
+// SCTBench benchmark: concurrent-software-benchmarks/twostage_bad.c
+// Atomicity violation: funcA sets data1Value then data2Value under separate locks.
+// funcB reads data1Value then data2Value under separate locks and expects consistency.
+// Bug: atomicity violation between the two lock regions; no data race.
+// TSan cannot detect this class of bug.
+
+procedure funcA(thread_number as int)
+    lock(data1_lock)
+    data1_value := 1
+    unlock(data1_lock)
+    lock(data2_lock)
+    data2_value := data1_value + 1
+    unlock(data2_lock)
+end procedure
+
+procedure funcB(thread_number as int)
+    lock(data1_lock)
+    mutable t1 := data1_value
+    unlock(data1_lock)
+    lock(data2_lock)
+    mutable t2 := data2_value
+    unlock(data2_lock)
+end procedure
+
+procedure main()
+    shared mutable data1_lock as mutex := mutex()
+    shared mutable data2_lock as mutex := mutex()
+    shared mutable data1_value := 0
+    shared mutable data2_value := 0
+    mutable t_a := create_threads(1, funcA)
+    mutable t_b := create_threads(2, funcB)
+    join_threads(t_a, 1)
+    join_threads(t_b, 2)
+end procedure

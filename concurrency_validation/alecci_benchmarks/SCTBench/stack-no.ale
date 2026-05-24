@@ -1,0 +1,41 @@
+// SCTBench benchmark: concurrent-software-benchmarks/stack_bad.c
+// Atomicity violation: t1 pushes items onto a shared array stack; t2 pops if flag is set.
+// Bug: t2 may see flag=1 but pop from an empty stack (assertion failure).
+// All accesses are under the same mutex — no data race.
+// TSan cannot detect this class of bug.
+
+procedure t1(thread_number as int)
+    mutable i := 0
+    while i < 10 do
+        lock(m)
+        arr[top] := i
+        top := top + 1
+        flag := 1
+        unlock(m)
+        i := i + 1
+    end while
+end procedure
+
+procedure t2(thread_number as int)
+    mutable i := 0
+    while i < 10 do
+        lock(m)
+        if flag = 1 then
+            top := top - 1
+            mutable val := arr[top]
+        end if
+        unlock(m)
+        i := i + 1
+    end while
+end procedure
+
+procedure main()
+    shared mutable m as mutex := mutex()
+    shared mutable arr := array(10, 0)
+    shared mutable top := 0
+    shared mutable flag := 0
+    mutable th1 := create_threads(1, t1)
+    mutable th2 := create_threads(1, t2)
+    join_threads(th1, 1)
+    join_threads(th2, 1)
+end procedure

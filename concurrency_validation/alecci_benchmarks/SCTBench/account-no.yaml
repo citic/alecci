@@ -1,0 +1,7 @@
+# SCTBench benchmark: concurrent-software-benchmarks/account_ok.c
+# Three threads (deposit, withdraw, check_result) share one mutex protecting balance.
+# Expected: no concurrency issues.
+
+expected_issues:
+  - none
+timeout: 10

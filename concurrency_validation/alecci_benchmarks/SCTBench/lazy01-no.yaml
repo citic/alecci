@@ -1,0 +1,8 @@
+# SCTBench benchmark: concurrent-software-benchmarks/lazy01_bad.c
+# Atomicity violation: thread3 may observe data >= 3 after both increments complete.
+# All accesses are protected by the same mutex — TSan cannot detect this bug.
+# Included as a known-buggy benchmark that exercises a beyond-data-race bug class.
+
+expected_issues:
+  - none
+timeout: 10

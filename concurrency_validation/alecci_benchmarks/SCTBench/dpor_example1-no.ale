@@ -1,0 +1,34 @@
+// SCTBench benchmark: inspect_examples/dpor-example1.c
+// Concurrent open-addressing hash table with per-slot mutexes.
+// 13 threads each insert 4 values; collisions are resolved by linear probing.
+// The cas() helper is inlined since Alecci has no by-reference arguments.
+// pthread_exit is replaced by bounding the outer loop to MAX=4 iterations.
+// Expected: no data race.
+
+procedure worker(thread_number as int)
+    mutable m := 0
+    while m < 4 do
+        m := m + 1
+        mutable w := m * 11 + thread_number
+        mutable h := (w * 7) % 128
+        mutable inserted := 0
+        while inserted = 0 do
+            lock(cas_mutex[h])
+            if table[h] = 0 then
+                table[h] := w
+                inserted := 1
+            end if
+            unlock(cas_mutex[h])
+            if inserted = 0 then
+                h := (h + 1) % 128
+            end if
+        end while
+    end while
+end procedure
+
+procedure main()
+    shared mutable table := array(128, 0)
+    shared mutable cas_mutex := array(128, mutex())
+    mutable threads := create_threads(13, worker)
+    join_threads(threads, 13)
+end procedure

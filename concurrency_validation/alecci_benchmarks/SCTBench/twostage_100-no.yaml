@@ -1,0 +1,8 @@
+# SCTBench benchmark: concurrent-software-benchmarks/twostage_100_bad.c
+# Atomicity violation with 99 funcA threads + 1 funcB thread.
+# All accesses are mutex-protected — TSan cannot detect this atomicity violation.
+# Included as a known-buggy benchmark that exercises a beyond-data-race bug class.
+
+expected_issues:
+  - none
+timeout: 30
