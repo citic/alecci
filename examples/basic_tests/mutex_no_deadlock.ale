@@ -1,0 +1,26 @@
+// Consistent lock ordering: both procedures acquire mtx_a before mtx_b.
+// No cycle in the lock graph.
+// Expected: no deadlock warning.
+
+procedure funcA(thread_number as int)
+    lock(mtx_a)
+    lock(mtx_b)
+    unlock(mtx_b)
+    unlock(mtx_a)
+end procedure
+
+procedure funcB(thread_number as int)
+    lock(mtx_a)
+    lock(mtx_b)
+    unlock(mtx_b)
+    unlock(mtx_a)
+end procedure
+
+procedure main()
+    shared mutable mtx_a as mutex := mutex()
+    shared mutable mtx_b as mutex := mutex()
+    mutable ta := create_threads(1, funcA)
+    mutable tb := create_threads(1, funcB)
+    join_threads(ta, 1)
+    join_threads(tb, 1)
+end procedure

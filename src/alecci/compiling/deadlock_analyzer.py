@@ -288,13 +288,276 @@ def _check_depletion(
 
 
 # ---------------------------------------------------------------------------
+# Lock-graph deadlock analyzer (mutexes + semaphores)
+# ---------------------------------------------------------------------------
+
+class LockGraphAnalyzer:
+    """
+    Lock-graph cycle detector for mutexes and semaphores.
+
+    Builds a directed lock-ordering graph: edge A→B means "resource B was
+    acquired while A was already held."  A cycle of length ≥ 2 indicates a
+    potential deadlock (circular-wait condition).
+
+    Covers both mutexes (lock/unlock) and semaphores (wait/signal) uniformly.
+    Array-indexed resources (lock(arr[h])) are collapsed to 'arr[]'.
+    Uses a may-analysis: all branches and loops are explored with a snapshot
+    of the held-set, so no real deadlock is missed (but false positives are
+    possible when lock patterns are branch-exclusive).
+    """
+
+    ACQUIRE_OPS: frozenset = frozenset({'lock', 'wait'})
+    RELEASE_OPS: frozenset = frozenset({'unlock', 'signal'})
+
+    def __init__(self, ast: dict, source_filename: str) -> None:
+        self.ast = ast
+        self.source_filename = source_filename
+        self.procedures: Dict[str, list] = {}
+        self.resource_names: Set[str] = set()
+        self.edges: List[Tuple[str, str, str]] = []  # (holder, acquired, proc_name)
+        self.thread_procs: Dict[str, int] = {}       # proc_name -> max thread count
+
+    def analyze(self) -> None:
+        self._collect_procedures()
+        self._collect_resources()
+        self._collect_thread_procs()
+        if not self.resource_names:
+            return
+        for proc_name, body in self.procedures.items():
+            self._walk_body(body, frozenset(), proc_name, frozenset())
+        self._detect_cycles()
+
+    def _collect_procedures(self) -> None:
+        for decl in self.ast.get('declarations', []):
+            if isinstance(decl, dict) and decl.get('type') in ('procedure', 'function'):
+                self.procedures[decl['name']] = decl.get('body', [])
+
+    def _collect_resources(self) -> None:
+        """Collect mutex/semaphore global names.  Array resources as 'name[]'."""
+        for node in _walk_all_nodes(self.ast):
+            if not isinstance(node, dict):
+                continue
+            if not (node.get('type') == 'declaration' and node.get('shared')):
+                continue
+            init = node.get('init', {})
+            value = init.get('value', {}) if isinstance(init, dict) else {}
+            if not isinstance(value, dict):
+                continue
+            fname = value.get('name')
+            if fname in ('mutex', 'semaphore'):
+                self.resource_names.add(node['name'])
+            elif fname == 'array':
+                args = value.get('arguments', [])
+                if len(args) >= 2:
+                    elem = args[1]
+                    if isinstance(elem, dict) and elem.get('name') in ('mutex', 'semaphore'):
+                        self.resource_names.add(node['name'] + '[]')
+
+    def _collect_thread_procs(self) -> None:
+        """Record max thread count for each procedure used as a thread entry."""
+        # create_threads is usually assigned: "mutable t := create_threads(N, proc)"
+        # so it lives inside a declaration's init.value, not as a top-level statement.
+        # We check both standalone calls (funcCall nodes) and declaration init values.
+        candidate_calls: List[dict] = []
+        for node in _walk_all_nodes(self.ast):
+            if not isinstance(node, dict):
+                continue
+            if node.get('type') == 'function_call':
+                candidate_calls.append(node)
+            elif node.get('type') == 'declaration':
+                init = node.get('init', {})
+                value = init.get('value', {}) if isinstance(init, dict) else {}
+                if isinstance(value, dict) and value.get('type') == 'function_call':
+                    candidate_calls.append(value)
+
+        for call in candidate_calls:
+            call_name = call.get('name')
+            args = call.get('arguments', [])
+            if call_name == 'create_threads' and len(args) >= 2:
+                count_node, proc_node = args[0], args[1]
+                if isinstance(proc_node, dict) and proc_node.get('type') == 'ID':
+                    proc_name = proc_node.get('value')
+                    count = 0
+                    if isinstance(count_node, dict) and count_node.get('type') == 'literal':
+                        count = int(count_node.get('value', 0))
+                    self.thread_procs[proc_name] = max(
+                        self.thread_procs.get(proc_name, 0), count
+                    )
+            elif call_name == 'create_thread' and args:
+                proc_node = args[0]
+                if isinstance(proc_node, dict) and proc_node.get('type') == 'ID':
+                    proc_name = proc_node.get('value')
+                    self.thread_procs[proc_name] = max(
+                        self.thread_procs.get(proc_name, 0), 1
+                    )
+
+    def _resource_name_from_arg(self, arg: dict) -> Optional[str]:
+        """
+        Extract the lock-graph resource name from a function-call argument.
+        Simple identifier  → 'name'   (if a known resource)
+        Array access       → 'name[]' (if the array is a known resource)
+        Returns None if the argument is not a known resource.
+        """
+        if not isinstance(arg, dict):
+            return None
+        if arg.get('type') == 'ID':
+            name = arg.get('value')
+            if name in self.resource_names:
+                return name
+        elif arg.get('type') == 'array_access':
+            arr = arg.get('array', {})
+            if isinstance(arr, dict) and arr.get('type') == 'ID':
+                candidate = arr.get('value', '') + '[]'
+                if candidate in self.resource_names:
+                    return candidate
+        return None
+
+    def _walk_body(
+        self,
+        body: list,
+        held: frozenset,
+        proc_name: str,
+        visiting: frozenset,
+    ) -> None:
+        """
+        Walk a statement list sequentially, tracking the held-resource set.
+
+        Acquire ops (lock/wait): record edges from every currently-held resource
+        to the newly acquired one, then add it to held.
+        Release ops (unlock/signal): remove from held.
+        Procedure calls: recurse with current held snapshot (inlining).
+        Branches/loops: recurse with a held snapshot (may-analysis; no merge back).
+        """
+        current_held: Set[str] = set(held)
+        for node in body:
+            if not isinstance(node, dict):
+                continue
+            node_type = node.get('type')
+
+            if node_type == 'function_call':
+                call_name = node.get('name', '')
+                args = node.get('arguments', [])
+                if call_name in self.ACQUIRE_OPS and args:
+                    resource = self._resource_name_from_arg(args[0])
+                    if resource is not None:
+                        for held_res in current_held:
+                            self.edges.append((held_res, resource, proc_name))
+                        current_held.add(resource)
+                elif call_name in self.RELEASE_OPS and args:
+                    resource = self._resource_name_from_arg(args[0])
+                    if resource is not None:
+                        current_held.discard(resource)
+                elif call_name in self.procedures and call_name not in visiting:
+                    self._walk_body(
+                        self.procedures[call_name],
+                        frozenset(current_held),
+                        proc_name,
+                        visiting | {call_name},
+                    )
+
+            elif node_type == 'if':
+                snap = frozenset(current_held)
+                self._walk_body(node.get('then_body', []), snap, proc_name, visiting)
+                self._walk_body(node.get('else_body', []), snap, proc_name, visiting)
+
+            elif node_type in ('while', 'for', 'parallel_for'):
+                self._walk_body(
+                    node.get('body', []), frozenset(current_held), proc_name, visiting
+                )
+
+            elif node_type == 'case':
+                snap = frozenset(current_held)
+                for arm in node.get('arms', []):
+                    self._walk_body(arm.get('body', []), snap, proc_name, visiting)
+                default_body = node.get('default_body') or []
+                self._walk_body(default_body, snap, proc_name, visiting)
+
+            elif node_type == 'block':
+                self._walk_body(
+                    node.get('body', []), frozenset(current_held), proc_name, visiting
+                )
+
+    def _detect_cycles(self) -> None:
+        """
+        Build an adjacency set from collected edges and run DFS cycle detection.
+        Reports each unique cycle (identified by its directed edge set) at most once.
+        """
+        adjacency: Dict[str, Set[Tuple[str, str]]] = {}
+        for holder, acquired, proc_name in self.edges:
+            adjacency.setdefault(holder, set())
+            adjacency.setdefault(acquired, set())
+            adjacency[holder].add((acquired, proc_name))
+
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: Dict[str, int] = {n: WHITE for n in adjacency}
+        reported: Set[frozenset] = set()
+
+        def dfs(node: str, path: List[Tuple[str, str]]) -> None:
+            color[node] = GRAY
+            for neighbor, edge_proc in adjacency.get(node, set()):
+                if color.get(neighbor) == GRAY:
+                    start_idx = next(
+                        i for i, (n, _) in enumerate(path) if n == neighbor
+                    )
+                    cycle_path = path[start_idx:]
+                    cycle_nodes = [n for n, _ in cycle_path] + [neighbor]
+                    # Skip self-loops (double-lock on same resource)
+                    if len(set(cycle_nodes[:-1])) < 2:
+                        continue
+                    edge_set = frozenset(zip(cycle_nodes[:-1], cycle_nodes[1:]))
+                    if edge_set in reported:
+                        continue
+                    reported.add(edge_set)
+                    cycle_procs = [p for _, p in cycle_path[1:]] + [edge_proc]
+                    involved_procs = set(cycle_procs) - {''}
+                    self._maybe_warn(cycle_nodes, involved_procs)
+                elif color.get(neighbor, WHITE) == WHITE:
+                    dfs(neighbor, path + [(neighbor, edge_proc)])
+            color[node] = BLACK
+
+        for node in list(adjacency.keys()):
+            if color[node] == WHITE:
+                dfs(node, [(node, '')])
+
+    def _maybe_warn(self, cycle_nodes: List[str], involved_procs: Set[str]) -> None:
+        """Apply non-concurrency pruning, then emit a deadlock warning."""
+        # Infeasible: all edges came from main() — only one main thread
+        if involved_procs <= {'main'}:
+            return
+        # Infeasible: single non-main procedure with at most 1 thread instance
+        if len(involved_procs) == 1:
+            proc = next(iter(involved_procs))
+            if self.thread_procs.get(proc, 2) <= 1:
+                return
+
+        cycle_str = ' -> '.join(cycle_nodes)
+        proc_details = ', '.join(
+            f"'{p}' ({self.thread_procs.get(p, '?')} threads)"
+            if p != 'main' else "'main'"
+            for p in sorted(involved_procs)
+        )
+        _warn(
+            self.source_filename,
+            f"potential deadlock detected (lock-ordering cycle).\n"
+            f"  Lock cycle: {cycle_str}\n"
+            f"  Involved procedures: {proc_details}\n"
+            f"  Hint: resources are acquired in inconsistent order across concurrent threads.",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
 def analyze(ast: dict, source_filename: str) -> None:
     """
-    Run Tier 1 static semaphore token-flow analysis on the parsed AST.
+    Run static deadlock analysis on the parsed AST.
     Emits warnings to stderr; does not terminate compilation.
+
+    Checks performed:
+      1. Semaphore token-flow: flags semaphores that can be permanently drained.
+      2. Infinite recursion: flags procedures that call themselves transitively.
+      3. Lock-graph cycle: flags mutex/semaphore acquire-order cycles (deadlock).
 
     Args:
         ast             : program AST dict as produced by parser.toAst()
@@ -302,18 +565,15 @@ def analyze(ast: dict, source_filename: str) -> None:
     """
     semaphores, procedures, thread_entries = _collect_symbols(ast)
 
-    if not semaphores:
-        return  # Nothing to analyze
+    if semaphores:
+        all_deltas: Dict[str, Dict[str, int]] = {}
+        for proc_name in procedures:
+            all_deltas[proc_name] = _compute_delta(
+                proc_name, semaphores, procedures, set(), 0
+            )
+        _check_depletion(semaphores, all_deltas, source_filename)
 
-    # Compute per-procedure deltas
-    all_deltas: Dict[str, Dict[str, int]] = {}
-    for proc_name in procedures:
-        all_deltas[proc_name] = _compute_delta(
-            proc_name, semaphores, procedures, set(), 0
-        )
+    if procedures:
+        _find_recursive_cycles(procedures, source_filename)
 
-    # Depletion checks
-    _check_depletion(semaphores, all_deltas, source_filename)
-
-    # Companion: infinite recursion
-    _find_recursive_cycles(procedures, source_filename)
+    LockGraphAnalyzer(ast, source_filename).analyze()
