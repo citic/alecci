@@ -22,17 +22,17 @@ end procedure
 
 procedure hydrogen()
   wait(hydrogen_multiplex)
-  wait(device_barrier)
+  barrier_wait(device_barrier)
   bond('H')
-  wait(device_barrier)
+  barrier_wait(device_barrier)
   signal(hydrogen_multiplex)
 end procedure
 
 procedure oxygen()
   wait(oxygen_multiplex)
-  wait(device_barrier)
+  barrier_wait(device_barrier)
   bond('O')
-  wait(device_barrier)
+  barrier_wait(device_barrier)
   signal(oxygen_multiplex)
 end procedure
 

@@ -1,5 +1,6 @@
 source: 0004.ale
 expected_issues:
+  - data_race
   - deadlock
   - thread_leak
 timeout: 15

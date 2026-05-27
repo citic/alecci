@@ -200,6 +200,28 @@ class CodeGenerator:
         return variant_utils.declare_external_fn(self.module, name, return_ty,
                                                   arg_tys, var_arg)
 
+    def _get_arg_var_type(self, arg0) -> str:
+        """Return the declared type string for a variable-reference argument node.
+
+        Returns 'unknown' if the argument is not a simple variable reference or
+        the name is not found in locals/globals.
+        """
+        name = None
+        if isinstance(arg0, dict):
+            if arg0.get('type') == 'ID':
+                name = arg0.get('value')
+            elif arg0.get('type') == 'literal' and isinstance(arg0.get('value'), str):
+                name = arg0.get('value')
+        if name is None:
+            return 'unknown'
+        if name in self.locals:
+            _, dtype, _ = self.locals[name]
+            return dtype
+        if name in self.globals:
+            _, dtype, _ = self.globals[name]
+            return dtype
+        return 'unknown'
+
     def _resolve_arg_ptr(self, arg0, expected_ty=None) -> ir.Value:
         """Resolve a sync-primitive argument node to a pointer value.
 
@@ -2307,6 +2329,12 @@ class CodeGenerator:
             return join_thread(self.builder, self.module, thread_arg)
         elif func_name in ('wait', 'signal'):
             opaque_ty = ir.IntType(8).as_pointer()
+            arg_type = self._get_arg_var_type(node['arguments'][0])
+            if arg_type == 'barrier':
+                self.semantic_error(
+                    f"{func_name}() cannot be called on a barrier; "
+                    f"use barrier_wait() to synchronize on a barrier"
+                )
             sem_ptr = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
             if not hasattr(sem_ptr, 'type') or not isinstance(sem_ptr.type, ir.PointerType):
                 raise Exception(f"Semaphore argument to {func_name}() is not a pointer.")

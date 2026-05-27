@@ -23,14 +23,14 @@ end procedure
 
 procedure hydrogen(id)
   wait(hydrogen_queue)
-  wait(can_bond)
+  barrier_wait(can_bond)
   bond('H', id)
   signal(hydrogen_queue)
 end procedure
 
 procedure oxygen(id)
   wait(oxygen_queue)
-  wait(can_bond)
+  barrier_wait(can_bond)
   bond('O', id)
   signal(oxygen_queue)
 end procedure

@@ -38,14 +38,14 @@ end procedure
 
 procedure hydrogen()
   wait(hydrogen_multiplex)
-  wait(can_enter_device)
+  barrier_wait(can_enter_device)
   bond('H')
   wait(hydrogen_multiplex)
 end procedure
 
 procedure oxygen()
   wait(oxygen_multiplex)
-  wait(can_enter_device)
+  barrier_wait(can_enter_device)
   bond('O')
   signal(oxygen_multiplex)
 end procedure
