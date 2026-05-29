@@ -19,7 +19,7 @@ The original SCTBench repository organises programs into several subdirectories:
 | `radbench/` | Radically concurrency-buggy programs |
 | `splash2/` | SPLASH-2 parallel benchmark suite |
 
-## Selected Benchmarks (42)
+## Selected Benchmarks (45)
 
 ### Race benchmarks — TSan detects `data_race`
 
@@ -74,14 +74,26 @@ The original SCTBench repository organises programs into several subdirectories:
 | `sync02-no.ale` | `concurrent-software-benchmarks/sync02_ok.c` | Correct condvar producer-consumer (N=20) | 2 |
 | `arithmetic_prog-no.ale` | `concurrent-software-benchmarks/arithmetic_prog_ok.c` | Correct condvar accumulation (N=4) | 2 |
 | `arithmetic_prog_bad-no.ale` | `concurrent-software-benchmarks/arithmetic_prog_bad.c` | Wrong assertion (dropped); no race (N=3) | 2 |
-| `sync01_bad-no.ale` | `concurrent-software-benchmarks/sync01_bad.c` | Condvar deadlock (num never decremented); times out | 2 |
-| `sync02_bad-no.ale` | `concurrent-software-benchmarks/sync02_bad.c` | Condvar deadlock (num starts at 2); times out | 2 |
+| `sync01_bad-no.ale` | `concurrent-software-benchmarks/sync01_bad.c` | Condvar deadlock (num never decremented); TSan miss | 2 |
+| `sync02_bad-no.ale` | `concurrent-software-benchmarks/sync02_bad.c` | Condvar deadlock (num starts at 2); TSan miss | 2 |
 | `carter01_bad-no.ale` | `concurrent-software-benchmarks/carter01_bad.c` | Potential mutex deadlock; TSan silent | 4 |
+| `circular-buffer-flag-no.ale` | `concurrent-software-benchmarks/circular_buffer_bad.c` | Atomicity violation — consumer counter diverges from insert sequence | 2 |
+| `circular-buffer-flag-ok-no.ale` | `concurrent-software-benchmarks/circular_buffer_ok.c` | Correct flag-based buffer; TSan silent | 2 |
+| `queue-flag-no.ale` | `concurrent-software-benchmarks/queue_bad.c` | Atomicity violation — dequeue index diverges from enqueue sequence | 2 |
 
-The four atomicity-violation benchmarks (`lazy01`, `stack`, `twostage`, `twostage_100`) are from
-**known-buggy** SCTBench entries. Their bugs arise from multiple mutex-protected regions that
-should execute atomically but do not; all memory accesses are under some mutex so TSan cannot
-detect them. They are included to represent this class of beyond-data-race bug.
+The seven atomicity-violation benchmarks (`lazy01`, `stack`, `twostage`, `twostage_100`, `circular-buffer-flag`, `circular-buffer-flag-ok`, `queue-flag`) are from
+**known-buggy** SCTBench entries (plus `circular-buffer-flag-ok` which is bug-free but included for
+completeness alongside its `_bad` counterpart). Their bugs arise from atomicity violations between
+separately mutex-protected regions; all memory accesses are under some mutex so TSan cannot
+detect them. They represent the class of beyond-data-race concurrency bug.
+
+`circular-buffer-flag-no.ale` and `queue-flag-no.ale` use flag-based alternation (no condvars): each
+thread checks a `send`/`enqueue_flag` boolean under the single mutex and advances its loop counter
+regardless of whether it acted. The atomicity violation is that the consumer's loop index diverges
+from the producer's insert sequence, causing an assertion failure in the original C. Since Alecci has
+no `assert`, both programs complete without error — the bug is silent. `queue-flag-no.ale` uses an
+Alecci `record` type (`QType`) to model the queue's `head`/`tail`/`amount` fields; the element array
+is a separate shared variable because Alecci does not yet support `record.field[index]` indexing.
 
 Note on naming: SCTBench uses `_ok` to mean "no assertion violation under tested schedules",
 not "no data race". `micro_2_ok.c`, `micro_3_ok.c`, and `micro_10_ok.c` are in fact racy programs.
@@ -93,8 +105,8 @@ is silent on logic bugs.
 
 The condvar benchmarks require Alecci's `condvar` type and `cond_wait` / `cond_signal` /
 `cond_broadcast` built-ins. The `_bad` condvar variants deadlock at runtime (condvar hang); TSan
-cannot detect this class of bug so they are classified as `expected_issues: [none]` with a short
-timeout.
+cannot detect this class of bug. They are classified as `expected_issues: [deadlock]` (matching
+the `buggy.txt` ground truth) but TSan will miss them — the program simply times out.
 
 The dining-philosopher `_unsat` variants acquire forks in different orders across threads while
 serialised by a shared `esbmc_m` mutex (translating `__ESBMC_atomic_begin/end` from `common.inc`).
@@ -108,9 +120,9 @@ Results are labelled against the **source ground truth** from `buggy.txt` / `map
 
 | Outcome | Count | Notes |
 |---|---|---|
-| PASS | 30 | TSan detects exactly what the source says |
+| PASS | 31 | TSan detects exactly what the source says |
 | UNEXPECTED | 11 | TSan reports more than the ground truth |
-| MISS | 0 | — |
+| MISS | 2 | `sync01_bad`, `sync02_bad`: condvar deadlocks, TSan silent |
 | MISS+UNEXPECTED | 1 | `din_phil2_sat`: data race missed, spurious deadlock reported |
 
 **TSan false positives (lock-order-inversion):** All 12 unexpected/MISS+UNEXPECTED results arise
@@ -142,9 +154,7 @@ TSan still observes the two orderings (right→left vs left→right across threa
 |---|---|
 | `phase01_bad.c` | Uses `__ESBMC_atomic_begin()` / `__ESBMC_atomic_end()` with semantics beyond a simple mutex wrap |
 | `token_ring_bad.c` | Uses `__ESBMC_atomic_begin()` / `__ESBMC_atomic_end()` with semantics beyond a simple mutex wrap |
-| `bluetooth_driver_bad.c` | Complex state machine; uses multiple condition variables and linked list traversal |
-| `circular_buffer_bad.c` | Uses condition variables for producer/consumer coordination with complex buffer management |
-| `queue_bad.c` | Uses condition variables with dynamic linked-list queue — complex data structures |
+| `bluetooth_driver_bad.c` | Complex state machine; uses `__ESBMC_atomic_begin/end` plus multiple condition variables |
 | `fsbench_bad.c` | File-system benchmark — requires file I/O and kernel interfaces unavailable in Alecci |
 | `ctrace-test.c` (inspect_examples) | Tracing library with sockets, linked lists, dynamic allocation, semaphores — far too complex for Alecci |
 
@@ -164,6 +174,9 @@ Previously excluded files that are now included:
 | `din_phil2_unsat.c` through `din_phil7_unsat.c` | `din_philN_unsat-no.ale` |
 | `din_phil2_sat.c` through `din_phil7_sat.c` | `din_philN_sat-yes.ale` |
 | `account_bad.c` | `account_bad-no.ale` |
+| `circular_buffer_bad.c` | `circular-buffer-flag-no.ale` (record support; `_Bool`→`int`; assert dropped) |
+| `circular_buffer_ok.c` | `circular-buffer-flag-ok-no.ale` (record support; `_Bool`→`int`; assert dropped) |
+| `queue_bad.c` | `queue-flag-no.ale` (record support for `QType` struct; assert dropped) |
 
 ## Running the Tests
 

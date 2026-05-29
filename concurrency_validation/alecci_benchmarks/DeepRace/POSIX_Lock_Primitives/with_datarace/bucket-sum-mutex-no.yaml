@@ -1,0 +1,8 @@
+# DeepRace POSIX/with_datarace: dana.c
+# 7 threads accumulate into 10 buckets with per-update mutex protection.
+# Ground truth: data_race (original dataset, dana.c is in with_datarace/).
+# TSan may miss this — all Alecci shared accesses are under the mutex.
+
+expected_issues:
+  - data_race
+timeout: 10

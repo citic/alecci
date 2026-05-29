@@ -23,6 +23,13 @@ from typing import Dict, List, Tuple, Optional
 # Import the TSan parser from the same directory
 from tsan_parser import parse_tsan_output, get_detected_issue_list, format_issues_for_csv
 
+try:
+    import argcomplete
+    from argcomplete.completers import DirectoriesCompleter, FilesCompleter
+    _ARGCOMPLETE = True
+except ImportError:
+    _ARGCOMPLETE = False
+
 
 class _NullContext:
     """No-op context manager used when no semaphore is provided."""

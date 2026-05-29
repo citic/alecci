@@ -1,0 +1,68 @@
+// SCTBench benchmark: concurrent-software-benchmarks/circular_buffer_bad.c
+// Atomicity violation: producer inserts i into a 10-slot buffer when send=1 and
+// advances its counter regardless; consumer removes when receive=1 and advances
+// its counter regardless. Bug: consumer's loop counter i diverges from the
+// values actually inserted, so the implicit assertion (removed==i) fails.
+// All shared accesses are under a single mutex — no data race.
+// TSan cannot detect this class of atomicity-violation bug.
+
+procedure insert_element(b as int)
+    if buf_next < buf_size then
+        buffer[buf_next] := b
+        buf_next := (buf_next + 1) mod buf_size
+    end if
+end procedure
+
+function remove_element()
+    if buf_next > 0 and buf_first < buf_size then
+        buf_first := buf_first + 1
+        return buffer[buf_first - 1]
+    end if
+    return -1
+end function
+
+procedure producer(thread_number as int)
+    mutable i as int := 0
+    while i < 7 do
+        lock(m)
+        if send = 1 then
+            insert_element(i)
+            send := 0
+            receive := 1
+        end if
+        unlock(m)
+        i := i + 1
+    end while
+end procedure
+
+procedure consumer(thread_number as int)
+    mutable i as int := 0
+    while i < 7 do
+        lock(m)
+        if receive = 1 then
+            last_removed := remove_element()
+            receive := 0
+            send := 1
+        end if
+        unlock(m)
+        i := i + 1
+    end while
+end procedure
+
+procedure main()
+    shared mutable m            as mutex         := mutex()
+    shared mutable buffer       as array        := array(10, 0)
+    shared mutable buf_first    as int           := 0
+    shared mutable buf_next     as int           := 0
+    shared mutable buf_size     as int           := 10
+    shared mutable send         as int           := 1
+    shared mutable receive      as int           := 0
+    shared mutable last_removed                  := -1
+    mutable t1 := create_threads(1, producer)
+    mutable t2 := create_threads(1, consumer)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+    print `buf_first = {buf_first}`
+    print `last_removed = {last_removed}`
+    print `circular buffer flag no end`
+end procedure

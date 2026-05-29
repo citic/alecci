@@ -136,11 +136,11 @@ DRB benchmarks are labeled by race category:
 |---|---|---|
 | Y4 | 1 | SIMD races — Alecci has no `simd` directive |
 | Y5 | 1 | GPU races — Alecci has no `target`/`teams` |
-| Y6 | 13 | Pointer/aliasing races — Alecci has no pointer type |
+| Y6 | 13 | Pointer/aliasing races — Alecci has no pointer type (record support does not help: all Y6 files use `malloc`/pointer arithmetic, not value-type structs) |
 | Y7 | 4 | Indirect array access via pointer indexing — no pointer support |
 | N4 | 3 | SIMD correct — same reason |
 | N5 | 1 | GPU correct — same reason |
-| N6 | 9 | Pointer-aliasing analysis — no pointer support |
+| N6 | 9 | Pointer-aliasing analysis — no pointer support (same note as Y6) |
 | C++ (.cpp) | 4 | DRB086-087, DRB100-101 — Alecci is not C++ |
 | Fortran (.f95) | 168 | Wrong language |
 

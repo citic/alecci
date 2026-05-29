@@ -1,4 +1,4 @@
 expected_issues:
-  - thread_leak
+  - data_race
 timeout: 10
 max_runs: 5

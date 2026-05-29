@@ -1,0 +1,90 @@
+// SCTBench benchmark: concurrent-software-benchmarks/queue_bad.c
+// Atomicity violation: a 20-slot circular queue (head/tail/amount as a record)
+// is shared between a producer and a consumer. The producer enqueues 0..19 when
+// enqueue_flag=1; the consumer dequeues when dequeue_flag=1. Both threads advance
+// their own loop counters regardless of whether they acted. Bug: consumer's index
+// into stored_elements diverges from the dequeue sequence (assertion failure).
+// All shared accesses are protected by a single mutex — no data race.
+// TSan cannot detect this class of atomicity-violation bug.
+
+record QType of
+    head   as int
+    tail   as int
+    amount as int
+end record
+
+procedure enqueue_item(x as int)
+    q_elements[q.tail] := x
+    q.amount := q.amount + 1
+    if q.tail = 20 then
+        q.tail := 1
+    else
+        q.tail := q.tail + 1
+    end if
+end procedure
+
+function dequeue_item()
+    mutable x := q_elements[q.head]
+    q.amount := q.amount - 1
+    if q.head = 20 then
+        q.head := 1
+    else
+        q.head := q.head + 1
+    end if
+    return x
+end function
+
+procedure producer(thread_number as int)
+    lock(m)
+    enqueue_item(0)
+    stored_elements[0] := 0
+    unlock(m)
+    mutable i     as int := 0
+    mutable value as int := 0
+    while i < 19 do
+        lock(m)
+        if enqueue_flag = 1 then
+            value := value + 1
+            enqueue_item(value)
+            stored_elements[i + 1] := value
+            enqueue_flag := 0
+            dequeue_flag := 1
+        end if
+        unlock(m)
+        i := i + 1
+    end while
+end procedure
+
+procedure consumer(thread_number as int)
+    mutable i as int := 0
+    while i < 20 do
+        lock(m)
+        if dequeue_flag = 1 then
+            last_removed := dequeue_item()
+            // Bug: stored_elements[i] may not equal last_removed because i
+            // advanced past skipped iterations before this dequeue occurred.
+            dequeue_flag := 0
+            enqueue_flag := 1
+        end if
+        unlock(m)
+        i := i + 1
+    end while
+end procedure
+
+procedure main()
+    shared mutable m               as mutex          := mutex()
+    shared mutable q               as QType          := {0, 0, 0}
+    shared mutable q_elements      as array       := array(20, 0)
+    shared mutable stored_elements as array       := array(20, 0)
+    shared mutable enqueue_flag    as int            := 1
+    shared mutable dequeue_flag    as int            := 0
+    shared mutable last_removed                      := -1
+    mutable t1 := create_threads(1, producer)
+    mutable t2 := create_threads(1, consumer)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+    print `q.head = {q.head}`
+    print `q.amount = {q.amount}`
+    print `last_removed = {last_removed}`
+    print `queue flag no end`
+end procedure

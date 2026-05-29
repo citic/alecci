@@ -1,7 +1,0 @@
-# bucket-sum-mutex-no – 7 threads accumulate into 10 buckets, mutex-protected per update
-# Inspired by dana.c (7 threads, per-bucket mutex array protecting sum_rest[x%10] += x)
-# Note: dana.c is in with_datarace/ but uses proper mutex — translated as no-race
-# Expected: no race
-expected_issues:
-  - none
-timeout: 10

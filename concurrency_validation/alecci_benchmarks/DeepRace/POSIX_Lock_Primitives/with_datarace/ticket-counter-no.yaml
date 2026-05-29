@@ -1,0 +1,8 @@
+# DeepRace POSIX/with_datarace: 11_mutex.c
+# 2 threads sell 100 tickets; all accesses to the counter are mutex-protected.
+# Ground truth: data_race (original dataset).
+# TSan may miss this — the Alecci translation holds the lock around every access.
+
+expected_issues:
+  - data_race
+timeout: 15

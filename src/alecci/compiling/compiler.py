@@ -2944,6 +2944,19 @@ class CodeGenerator:
             raise Exception("seed() was removed. rand() now auto-seeds from OS entropy on first use.")
         elif func_name == 'rand':
             return self._handle_rand(node)
+        elif func_name == 'sqrt':
+            args = node['arguments']
+            if len(args) != 1:
+                raise Exception("sqrt() requires exactly 1 argument")
+            arg_val = self.visit(args[0])
+            f64 = ir.DoubleType()
+            if hasattr(arg_val, 'type'):
+                if isinstance(arg_val.type, ir.IntType):
+                    arg_val = self.builder.sitofp(arg_val, f64)
+                elif not isinstance(arg_val.type, ir.DoubleType):
+                    arg_val = self._auto_extract_value(arg_val, 'float')
+            sqrt_fn = self._declare_external_fn('sqrt', f64, [f64])
+            return self.builder.call(sqrt_fn, [arg_val])
 
         # Handle constructor functions for synchronization primitives
         elif func_name == 'semaphore':

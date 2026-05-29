@@ -1,0 +1,7 @@
+# DeepRace POSIX/without_datarace: 04-random_sleep.c
+# ABBA lock-order inversion with random sleep jitter (rand(10) ms) to make
+# the interleaving non-deterministic. No data race; TSan detects deadlock.
+
+expected_issues:
+  - none
+timeout: 15

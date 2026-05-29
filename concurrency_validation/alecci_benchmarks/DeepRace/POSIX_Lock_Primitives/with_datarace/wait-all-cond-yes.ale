@@ -1,6 +1,6 @@
 // Main thread waits for 5 workers via condition variable instead of join.
-// Workers are not joined — thread_leak when main exits.
-// Source: wait4mult.c (DeepRace POSIX/with_datarace)
+// Workers are not joined — threads may still run when main exits.
+// Source: wait4mult.c (DeepRace POSIX/with_datarace). Ground truth: data_race.
 
 procedure worker(thread_number as int)
     if thread_number % 2 = 1 then

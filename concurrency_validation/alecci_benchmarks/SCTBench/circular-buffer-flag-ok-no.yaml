@@ -1,0 +1,8 @@
+# SCTBench benchmark: concurrent-software-benchmarks/circular_buffer_ok.c
+# Correct flag-based circular buffer (10 slots, 7 items). Producer records the
+# inserted value in last_inserted; consumer always extracts the right element.
+# No bug; all accesses under a single mutex. TSan silent.
+
+expected_issues:
+  - none
+timeout: 10

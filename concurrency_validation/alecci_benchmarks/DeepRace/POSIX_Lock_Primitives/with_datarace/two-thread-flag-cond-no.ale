@@ -1,7 +1,8 @@
 // Two-thread flag alternation using condition variable and broadcast.
 // Both threads use lock before accessing flag; no data race.
 // Note: uses 'if' instead of 'while' for condition check (original does too).
-// Source: TwoThreadLoop.c (DeepRace POSIX/with_datarace — mislabeled, no race)
+// Source: TwoThreadLoop.c (DeepRace POSIX/with_datarace). Ground truth: data_race.
+// TSan may miss — the Alecci translation holds the lock on every flag access.
 
 procedure thread_func()
     mutable i := 0

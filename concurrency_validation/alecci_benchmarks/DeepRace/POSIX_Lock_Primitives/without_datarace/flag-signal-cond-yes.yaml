@@ -1,4 +1,4 @@
 expected_issues:
-  - thread_leak
+  - none
 timeout: 5
 max_runs: 5

@@ -101,7 +101,7 @@ DeepRace/
 | `local-tmp-no.ale` | (existing) | Per-thread local temporary |
 | `local-vars-no.ale` | (existing) | Fully local variables, no sharing |
 
-### POSIX_Lock_Primitives / with_datarace — 10 translated
+### POSIX_Lock_Primitives / with_datarace — 13 translated
 
 | Alecci file | Source file | Race / issue |
 |---|---|---|
@@ -109,14 +109,17 @@ DeepRace/
 | `flag-nolock-yes.ale` | (existing) | Shared flag write without lock |
 | `global-sum-nolock-yes.ale` | (existing) | Sum accumulation without lock |
 | `histogram-nolock-yes.ale` | (existing) | Histogram bucket update without lock |
+| `bucket-sum-mutex-no.ale` | `dana.c` | 7 threads, `sum_rest[bucket]` with mutex; TSan may miss |
 | `canibais-cond-yes.ale` | `130024902_problema_canibais.c` | Cook writes `porcoes := 10` outside `acordar` mutex |
-| `two-thread-flag-cond-no.ale` | `TwoThreadLoop.c` | Mislabeled in original — all accesses under lock, no race |
+| `two-thread-flag-cond-no.ale` | `TwoThreadLoop.c` | All accesses under lock; TSan may miss the declared race |
 | `unisex-bathroom-cond-yes.ale` | `universidad.c` | `espera_mujeres`/`espera_hombres` incremented under per-sex mutex, decremented under `bano_mutex` |
-| `wait-all-cond-yes.ale` | `wait4mult.c` | Workers created but not joined; main exits after condvar wait → thread_leak |
+| `wait-all-cond-yes.ale` | `wait4mult.c` | Workers not joined; main exits after condvar wait |
 | `readwrite-cond-yes.ale` | `zuoye3.c` | Both threads check `n0 < 200` in outer while without holding mutex |
 | `count-threshold-cond-yes.ale` | `threads_cond_mutex.c` | `watch_count` checks `count < 15` in outer while without mutex |
+| `histogram-rand-no.ale` | `assiOS.c` | 5-thread stride histogram, rand init; all under mutex; TSan may miss |
+| `ticket-counter-no.ale` | `11_mutex.c` | 2 threads sell 100 tickets under mutex; TSan may miss |
 
-### POSIX_Lock_Primitives / without_datarace — 15 translated
+### POSIX_Lock_Primitives / without_datarace — 16 translated
 
 | Alecci file | Source file | Correctness / issue |
 |---|---|---|
@@ -124,21 +127,18 @@ DeepRace/
 | `counter-mutex2-no.ale` | `W9mutex1.c` | 2 threads, counter++ once each with mutex |
 | `counter-mutex3-no.ale` | `withmutex.c` | 4 threads, counter++ 100× with mutex |
 | `counter-mutex4-no.ale` | `muxtex_anpham.c` | 2 threads, counter++ once with mutex |
-| `bucket-sum-mutex-no.ale` | `dana.c` *(see note)* | 7 threads, `sum_rest[bucket]` with mutex |
 | `array-sum-mutex-no.ale` | (existing) | Array sum with mutex |
 | `global-sum-mutex-no.ale` | (existing) | Global sum accumulation with mutex |
 | `scatter-add-mutex-no.ale` | (existing) | Scatter-add with mutex protection |
 | `bounded-buffer-cond-no.ale` | `05bounded.c` | Classic bounded buffer (size 4, 30 items) with `more`/`less` condvars |
 | `count-threshold-cond-no.ale` | `06_thread_cond_var.c` | 1 watcher + 2 incrementers, COUNT_LIMIT=12; watcher holds mutex before while |
-| `count-threshold-outer-cond-yes.ale` | `11-14UseConditionVariable.c` | Mislabeled in original — outer `while count < 7` reads count without mutex |
+| `count-threshold-outer-cond-yes.ale` | `11-14UseConditionVariable.c` | Outer `while count < 7` reads count outside mutex; TSan reports unexpected race |
 | `circular-buffer-cond-no.ale` | `ThreadSynCondition.c` | Circular buffer (4 slots), 20 items + sentinel; `notempty`/`notfull` condvars |
 | `ping-pong-cond-no.ale` | `ping_pong.c` | Two-thread alternation via single mutex+condvar, 5 rounds |
-| `flag-signal-cond-yes.ale` | `x.c` | Two waiters, one `cond_signal` — only one wakes; other stays blocked → thread_leak |
+| `flag-signal-cond-yes.ale` | `x.c` | Two waiters, one `cond_signal`; TSan reports unexpected thread_leak |
 | `count-threshold-4t-cond-no.ale` | `thread_with_conditions.c` | 3 incrementers + 1 watcher, COUNT_LIMIT=12; all under mutex |
-
-> **Note on `dana.c`:** This file is in the `POSIX_Lock_Primitives/with_datarace/` folder but contains
-> correct per-bucket mutex synchronisation. It appears mislabeled in the original dataset.
-> The Alecci translation is placed in `without_datarace/` with the correct `expected_issues: [none]` label.
+| `lock-order-no.ale` | `01-trava_dupla.c` | ABBA lock-order inversion; TSan reports unexpected deadlock |
+| `lock-order-rand-no.ale` | `04-random_sleep.c` | ABBA lock-order inversion with rand sleep jitter; TSan reports unexpected deadlock |
 
 ### Known Alecci compiler / runtime bugs found during translation
 
@@ -166,15 +166,15 @@ Affected files (examples):
 - `OMP_Private/with_datarace`: `ex6_-_main.c`, `sum2matrix_-_main.c`, `mmOMP_-_main.c`, `CA1_2_-_main.c`, `stencil9_-_main.c`
 - `OMP_Private/without_datarace`: `matrix2loops_-_main.c`, `matrix_part1_-_main.c`, `18_for_wait_-_main.c`, `collapse-1_-_main.c`
 
-**2. Structs and pointer arithmetic** — Alecci has no struct type or pointer type. Benchmarks using struct fields or pointer-indexed arrays are not translatable.
+**2. Structs and pointer arithmetic** — Alecci now supports user-defined record types (`record … of … end record`), so simple value-type structs can be modelled. However, all struct-using benchmarks in this suite also require pointer arithmetic, `malloc`/`free`, or `*next` linked list traversal which Alecci still cannot express. No DeepRace benchmark was unlocked by record support alone.
 
 Affected files (examples):
-- `con_q_-_main.c`, `stack_-_main.c` (linked lists with `nodo *next`)
-- `concurrent_prims_-_main.c` (Prim's MST with `prim_data` struct)
-- `ejercicio_-_main.c` (k-means with `punto` struct)
-- `omparalelo_-_main.c` (genetic algorithm with `numero_t *`)
-- `POSIX/with_datarace`: linked list files (`01_condition.c`, `01_job-queue-mutex.c`, `threads_mutex.c`, etc.)
-- `POSIX/without_datarace`: multiple files using `node *`, `job_t *`, etc.
+- `con_q_-_main.c`, `stack_-_main.c` (linked lists with `nodo *next` — pointer chaining required)
+- `concurrent_prims_-_main.c` (Prim's MST with `prim_data` struct — also needs stdin and complex algorithm)
+- `ejercicio_-_main.c` (k-means with `punto` struct — also needs `malloc`, `sqrt`, `rand`)
+- `omparalelo_-_main.c` (genetic algorithm with `numero_t *` — pointer arithmetic required)
+- `POSIX/with_datarace`: linked list files (`01_condition.c`, `01_job-queue-mutex.c`, `threads_mutex.c`, etc.) — all require `malloc`+`*next` chaining
+- `POSIX/without_datarace`: multiple files using `node *`, `job_t *`, etc. — same
 
 **3. Condition variables** — Alecci now supports `condvar()`, `cond_wait(cv, mutex)`, `cond_signal(cv)`, and `cond_broadcast(cv)`. Most POSIX condition variable programs can now be translated. The remaining skips in this category are due to linked lists or structs (see reason 2), not condition variables themselves.
 
@@ -186,14 +186,17 @@ Still skipped (linked list / struct dependency, not condition variable):
 - `POSIX/with_datarace`: `01_condition.c` (linked list with struct Node), `zad8.c` (linked list monitor)
 - `POSIX/without_datarace`: `02_condition_modify.c` (linked list with struct Node), `active.c` (declares condvar but uses busy-wait; condition variable unused), `timedwait.c` (uses `pthread_cond_timedwait` with `clock_gettime` — no Alecci equivalent)
 
-**4. External math functions** — `sin`, `cos`, `sqrt`, `pow`, `rand` are not available in Alecci's standard library.
+**4. External math functions** — Alecci provides `sqrt(x)` and `rand([max])` / `rand(min, max)`. The functions still missing are `sin`, `cos`, `log`, `log10`, `pow` (though `^` implements integer exponentiation via the C `pow`).
 
-Affected files:
-- `eo_-_main.c` (k-means: `sqrt(pow(...))`)
-- `7_-_main.c` (k-means: `get_distance`)
-- `ziggurat_openmp_original_-_test01.c` (random number generators)
-- `HW3ParallelCorrelationFunc2_2_-_main.c` (`log10`, `pow`)
-- `fft_openmp_-_main.c` (complex FFT)
+Remaining affected files (blocked by functions beyond sqrt/rand):
+- `eo_-_main.c` (k-means: `sqrt(pow(...))`) — also blocked by 2D arrays (primary reason)
+- `7_-_main.c` (k-means: `get_distance` using sqrt) — also blocked by 2D arrays
+- `ziggurat_openmp_original_-_test01.c` (complex random number generators — algorithm too complex)
+- `HW3ParallelCorrelationFunc2_2_-_main.c` (`log10`, `pow` — functions not in Alecci)
+- `fft_openmp_-_main.c` (complex FFT — 2D arrays plus trig functions)
+
+Files previously in this category that are now translated (rand was the only blocker):
+- `assiOS.c` → `histogram-rand-no.ale` (uses `rand(5)` for initialization)
 
 **5. Interactive stdin** — `scanf` for runtime input is not supported by the Alecci runtime.
 
@@ -236,10 +239,10 @@ Affected files:
 - `VarCompPrivModificado_-_main.c` (times threads via `omp_get_wtime`, no race to detect) → *translated to product-mutex-no.ale since it does compute a product*
 - `hiomp_-_main.c`, `examen_dynamic_-_main.c` (print only)
 
-**11. Mislabeled and skipped to preserve ground truth** — Some files in `with_datarace/` contain correct synchronisation and were NOT translated as racy benchmarks:
+**11. Programs skipped from `with_datarace/` where translation would produce no TSan-detectable issue** — The original dataset is taken as ground truth; these files are skipped rather than translated as false negatives, because the concurrency pattern cannot be faithfully expressed in Alecci in a way TSan would detect.
 
-- `OMP_Private/with_datarace/omp_criatm_-_main.c`: Both `x = x+1` and `count++` are correctly protected (first with critical, second with atomic). Skipped to avoid a false negative.
-- `POSIX/with_datarace/02mutexex.c`: Implements correct mutex usage despite being in the with_datarace folder. Skipped.
+- `OMP_Private/with_datarace/omp_criatm_-_main.c`: Both `x = x+1` and `count++` are protected by OpenMP atomic/critical directives that Alecci does not support natively. Skipped.
+- `POSIX/with_datarace/02mutexex.c`: Uses `pthread_mutex_trylock` (not in Alecci's API). Skipped.
 
 **12. Dynamic memory / pointer indirection** — `malloc`/`calloc` with pointer arithmetic.
 
@@ -258,9 +261,9 @@ Affected files:
 | OMP_Critical/without_datarace | 30 | 14 | 16 |
 | OMP_Private/with_datarace | 30 | 8 | 22 |
 | OMP_Private/without_datarace | 30 | 9 | 21 |
-| POSIX_Lock_Primitives/with_datarace | 30 | 10 | 20 |
-| POSIX_Lock_Primitives/without_datarace | 30 | 15 | 15 |
-| **Total** | **180** | **75** | **105** |
+| POSIX_Lock_Primitives/with_datarace | 30 | 13 | 17 |
+| POSIX_Lock_Primitives/without_datarace | 30 | 16 | 14 |
+| **Total** | **180** | **79** | **101** |
 
 ### Primary skip reasons by subdirectory
 

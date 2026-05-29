@@ -1,0 +1,36 @@
+// DeepRace POSIX/without_datarace: 01-trava_dupla.c
+// Classic ABBA lock-order inversion: thread1 acquires m1 then m2;
+// thread2 acquires m2 then m1. Ground truth: none (original dataset).
+// TSan may report unexpected deadlock (lock-order inversion).
+
+procedure thread1(thread_number as int)
+    mutable i as int := 0
+    while i < 5 do
+        lock(m1)
+        lock(m2)
+        i := i + 1
+        unlock(m1)
+        unlock(m2)
+    end while
+end procedure
+
+procedure thread2(thread_number as int)
+    mutable i as int := 0
+    while i < 5 do
+        lock(m2)
+        lock(m1)
+        i := i + 1
+        unlock(m2)
+        unlock(m1)
+    end while
+end procedure
+
+procedure main()
+    shared mutable m1 as mutex := mutex()
+    shared mutable m2 as mutex := mutex()
+    mutable t1 := create_threads(1, thread1)
+    mutable t2 := create_threads(1, thread2)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+    print `lock order no end`
+end procedure

@@ -1,6 +1,7 @@
 // 2 incrementer threads signal when count < 7; watcher loops checking count.
-// Race: watch_count's outer 'while count < 7' reads count without the mutex.
-// Source: 11-14UseConditionVariable.c (DeepRace POSIX/without_datarace — mislabeled)
+// watch_count's outer 'while count < 7' reads count outside the mutex.
+// Source: 11-14UseConditionVariable.c (DeepRace POSIX/without_datarace).
+// Ground truth: none. TSan may report unexpected data_race on count.
 
 procedure inc_count(thread_number as int)
     mutable i := 0

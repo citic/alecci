@@ -1,0 +1,7 @@
+# DeepRace POSIX/without_datarace: 01-trava_dupla.c
+# ABBA lock-order inversion: thread1 takes m1→m2, thread2 takes m2→m1.
+# No data race; TSan detects potential deadlock (lock-order inversion).
+
+expected_issues:
+  - none
+timeout: 15

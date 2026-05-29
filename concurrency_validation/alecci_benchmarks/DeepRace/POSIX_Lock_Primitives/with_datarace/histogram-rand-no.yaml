@@ -1,0 +1,9 @@
+# DeepRace POSIX/with_datarace: assiOS.c
+# 5 threads partition a 10 000-element rand-filled array by stride and
+# accumulate bucket counts under a mutex. All accesses to count[] are
+# inside the critical section. Ground truth: data_race (original dataset).
+# TSan may miss this — all Alecci shared accesses are under the mutex.
+
+expected_issues:
+  - data_race
+timeout: 30

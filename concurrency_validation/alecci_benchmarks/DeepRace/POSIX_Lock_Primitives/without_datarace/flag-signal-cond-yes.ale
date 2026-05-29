@@ -1,7 +1,7 @@
 // Two threads wait on cv while flag=0; one signaler sets flag=1 and signals once.
-// Only one waiter is released; the other blocks forever → thread_leak.
-// Main exits without joining any thread.
-// Source: x.c (DeepRace POSIX/without_datarace)
+// Only one waiter is released; the other stays blocked when main exits.
+// Source: x.c (DeepRace POSIX/without_datarace). Ground truth: none.
+// TSan may report unexpected thread_leak.
 
 procedure waiter1()
     lock(mx)

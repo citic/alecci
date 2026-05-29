@@ -1,0 +1,29 @@
+// DeepRace POSIX/with_datarace: 11_mutex.c
+// Two threads compete to sell 100 tickets. Each thread locks the mutex,
+// checks tickets > 0, decrements and prints, then unlocks.
+// Ground truth: data_race (original dataset). TSan may miss — all accesses
+// in the Alecci translation are inside the critical section.
+
+procedure seller(thread_number as int)
+    mutable running as int := 1
+    while running = 1 do
+        lock(m)
+        if tickets > 0 then
+            print `thread {thread_number} sold ticket {tickets}`
+            tickets := tickets - 1
+            unlock(m)
+        else
+            unlock(m)
+            running := 0
+        end if
+    end while
+end procedure
+
+procedure main()
+    shared mutable m       as mutex := mutex()
+    shared mutable tickets as int   := 100
+    mutable t := create_threads(2, seller)
+    join_threads(t, 2)
+    print `tickets remaining = {tickets}`
+    print `ticket counter no end`
+end procedure

@@ -1,0 +1,41 @@
+// DeepRace POSIX/with_datarace: assiOS.c
+// Main fills a 10 000-element array with random bucket IDs 0..4 using rand(5).
+// 5 threads partition the array by stride 5 (thread k handles indices k, k+5, …).
+// Each thread increments count[inputs[k]] under a mutex.
+// Ground truth: data_race (original dataset). TSan may miss — all accesses
+// in the Alecci translation are inside the critical section.
+
+procedure job(thread_number as int)
+    mutable k := thread_number
+    while k < 10000 do
+        lock(m)
+        mutable bucket := inputs[k]
+        count[bucket] := count[bucket] + 1
+        unlock(m)
+        k := k + 5
+    end while
+end procedure
+
+procedure main()
+    shared mutable m      as mutex := mutex()
+    shared mutable inputs as array := array(10000, 0)
+    shared mutable count  as array := array(5, 0)
+    mutable j as int := 0
+    while j < 10000 do
+        inputs[j] := rand(5)
+        j := j + 1
+    end while
+    mutable t := create_threads(5, job)
+    join_threads(t, 5)
+    mutable c0 := count[0]
+    mutable c1 := count[1]
+    mutable c2 := count[2]
+    mutable c3 := count[3]
+    mutable c4 := count[4]
+    print `count[0] = {c0}`
+    print `count[1] = {c1}`
+    print `count[2] = {c2}`
+    print `count[3] = {c3}`
+    print `count[4] = {c4}`
+    print `histogram rand no end`
+end procedure
