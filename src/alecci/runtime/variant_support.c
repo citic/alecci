@@ -18,7 +18,9 @@ typedef enum alecci_type_tag {
     ALECCI_TYPE_BARRIER = 5,
     ALECCI_TYPE_THREAD = 6,
     ALECCI_TYPE_ARRAY = 7,
-    ALECCI_TYPE_NULL = 8
+    ALECCI_TYPE_NULL = 8,
+    ALECCI_TYPE_CONDVAR = 9,
+    ALECCI_TYPE_RECORD = 10
 } alecci_type_tag;
 
 // Creation functions
@@ -74,6 +76,14 @@ alecci_variant variant_create_array(void* value) {
     return variant_create_pointer(value, ALECCI_TYPE_ARRAY);
 }
 
+alecci_variant variant_create_condvar(void* value) {
+    return variant_create_pointer(value, ALECCI_TYPE_CONDVAR);
+}
+
+alecci_variant variant_create_record(void* value) {
+    return variant_create_pointer(value, ALECCI_TYPE_RECORD);
+}
+
 alecci_variant variant_create_null() {
     alecci_variant var;
     var.type_tag = ALECCI_TYPE_NULL;
@@ -93,6 +103,8 @@ char* variant_type(alecci_variant var) {
         case ALECCI_TYPE_THREAD: return "thread";
         case ALECCI_TYPE_ARRAY: return "array";
         case ALECCI_TYPE_NULL: return "null";
+        case ALECCI_TYPE_CONDVAR: return "condvar";
+        case ALECCI_TYPE_RECORD: return "record";
         default: return "unknown";
     }
 }
@@ -127,6 +139,14 @@ int variant_is_thread(alecci_variant var) {
 
 int variant_is_array(alecci_variant var) {
     return var.type_tag == ALECCI_TYPE_ARRAY;
+}
+
+int variant_is_condvar(alecci_variant var) {
+    return var.type_tag == ALECCI_TYPE_CONDVAR;
+}
+
+int variant_is_record(alecci_variant var) {
+    return var.type_tag == ALECCI_TYPE_RECORD;
 }
 
 int variant_is_null(alecci_variant var) {
@@ -169,8 +189,20 @@ char* variant_get_string(alecci_variant* var_ptr) {
 
 void* variant_get_pointer(alecci_variant* var_ptr) {
     alecci_variant var = *var_ptr;  // Dereference
-    if (var.type_tag < ALECCI_TYPE_STRING || var.type_tag > ALECCI_TYPE_ARRAY) {
+    if (var.type_tag < ALECCI_TYPE_STRING || (var.type_tag > ALECCI_TYPE_ARRAY &&
+            var.type_tag != ALECCI_TYPE_CONDVAR && var.type_tag != ALECCI_TYPE_RECORD)) {
         fprintf(stderr, "Error: variant_get_pointer called on non-pointer variant (type: %s)\n", variant_type(var));
+        return NULL;
+    }
+    void* value;
+    memcpy(&value, var.value_data, sizeof(void*));
+    return value;
+}
+
+void* variant_get_record(alecci_variant* var_ptr) {
+    alecci_variant var = *var_ptr;
+    if (var.type_tag != ALECCI_TYPE_RECORD) {
+        fprintf(stderr, "Error: variant_get_record called on non-record variant (type: %s)\n", variant_type(var));
         return NULL;
     }
     void* value;
@@ -227,6 +259,12 @@ char* variant_to_string(alecci_variant* var_ptr) {
             break;
         case ALECCI_TYPE_ARRAY:
             snprintf(buffer, 256, "array@%p", variant_get_pointer(&var));
+            break;
+        case ALECCI_TYPE_CONDVAR:
+            snprintf(buffer, 256, "condvar@%p", variant_get_pointer(&var));
+            break;
+        case ALECCI_TYPE_RECORD:
+            snprintf(buffer, 256, "record@%p", variant_get_record(&var));
             break;
         case ALECCI_TYPE_NULL:
             snprintf(buffer, 256, "null");

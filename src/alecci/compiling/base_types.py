@@ -4,6 +4,9 @@ import re
 # Cache for variant type to ensure we use the same struct type everywhere
 _variant_type_cache = None
 
+# Registry for user-defined record types
+_record_registry = {}  # name → {'fields': [{'name': str, 'type': str}], 'llvm_type': LiteralStructType}
+
 def get_variant_type():
     """Get the LLVM struct type for variant values"""
     global _variant_type_cache
@@ -19,7 +22,7 @@ def get_variant_type_tag_enum():
     """Get the type tag constants for variant types"""
     return {
         'int': 0,
-        'float': 1, 
+        'float': 1,
         'string': 2,
         'semaphore': 3,
         'mutex': 4,
@@ -27,7 +30,8 @@ def get_variant_type_tag_enum():
         'thread': 6,
         'array': 7,
         'null': 8,
-        'condvar': 9
+        'condvar': 9,
+        'record': 10,
     }
 
 # Shared map of named scalar types used by both get_type and get_raw_type.
@@ -36,6 +40,7 @@ _SCALAR_TYPE_MAP = {
     "float":     lambda: ir.DoubleType(),
     "char":      lambda: ir.IntType(8),
     "string":    lambda: ir.IntType(8).as_pointer(),
+    "text":      lambda: ir.IntType(8).as_pointer(),  # user-facing alias for string
     "semaphore": lambda: ir.IntType(8).as_pointer(),
     "barrier":   lambda: ir.IntType(8).as_pointer(),
     "thread":    lambda: ir.IntType(8).as_pointer(),
@@ -57,6 +62,8 @@ def get_type(type_str: str):
         element_type, size = parse_array_type(type_str)
         base_type = get_type(element_type)
         return ir.ArrayType(base_type, size) if size is not None else base_type.as_pointer()
+    if is_record_type(type_str):
+        return get_record_llvm_type(type_str)
     # Unknown / untyped → variant
     return get_variant_type()
 
@@ -144,3 +151,70 @@ def get_type_tag_for_value(value, type_hint=None):
     
     # Fallback to int
     return type_tags['int']
+
+
+# ---------------------------------------------------------------------------
+# Record type registry
+# ---------------------------------------------------------------------------
+
+def _normalise_field_type(type_str: str) -> str:
+    """Normalise user-facing type aliases to canonical names."""
+    return 'string' if type_str == 'text' else type_str
+
+
+def register_record(name: str, fields: list) -> ir.LiteralStructType:
+    """Register a record type and cache its LLVM struct type.
+
+    *fields* is a list of {'name': str, 'type': str} dicts as produced by the
+    parser's p_record_members rule.  Field types are normalised (text→string)
+    before being stored so downstream comparisons use consistent names.
+    """
+    normalised = [{'name': f['name'], 'type': _normalise_field_type(f['type'])}
+                  for f in fields]
+    field_llvm_types = [get_type(f['type']) for f in normalised]
+    llvm_type = ir.LiteralStructType(field_llvm_types)
+    _record_registry[name] = {'fields': normalised, 'llvm_type': llvm_type}
+    return llvm_type
+
+
+def is_record_type(type_str) -> bool:
+    """Return True if *type_str* names a registered record type."""
+    return isinstance(type_str, str) and type_str in _record_registry
+
+
+def get_record_llvm_type(name: str) -> ir.LiteralStructType:
+    return _record_registry[name]['llvm_type']
+
+
+def get_record_fields(name: str) -> list:
+    """Return the normalised field list for *name*."""
+    return _record_registry[name]['fields']
+
+
+def get_record_field_index(record_name: str, field_name: str) -> int:
+    """Return the 0-based index of *field_name* in *record_name*.
+
+    Raises KeyError if either the record or the field is not found.
+    """
+    for idx, field in enumerate(_record_registry[record_name]['fields']):
+        if field['name'] == field_name:
+            return idx
+    raise KeyError(f"field '{field_name}' not found in record '{record_name}'")
+
+
+def make_zero_constant(llvm_type) -> 'ir.Constant':
+    """Return an LLVM zero constant for *llvm_type* (recursive for structs/arrays)."""
+    if isinstance(llvm_type, ir.IntType):
+        return ir.Constant(llvm_type, 0)
+    if isinstance(llvm_type, ir.DoubleType):
+        return ir.Constant(llvm_type, 0.0)
+    if isinstance(llvm_type, ir.PointerType):
+        return ir.Constant(llvm_type, None)  # null pointer
+    if isinstance(llvm_type, ir.ArrayType):
+        elems = [make_zero_constant(llvm_type.element) for _ in range(llvm_type.count)]
+        return ir.Constant(llvm_type, elems)
+    if isinstance(llvm_type, ir.LiteralStructType):
+        elems = [make_zero_constant(t) for t in llvm_type.elements]
+        return ir.Constant(llvm_type, elems)
+    # Fallback
+    return ir.Constant(llvm_type, ir.Undefined)

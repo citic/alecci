@@ -63,7 +63,10 @@ precedence = (
     ('right', 'BITWISE_NOT', 'NOT'),  # Unary operators
     
     ('right', 'EXPONENT'),  # Exponentiation is right-associative
-    
+
+    # Field access has highest precedence
+    ('left', 'DOT'),
+
     # Array access and function calls have highest precedence
     ('left', 'LBRACKET', 'RBRACKET'),
     ('nonassoc', 'LPAREN', 'RPAREN')
@@ -341,7 +344,8 @@ def p_assignment(p):
             | pointed_by_sequence ID ASSIGN expression
             | ID ASSIGN REFERENCE expression
             | ID LBRACKET expression RBRACKET ASSIGN expression
-    ''' 
+            | ID DOT ID ASSIGN expression
+    '''
     lineno = p.lineno(1)
     if len(p) == 4:
         p[0] = {'type': 'assignment', 'target': p[1], 'value': p[3], 'lineno': lineno}
@@ -349,6 +353,10 @@ def p_assignment(p):
         p[0] = {'type': 'assignment', 'target': p[1], 'value': {'type': 'reference', 'expr': p[4]}, 'lineno': lineno}
     elif len(p) == 5 and p[1] == 'pointed_by_sequence':
         p[0] = {'type': 'assignment', 'target': {'type': 'dereference', 'depth': p[1], 'id': p[2]}, 'value': p[4], 'lineno': lineno}
+    elif len(p) == 6:  # Field assignment: ID DOT ID ASSIGN expression
+        p[0] = {'type': 'assignment',
+                 'target': {'type': 'field_access', 'object': p[1], 'field': p[3]},
+                 'value': p[5], 'lineno': lineno}
     elif len(p) == 7:  # Array assignment: ID LBRACKET expression RBRACKET ASSIGN expression
         p[0] = {'type': 'assignment', 'target': {'type': 'array_access', 'array': p[1], 'index': p[3]}, 'value': p[6], 'lineno': lineno}
 
@@ -399,7 +407,8 @@ def p_expression(p):
             | BITWISE_NOT expression
             | LPAREN expression RPAREN
             | ID LBRACKET expression RBRACKET
-            | func_call          
+            | ID DOT ID
+            | func_call
             | pointed_by_sequence ID
             | pointer_to_sequence complex_type
             | record_initialyzer
@@ -427,6 +436,8 @@ def p_expression(p):
         p[0] = {'type': 'pointer_type', 'depth': p[1], 'target': p[2]}
     elif len(p) == 4 and p[1] == '(':
         p[0] = p[2]
+    elif len(p) == 4 and p[2] == '.':  # Field access: ID DOT ID
+        p[0] = {'type': 'field_access', 'object': p[1], 'field': p[3], 'lineno': p.lineno(1)}
     elif len(p) == 5 and p[2] == '[':
         p[0] = {'type': 'array_access', 'array': p[1], 'index': p[3]}
     elif len(p) == 4:

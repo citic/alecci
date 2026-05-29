@@ -62,7 +62,6 @@ class AleError(Exception):
 # ---------------------------------------------------------------------------
 
 _UNSUPPORTED_NODE_TYPES = {
-    'record_init': 'record initialization',
     'pointer_type': 'pointer types',
     'dereference':  'dereference',
     'reference':    'references',
@@ -308,6 +307,44 @@ class CodeGenerator:
         format_args = []
 
         for var_name in variable_patterns:
+            # Handle field access: {record.field}
+            if '.' in var_name:
+                obj_name, field_name = var_name.split('.', 1)
+                fa_node = {'type': 'field_access', 'object': obj_name, 'field': field_name}
+                field_value = self.visit_field_access(fa_node)
+                from .base_types import is_record_type, get_record_fields, get_record_field_index
+                obj_entry = self.get_variable(obj_name)
+                field_type = 'int'
+                if obj_entry is not None and is_record_type(obj_entry[1]):
+                    try:
+                        fidx = get_record_field_index(obj_entry[1], field_name)
+                        field_type = get_record_fields(obj_entry[1])[fidx]['type']
+                    except KeyError:
+                        pass
+                if field_type in ('string', 'text'):
+                    format_string = format_string.replace(f'{{{var_name}}}', '%s')
+                    if hasattr(field_value, 'type') and isinstance(field_value.type, ir.PointerType) and field_value.type.pointee != ir.IntType(8):
+                        field_value = self.builder.load(field_value)
+                    format_args.append(field_value)
+                elif field_type == 'float':
+                    format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                    if hasattr(field_value, 'type') and isinstance(field_value.type, ir.PointerType):
+                        field_value = self.builder.load(field_value)
+                    format_args.append(field_value)
+                elif field_type == 'variant':
+                    # field_value is a pointer to an embedded variant
+                    format_string = format_string.replace(f'{{{var_name}}}', '%s')
+                    v2s = self._declare_external_fn(
+                        'variant_to_string', ir.IntType(8).as_pointer(),
+                        [get_variant_type().as_pointer()])
+                    format_args.append(self.builder.call(v2s, [field_value]))
+                else:
+                    format_string = format_string.replace(f'{{{var_name}}}', '%d')
+                    if hasattr(field_value, 'type') and isinstance(field_value.type, ir.PointerType):
+                        field_value = self.builder.load(field_value)
+                    format_args.append(field_value)
+                continue
+
             entry = self.get_variable(var_name)
             dtype = entry[1] if entry and len(entry) >= 2 else None
 
@@ -568,6 +605,12 @@ class CodeGenerator:
 
     def collect_globals_and_signatures(self, declarations: List[Dict[str, Any]]) -> None:
         """First pass: collect all shared variables and procedure/function signatures"""
+        # Register record types before processing procedures so typed parameters resolve.
+        from .base_types import register_record
+        for decl in declarations:
+            if decl.get('type') == 'record':
+                register_record(decl['name'], decl['members'])
+
         for decl in declarations:
             if decl.get('type') == 'procedure' or decl.get('type') == 'function':
                 # Create function signature - main should accept argc and argv
@@ -952,8 +995,21 @@ class CodeGenerator:
             self._shared_decl_thread_array(name)
             return
 
+        # Record type
+        from .base_types import is_record_type, get_record_llvm_type, make_zero_constant
+        effective_type = var_type if var_type is not None else ''
+        if is_record_type(effective_type):
+            llvm_type = get_record_llvm_type(effective_type)
+            g = ir.GlobalVariable(self.module, llvm_type, name=name)
+            g.linkage = 'internal'
+            g.initializer = make_zero_constant(llvm_type)
+            self.globals[name] = (g, effective_type, is_constant)
+            debug_print(f"DEBUG: Created shared record '{name}' of type '{effective_type}'")
+            return
+
         # Scalar (int, float, string, or inferred)
-        self._shared_decl_scalar(name, var_type, value, is_constant)    
+        self._shared_decl_scalar(name, var_type, value, is_constant)
+
     def visit_procedure(self, node: Dict[str, Any]) -> None:
         # This method is now handled by the two-pass compilation
         # The actual compilation happens in compile_procedure_bodies
@@ -1213,6 +1269,14 @@ class CodeGenerator:
                         ir.Constant(ir.IntType(32), sem_val)])
                 return
             else:
+                from .base_types import is_record_type as _is_rt
+                if _is_rt(var_type) and self.current_function_name == 'main':
+                    # Shared record: GlobalVariable already created; initialise fields now
+                    init = node['init']
+                    init_value_expr = init.get('value')
+                    ev = self.visit(init_value_expr) if init_value_expr is not None else None
+                    g_ptr, _, _ = self.globals[name]
+                    self._init_record_fields(g_ptr, var_type, init_value_expr, ev)
                 return
 
         init = node['init']
@@ -1264,6 +1328,13 @@ class CodeGenerator:
         elif init_value_expr is not None:
             evaluated_value = self.visit(init_value_expr)
             raw_value = init_value_expr.get('value') if isinstance(init_value_expr, dict) else None
+            # Type propagation: mutable x := today  where today is a record variable
+            if (var_type is None and isinstance(init_value_expr, dict) and
+                    init_value_expr.get('type') == 'ID'):
+                from .base_types import is_record_type
+                rhs_entry = self.get_variable(init_value_expr['value'])
+                if rhs_entry is not None and is_record_type(rhs_entry[1]):
+                    var_type = rhs_entry[1]
 
         # Default to variant for untyped variables
         if var_type is None:
@@ -1290,6 +1361,13 @@ class CodeGenerator:
         if var_type == 'variant' and shared:
             return
 
+        # Catch record_init used without a record type annotation (before variant fallback)
+        if (var_type == 'variant' and isinstance(evaluated_value, dict) and
+                isinstance(evaluated_value, dict) and evaluated_value.get('type') == 'record_init'):
+            self.semantic_error(
+                "record initializer requires an explicit type annotation "
+                "(e.g., `mutable x as Date := {…}`)", node)
+
         if var_type == 'variant':
             self._decl_variant_local(name, is_constant, evaluated_value, raw_value)
             return
@@ -1315,6 +1393,22 @@ class CodeGenerator:
                 handle_alloca = self.builder.alloca(evaluated_value.type, name=name)
                 self.builder.store(evaluated_value, handle_alloca)
                 self.locals[name] = (handle_alloca, 'thread', is_constant)
+            return
+
+        # Record type — local or shared initialisation
+        from .base_types import is_record_type, get_record_llvm_type, get_record_fields
+        if is_record_type(var_type):
+            if shared and name in self.globals:
+                # Shared record: GlobalVariable already created; initialise fields now
+                if self.current_function_name == 'main':
+                    g_ptr, _, _ = self.globals[name]
+                    self._init_record_fields(g_ptr, var_type, init_value_expr, evaluated_value)
+                return
+            # Local record
+            rec_llvm_type = get_record_llvm_type(var_type)
+            ptr = self.builder.alloca(rec_llvm_type, name=name)
+            self.locals[name] = (ptr, var_type, is_constant)
+            self._init_record_fields(ptr, var_type, init_value_expr, evaluated_value)
             return
 
         # Generic typed variable (int, float, string, …)
@@ -1416,6 +1510,33 @@ class CodeGenerator:
             self.builder.store(value, element_ptr)
             if self.is_shared_mutable_variable(array_name):
                 self.insert_yield()
+
+        elif isinstance(target, dict) and target['type'] == 'field_access':
+            from .base_types import is_record_type, get_record_field_index, get_record_fields
+            obj_name = target['object']
+            field_name = target['field']
+            entry = self.get_variable(obj_name)
+            if entry is None:
+                self.semantic_error(f"undefined variable '{obj_name}'", node)
+            obj_ptr, dtype, is_constant = entry
+            if is_constant:
+                raise Exception(f"Cannot assign to field of const record '{obj_name}'.")
+            if not is_record_type(dtype):
+                self.semantic_error(f"'{obj_name}' is not a record (type: '{dtype}')", node)
+            idx = get_record_field_index(dtype, field_name)
+            fields = get_record_fields(dtype)
+            field_type = fields[idx]['type']
+            i32 = ir.IntType(32)
+            field_ptr = self.builder.gep(obj_ptr,
+                [ir.Constant(i32, 0), ir.Constant(i32, idx)], inbounds=True)
+            if self.is_shared_mutable_variable(obj_name):
+                size = 8 if field_type in ('string', 'float') else 4
+                self.insert_yield()
+                self.insert_tsan_call(field_ptr, size, is_write=True)
+            self._store_field_value(field_ptr, field_type, value)
+            if self.is_shared_mutable_variable(obj_name):
+                self.insert_yield()
+
         else:
             raise Exception(f"Unsupported assignment target type: {target}")
 
@@ -2111,6 +2232,10 @@ class CodeGenerator:
         if dtype == 'variant':
             return ptr
 
+        from .base_types import is_record_type
+        if is_record_type(dtype):
+            return ptr  # record pointer; caller accesses fields via GEP
+
         if dtype == 'string':
             return ptr
 
@@ -2141,6 +2266,134 @@ class CodeGenerator:
             if isinstance(pointee, (ir.IntType, ir.DoubleType)):
                 return self.builder.load(ptr)
         return ptr
+
+    # ------------------------------------------------------------------
+    # Record support
+    # ------------------------------------------------------------------
+
+    def _init_record_fields(self, ptr: ir.Value, var_type: str,
+                             init_value_expr, evaluated_value) -> None:
+        """Store initial values into the fields of a (local or global) record pointer.
+
+        *init_value_expr* is the raw AST init node; *evaluated_value* is the
+        already-visited result (may be a record_init dict, a record pointer for
+        struct-copy, or None).
+        """
+        from .base_types import get_record_fields
+        i32 = ir.IntType(32)
+        # Struct copy: mutable x := today  (evaluated_value is a record ptr)
+        if (isinstance(evaluated_value, ir.values.Value) and
+                hasattr(evaluated_value, 'type') and
+                isinstance(evaluated_value.type, ir.PointerType)):
+            loaded = self.builder.load(evaluated_value)
+            self.builder.store(loaded, ptr)
+            return
+        # record_init: {v0, v1, …}
+        raw_init = evaluated_value  # visit_record_init returns the node as-is
+        if isinstance(raw_init, dict) and raw_init.get('type') == 'record_init':
+            from .base_types import is_array_type
+            fields = get_record_fields(var_type)
+            for idx, (field, val_node) in enumerate(zip(fields, raw_init['values'])):
+                field_ptr = self.builder.gep(ptr,
+                    [ir.Constant(i32, 0), ir.Constant(i32, idx)], inbounds=True)
+                if is_array_type(field['type']):
+                    # Array field: store a pointer to the array data (i32*), not the loaded value.
+                    arr_ptr = self._eval_as_array_ptr(val_node)
+                    self.builder.store(arr_ptr, field_ptr)
+                else:
+                    val = self.visit(val_node)
+                    self._store_field_value(field_ptr, field['type'], val)
+        # No initializer: leave memory uninitialised (alloca semantics)
+
+    def visit_record(self, node: Dict[str, Any]) -> None:
+        """Record type definitions are processed in the first pass; nothing to emit."""
+        pass
+
+    def visit_record_init(self, node: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the raw record_init node so visit_declaration can inspect it."""
+        return node
+
+    def visit_field_access(self, node: Dict[str, Any]) -> ir.Value:
+        """Emit a GEP + load (or ptr for variant fields) for a record field read."""
+        from .base_types import is_record_type, get_record_field_index, get_record_fields, is_array_type
+        obj_name = node['object']
+        field_name = node['field']
+        entry = self.get_variable(obj_name)
+        if entry is None:
+            self.semantic_error(f"undefined variable '{obj_name}'", node)
+        ptr, dtype, _ = entry
+        if not is_record_type(dtype):
+            self.semantic_error(f"'{obj_name}' is not a record (type: '{dtype}')", node)
+        idx = get_record_field_index(dtype, field_name)
+        fields = get_record_fields(dtype)
+        field_type = fields[idx]['type']  # already normalised (text→string)
+        i32 = ir.IntType(32)
+        field_ptr = self.builder.gep(ptr,
+            [ir.Constant(i32, 0), ir.Constant(i32, idx)], inbounds=True)
+        # TSan read for shared record fields
+        if self.is_shared_mutable_variable(obj_name):
+            size = 8 if field_type in ('string', 'float') else 4
+            self.insert_tsan_call(field_ptr, size, is_write=False)
+        # Dispatch by field kind
+        if field_type == 'variant':
+            return field_ptr  # return pointer; caller extracts value
+        if is_array_type(field_type):
+            return self.builder.load(field_ptr)  # returns i32* array pointer
+        return self.builder.load(field_ptr)  # primitive value
+
+    def _eval_as_array_ptr(self, val_node) -> ir.Value:
+        """Return an i32* (array element pointer) suitable for storing in an array field.
+
+        For an ID node pointing to an array variable, returns a GEP to element 0
+        of the raw alloca/global so the pointer remains valid.  Falls back to
+        visiting the node and hoping the result is already a pointer.
+        """
+        i32 = ir.IntType(32)
+        if isinstance(val_node, dict) and val_node.get('type') == 'ID':
+            entry = self.get_variable(val_node['value'])
+            if entry is not None:
+                raw_ptr, _, _ = entry
+                if (hasattr(raw_ptr, 'type') and isinstance(raw_ptr.type, ir.PointerType) and
+                        isinstance(raw_ptr.type.pointee, ir.ArrayType)):
+                    return self.builder.gep(raw_ptr,
+                        [ir.Constant(i32, 0), ir.Constant(i32, 0)], inbounds=True)
+                if (hasattr(raw_ptr, 'type') and isinstance(raw_ptr.type, ir.PointerType) and
+                        isinstance(raw_ptr.type.pointee, ir.IntType)):
+                    return raw_ptr  # already i32*
+        val = self.visit(val_node)
+        return val
+
+    def _store_field_value(self, field_ptr: ir.Value, field_type: str, value: ir.Value) -> None:
+        """Store *value* into *field_ptr* using the correct strategy for *field_type*."""
+        from .base_types import is_array_type
+        if field_type == 'variant':
+            self._store_value_to_variant(field_ptr, value)
+        elif is_array_type(field_type):
+            # value is an array pointer (i32*); store the pointer into the field
+            self.builder.store(value, field_ptr)
+        else:
+            # Primitive: coerce to the expected LLVM type then store
+            from .base_types import get_raw_type, get_variant_type
+            variant_ty = get_variant_type()
+            expected = get_raw_type(field_type)
+            # Extract from variant if needed
+            if (isinstance(value.type, ir.PointerType) and
+                    value.type.pointee == variant_ty):
+                kind = 'float' if isinstance(expected, ir.DoubleType) else 'int'
+                value = self._extract_variant_value(value, kind)
+            elif value.type == variant_ty:
+                tmp = self.builder.alloca(variant_ty, name='tmp_fstore')
+                self.builder.store(value, tmp)
+                kind = 'float' if isinstance(expected, ir.DoubleType) else 'int'
+                value = self._extract_variant_value(tmp, kind)
+            # Width coercion for ints
+            if (isinstance(expected, ir.IntType) and isinstance(value.type, ir.IntType)
+                    and value.type != expected):
+                if value.type.width > expected.width:
+                    value = self.builder.trunc(value, expected)
+                else:
+                    value = self.builder.zext(value, expected)
+            self.builder.store(value, field_ptr)
 
     # ------------------------------------------------------------------
     # visit_func_call helpers — one method per heavy built-in
@@ -3013,9 +3266,7 @@ class CodeGenerator:
         else:
             self.builder.ret_void()
 
-    def visit_record_init(self, node: Dict[str, Any]) -> None:
-        # Reached only if _check_unsupported_nodes somehow missed this node
-        raise AleError("record initialization is not yet supported", node)
+    # visit_record_init is defined in the Record support section above
 
     def visit_pointer_type(self, node: Dict[str, Any]) -> None:
         raise AleError("pointer types are not yet supported", node)

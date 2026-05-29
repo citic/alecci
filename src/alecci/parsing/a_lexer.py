@@ -93,6 +93,7 @@ tokens = [
     'RBRACKET',
     'LBRACE',
     'RBRACE',
+    'DOT',
     'INTEGER',
     'ASSIGN',
     'COLON',
@@ -146,6 +147,7 @@ t_LBRACE = r'\{'
 t_RBRACE = r'\}'
 t_ASSIGN   = r':='
 t_COLON    = r':'
+t_DOT      = r'\.'
 t_STRING   = r'"[^\n"]*"'
 t_FORMATTED_STRING   = r'\`[^\n\`]*\`'
 

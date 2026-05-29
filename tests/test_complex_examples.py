@@ -128,10 +128,7 @@ EXAMPLES = {
     },
     "record_init": {
         "file": "record_init.ale",
-        "build_expect": [
-            "error: 'record initialization' is not yet supported",
-        ],
-        "build_fail": True,
+        "expect": ["Record init test end"],
     },
     "debug_parser_output": {
         "file": "debug_parser_output.ale",
@@ -288,16 +285,10 @@ def test_complex_deadlock_warning_if_branch(repo_root: Path, bin_dir: Path, comp
     print("[PASS] deadlock_warning_if_branch")
 
 
-def test_complex_record_init(repo_root: Path, bin_dir: Path, compile_pseudo_fn, capsys):
-    example = EXAMPLES["record_init"]
-    src = repo_root / "examples" / "complex_tests" / example["file"]
-    out = bin_dir / Path(example["file"]).with_suffix("").name
-    rc, build_out = compile_pseudo_fn(src, out, debug=False, tsan=False)
-    assert rc != 0, f"[SHOULD FAIL] record_init was expected to fail but succeeded"
-    for needle in example.get("build_expect", []):
-        assert needle in build_out, (
-            f"[ASSERT FAIL] record_init missing error text: {needle!r}\nFull build output:\n{build_out}"
-        )
+def test_complex_record_init(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    _compile_and_run_complex(
+        "record_init", EXAMPLES["record_init"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn
+    )
     print("[PASS] record_init")
 
 
