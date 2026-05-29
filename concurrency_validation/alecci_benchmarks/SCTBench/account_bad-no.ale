@@ -1,0 +1,46 @@
+// SCTBench benchmark: concurrent-software-benchmarks/account_bad.c
+// Three threads (deposit, withdraw, check_result) share one mutex protecting balance.
+// The original C code asserts balance == (x - y) - z, which is logically wrong
+// (should be x + y - z); Alecci has no assert so the logic bug cannot be expressed.
+// All accesses are mutex-protected — no data race.
+// TSan cannot detect this class of bug: the fault is a wrong assertion formula,
+// not a concurrency error.
+
+procedure deposit(thread_number as int)
+    lock(m)
+    balance := balance + y
+    deposit_done := 1
+    unlock(m)
+end procedure
+
+procedure withdraw(thread_number as int)
+    lock(m)
+    balance := balance - z
+    withdraw_done := 1
+    unlock(m)
+end procedure
+
+procedure check_result(thread_number as int)
+    lock(m)
+    mutable dd := deposit_done
+    mutable wd := withdraw_done
+    mutable bal := balance
+    // original asserts: bal == (x - y) - z  [WRONG; correct formula is x + y - z]
+    unlock(m)
+end procedure
+
+procedure main()
+    shared mutable m as mutex := mutex()
+    shared mutable x := 1
+    shared mutable y := 2
+    shared mutable z := 4
+    shared mutable balance := 1
+    shared mutable deposit_done := 0
+    shared mutable withdraw_done := 0
+    mutable t1 := create_threads(1, deposit)
+    mutable t2 := create_threads(1, withdraw)
+    mutable t3 := create_threads(1, check_result)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+    join_threads(t3, 1)
+end procedure

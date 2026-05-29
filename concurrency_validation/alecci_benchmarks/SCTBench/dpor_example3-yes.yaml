@@ -1,0 +1,8 @@
+# SCTBench benchmark: inspect_examples/dpor-example3.c
+# Three threads access two unprotected shared variables (a and b).
+# Thread3 conflicts with thread1 (on a) and thread2 (on b).
+# Expected: data races on a and b detected by TSan.
+
+expected_issues:
+  - data_race
+timeout: 10

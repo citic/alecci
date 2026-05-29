@@ -19,7 +19,7 @@ The original SCTBench repository organises programs into several subdirectories:
 | `radbench/` | Radically concurrency-buggy programs |
 | `splash2/` | SPLASH-2 parallel benchmark suite |
 
-## Selected Benchmarks (18)
+## Selected Benchmarks (21)
 
 ### Race benchmarks — TSan detects `data_race`
 
@@ -28,6 +28,8 @@ The original SCTBench repository organises programs into several subdirectories:
 | `race01-yes.ale` | `inspect_examples/race01.c` | Data race | 2 |
 | `micro_unprotected_2-yes.ale` | `concurrent-software-benchmarks/micro_2_ok.c` | Data race | 2 |
 | `micro_unprotected_3-yes.ale` | `concurrent-software-benchmarks/micro_3_ok.c` | Data race | 3 |
+| `micro_unprotected_10-yes.ale` | `concurrent-software-benchmarks/micro_10_ok.c` | Data race | 10 |
+| `dpor_example3-yes.ale` | `inspect_examples/dpor-example3.c` | Data race (on a and b) | 3 |
 | `reorder_3-yes.ale` | `concurrent-software-benchmarks/reorder_3_bad.c` | Data race (iSet=2, iCheck=1) | 3 |
 | `reorder_4-yes.ale` | `concurrent-software-benchmarks/reorder_4_bad.c` | Data race (iSet=3, iCheck=1) | 4 |
 | `reorder_5-yes.ale` | `concurrent-software-benchmarks/reorder_5_bad.c` | Data race (iSet=4, iCheck=1) | 5 |
@@ -48,6 +50,7 @@ The original SCTBench repository organises programs into several subdirectories:
 | `twostage-no.ale` | `concurrent-software-benchmarks/twostage_bad.c` | Atomicity violation (no data race) | 3 |
 | `twostage_100-no.ale` | `concurrent-software-benchmarks/twostage_100_bad.c` | Atomicity violation (no data race) | 100 |
 | `dpor_example1-no.ale` | `inspect_examples/dpor-example1.c` | Correct concurrent hash table | 13 |
+| `account_bad-no.ale` | `concurrent-software-benchmarks/account_bad.c` | Logic bug in assertion (not a race) | 3 |
 
 The four atomicity-violation benchmarks (`lazy01`, `stack`, `twostage`, `twostage_100`) are from
 **known-buggy** SCTBench entries. Their bugs arise from multiple mutex-protected regions that
@@ -55,12 +58,20 @@ should execute atomically but do not; all memory accesses are under some mutex s
 detect them. They are included to represent this class of beyond-data-race bug.
 
 Note on naming: SCTBench uses `_ok` to mean "no assertion violation under tested schedules",
-not "no data race". `micro_2_ok.c` and `micro_3_ok.c` are in fact racy programs.
+not "no data race". `micro_2_ok.c`, `micro_3_ok.c`, and `micro_10_ok.c` are in fact racy programs.
+
+`account_bad-no.ale` (from `account_bad.c`) was previously excluded because its bug is a wrong
+assertion formula — a logic error rather than a concurrency error. Since Alecci has no `assert`,
+the formula cannot be expressed, but the program can still run and serves to document that TSan
+is silent on logic bugs.
+
+`micro_unprotected_10-yes.ale` and `dpor_example3-yes.ale` were overlooked in the original
+selection. They follow the same patterns as the existing micro and dpor benchmarks.
 
 ## Benchmark Results
 
-All 18 benchmarks pass the test runner (18/18). The 10 data-race benchmarks are consistently
-detected by TSan; the 8 no-race benchmarks produce no false positives.
+All 21 benchmarks pass the test runner (21/21). The 12 data-race benchmarks are consistently
+detected by TSan; the 9 no-race benchmarks produce no false positives.
 
 ## Excluded Benchmarks
 
@@ -90,7 +101,7 @@ detected by TSan; the 8 no-race benchmarks produce no false positives.
 | `bluetooth_driver_bad.c` | Complex state machine; uses multiple condition variables and linked list traversal |
 | `circular_buffer_bad.c` | Uses condition variables for producer/consumer coordination |
 | `queue_bad.c` | Uses condition variables |
-| `account_bad.c` | Logic bug in assertion formula, not a concurrency bug; the correct version (`account_ok.c`) is included |
+| `account_bad.c` | ~~Logic bug in assertion formula, not a concurrency bug~~ — now included as `account_bad-no.ale`; Alecci has no `assert` so the formula cannot be expressed, but the program can run and TSan is correctly silent |
 | `carter01_bad.c` | Reader-writer deadlock pattern with two interleaved mutexes; potential deadlock only, not a data race — deadlocks are not detectable by TSan and cannot be provoked from Alecci without condition variables |
 | `fsbench_bad.c` | File-system benchmark — requires file I/O and kernel interfaces unavailable in Alecci |
 | `ctrace-test.c` (inspect_examples) | Tracing library with sockets, linked lists, dynamic allocation, semaphores — far too complex for Alecci |

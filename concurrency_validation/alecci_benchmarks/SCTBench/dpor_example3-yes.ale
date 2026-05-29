@@ -1,0 +1,29 @@
+// SCTBench benchmark: inspect_examples/dpor-example3.c
+// Three threads access two shared variables (a and b) without any lock.
+// thread1 increments a; thread2 increments b; thread3 decrements b and increments a by 5.
+// thread3 conflicts with thread1 (on a) and thread2 (on b).
+// Expected: data races on both a and b.
+
+procedure thread1(thread_number as int)
+    a := a + 1
+end procedure
+
+procedure thread2(thread_number as int)
+    b := b + 1
+end procedure
+
+procedure thread3(thread_number as int)
+    b := b - 1
+    a := a + 5
+end procedure
+
+procedure main()
+    shared mutable a := 0
+    shared mutable b := 0
+    mutable t1 := create_threads(1, thread1)
+    mutable t2 := create_threads(1, thread2)
+    mutable t3 := create_threads(1, thread3)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+    join_threads(t3, 1)
+end procedure
