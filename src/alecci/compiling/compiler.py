@@ -2830,10 +2830,31 @@ class CodeGenerator:
         # Coerce arguments to match declared parameter types (e.g. char literal i32 → i8 char param)
         ftype = func.type.pointee if isinstance(func.type, ir.PointerType) else func.type
         if hasattr(ftype, 'args'):
+            from .base_types import get_variant_type
+            variant_ty = get_variant_type()
             coerced = []
             for idx, (arg, expected) in enumerate(zip(args, ftype.args)):
                 if hasattr(arg, 'type') and arg.type != expected:
-                    if isinstance(expected, ir.IntType) and isinstance(arg.type, ir.IntType):
+                    is_variant_ptr = (isinstance(arg.type, ir.PointerType) and
+                                      arg.type.pointee == variant_ty)
+                    is_variant_val = (arg.type == variant_ty)
+                    if is_variant_val:
+                        tmp = self.builder.alloca(variant_ty, name="tmp_coerce")
+                        self.builder.store(arg, tmp)
+                        arg = tmp
+                        is_variant_ptr = True
+                        is_variant_val = False
+                    if is_variant_ptr and isinstance(expected, ir.IntType):
+                        arg = self._extract_variant_value(arg, 'int')
+                    elif is_variant_ptr and isinstance(expected, ir.DoubleType):
+                        arg = self._extract_variant_value(arg, 'float')
+                    elif isinstance(expected, ir.IntType) and isinstance(arg.type, ir.IntType):
+                        if arg.type.width > expected.width:
+                            arg = self.builder.trunc(arg, expected)
+                        else:
+                            arg = self.builder.zext(arg, expected)
+                    if (hasattr(arg, 'type') and isinstance(expected, ir.IntType) and
+                            isinstance(arg.type, ir.IntType) and arg.type != expected):
                         if arg.type.width > expected.width:
                             arg = self.builder.trunc(arg, expected)
                         else:

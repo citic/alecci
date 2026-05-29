@@ -131,7 +131,7 @@ DeepRace/
 | `bounded-buffer-cond-no.ale` | `05bounded.c` | Classic bounded buffer (size 4, 30 items) with `more`/`less` condvars |
 | `count-threshold-cond-no.ale` | `06_thread_cond_var.c` | 1 watcher + 2 incrementers, COUNT_LIMIT=12; watcher holds mutex before while |
 | `count-threshold-outer-cond-yes.ale` | `11-14UseConditionVariable.c` | Mislabeled in original — outer `while count < 7` reads count without mutex |
-| `circular-buffer-cond-no.ale` | `ThreadSynCondition.c` | Circular buffer (4 slots), 20 items + sentinel; `notempty`/`notfull` condvars *(see compiler bug note)* |
+| `circular-buffer-cond-no.ale` | `ThreadSynCondition.c` | Circular buffer (4 slots), 20 items + sentinel; `notempty`/`notfull` condvars |
 | `ping-pong-cond-no.ale` | `ping_pong.c` | Two-thread alternation via single mutex+condvar, 5 rounds |
 | `flag-signal-cond-yes.ale` | `x.c` | Two waiters, one `cond_signal` — only one wakes; other stays blocked → thread_leak |
 | `count-threshold-4t-cond-no.ale` | `thread_with_conditions.c` | 3 incrementers + 1 watcher, COUNT_LIMIT=12; all under mutex |
@@ -142,21 +142,12 @@ DeepRace/
 
 ### Known Alecci compiler / runtime bugs found during translation
 
-**Bug 1 — Variant-to-typed-parameter coercion missing in user function calls**
-File: `circular-buffer-cond-no.ale`
-
-Untyped local variables (`mutable x := 0`, without `as int`) are allocated internally as Alecci's **variant** type (`{i32, [16 x i8]}*`). When such a variable is passed to a user-defined procedure that declares a typed parameter (`data as int`, expecting LLVM `i32`), the LLVM builder throws:
-```
-TypeError: Type of #1 arg mismatch: i32 != {i32, [16 x i8]}*
-```
-The argument-coercion path in `visit_func_call` only handles `IntType → IntType` narrowing/widening and does not extract the integer payload from a variant. This means `put_item(n)` where `n` is an untyped local fails to compile.
-
-**Bug 2 — `pthread_cond_destroy` called while a thread is blocked in `pthread_cond_wait`**
+**Bug 1 — `pthread_cond_destroy` called while a thread is blocked in `pthread_cond_wait`**
 Files: `flag-signal-cond-yes.ale`, and potentially any program where threads remain blocked at main exit.
 
 `_cleanup_concurrency_primitives` unconditionally calls `pthread_cond_destroy` for every `condvar` declared in `main`. If a thread is still blocked inside `cond_wait` when cleanup runs, calling `pthread_cond_destroy` is undefined behaviour (POSIX) and in glibc causes the destroy call to block indefinitely, hanging the process. The same class of bug was previously found with `pthread_barrier_destroy`.
 
-**Bug 3 — `readwrite-cond-yes.ale` deadlocks faithfully**
+**Bug 2 — `readwrite-cond-yes.ale` deadlocks faithfully**
 File: `readwrite-cond-yes.ale`
 
 The original `zuoye3.c` contains a logical deadlock: if the writer thread advances `n0` to ≥ 200 and exits its loop while the reader thread is blocked inside `cond_wait(cond1)`, the reader will never be woken (no thread is left to signal `cond1`). The Alecci translation faithfully reproduces this bug, causing the program to time out rather than completing.
