@@ -26,7 +26,8 @@ def get_variant_type_tag_enum():
         'barrier': 5,
         'thread': 6,
         'array': 7,
-        'null': 8
+        'null': 8,
+        'condvar': 9
     }
 
 # Shared map of named scalar types used by both get_type and get_raw_type.
@@ -39,6 +40,7 @@ _SCALAR_TYPE_MAP = {
     "barrier":   lambda: ir.IntType(8).as_pointer(),
     "thread":    lambda: ir.IntType(8).as_pointer(),
     "mutex":     lambda: ir.IntType(8).as_pointer(),
+    "condvar":   lambda: ir.IntType(8).as_pointer(),
     "variant":   get_variant_type,
 }
 

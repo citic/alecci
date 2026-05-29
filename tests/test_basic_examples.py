@@ -45,6 +45,10 @@ EXAMPLES = {
             "Worker 2 after barrier",
         ],
     },
+    "condvar": {
+        "file": "condvar.ale",
+        "expect": ["condvar test start", "consumer: received signal", "condvar test completed"],
+    },
     "argument_parsing": {
         "file": "argument_parsing.pseudo",
         "args": ["foo", "123", "456"],
@@ -267,6 +271,11 @@ def test_example_mutex(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_ex
 def test_example_barrier(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
     out = _compile_and_run("barrier", EXAMPLES["barrier"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] barrier")
+
+
+def test_example_condvar(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    out = _compile_and_run("condvar", EXAMPLES["condvar"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] condvar")
 
 
 def test_example_arguments(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):

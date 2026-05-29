@@ -382,6 +382,7 @@ class CodeGenerator:
         mutex_destroy  = self._declare_external_fn('pthread_mutex_destroy',  ir.IntType(32), [opaque_ty])
         sem_destroy     = self._declare_external_fn('sem_destroy',             ir.IntType(32), [opaque_ty])
         barrier_destroy = self._declare_external_fn('pthread_barrier_destroy', ir.IntType(32), [opaque_ty])
+        cond_destroy    = self._declare_external_fn('pthread_cond_destroy',    ir.IntType(32), [opaque_ty])
 
         for name, ptr in self.local_mutexes:
             debug_print(f"DEBUG: Cleaning up local mutex '{name}' in {function_name}")
@@ -401,6 +402,12 @@ class CodeGenerator:
                 ptr = self.builder.bitcast(ptr, opaque_ty)
             self.builder.call(barrier_destroy, [ptr])
 
+        for name, ptr in self.local_condvars:
+            debug_print(f"DEBUG: Cleaning up local condvar '{name}' in {function_name}")
+            if ptr.type != opaque_ty:
+                ptr = self.builder.bitcast(ptr, opaque_ty)
+            self.builder.call(cond_destroy, [ptr])
+
         if function_name == 'main':
             for var_name, (var_ptr, var_type, _) in self.globals.items():
                 if var_type == 'mutex':
@@ -414,6 +421,10 @@ class CodeGenerator:
                 elif var_type == 'barrier':
                     debug_print(f"DEBUG: Cleaning up shared barrier '{var_name}' in main")
                     self.builder.call(barrier_destroy,
+                                      [self.builder.bitcast(var_ptr, opaque_ty)])
+                elif var_type == 'condvar':
+                    debug_print(f"DEBUG: Cleaning up shared condvar '{var_name}' in main")
+                    self.builder.call(cond_destroy,
                                       [self.builder.bitcast(var_ptr, opaque_ty)])
     
     def _make_shared_accesses_atomic(self, ir_string: str) -> str:
@@ -631,6 +642,7 @@ class CodeGenerator:
                 self.local_mutexes = []
                 self.local_semaphores = []
                 self.local_barriers = []
+                self.local_condvars = []
 
                 # Process explicitly declared parameters
                 if decl['name'] == 'main':
@@ -792,6 +804,16 @@ class CodeGenerator:
         self.globals[name] = (g, 'barrier', False)
         debug_print(f"DEBUG: Created global barrier storage '{name}_storage'")
 
+    def _shared_decl_condvar(self, name: str) -> None:
+        """Declare a shared condvar global (zero-initialised storage).
+        pthread_cond_t is 48 bytes on Linux x86_64."""
+        ty = ir.ArrayType(ir.IntType(8), 48)
+        g = ir.GlobalVariable(self.module, ty, name=f"{name}_storage")
+        g.linkage = 'internal'
+        g.initializer = ir.Constant(ty, [ir.Constant(ir.IntType(8), 0)] * 48)
+        self.globals[name] = (g, 'condvar', False)
+        debug_print(f"DEBUG: Created global condvar storage '{name}_storage'")
+
     def _shared_decl_queue(self, name: str, value_node) -> None:
         """Declare a shared queue global ([capacity, count, head, tail, buf…] as i32 array)."""
         capacity = 10
@@ -902,6 +924,8 @@ class CodeGenerator:
                 value = None
             elif fname in ('barrier', 'queue', 'variant'):
                 var_type = fname
+            elif fname == 'condvar':
+                var_type = 'condvar'
             elif fname == 'create_threads':
                 var_type = 'thread_array'
 
@@ -914,6 +938,9 @@ class CodeGenerator:
             return
         if var_type == 'barrier':
             self._shared_decl_barrier(name)
+            return
+        if var_type == 'condvar':
+            self._shared_decl_condvar(name)
             return
         if var_type == 'queue':
             self._shared_decl_queue(name, value)
@@ -990,6 +1017,27 @@ class CodeGenerator:
             self.locals[name] = (mutex_ptr, 'mutex', is_constant)
             self.builder.call(mutex_init_fn, [mutex_ptr, null_attr])
             self.local_mutexes.append((name, mutex_ptr))
+
+    def _decl_condvar(self, name: str, shared: bool, is_constant: bool) -> None:
+        """Allocate / initialise a condition variable.
+        pthread_cond_t is 48 bytes on Linux x86_64."""
+        opaque_ty = ir.IntType(8).as_pointer()
+        null_attr = ir.Constant(opaque_ty, None)
+        cond_init_fn = self._declare_external_fn(
+            'pthread_cond_init', ir.IntType(32), [opaque_ty, opaque_ty])
+
+        if shared:
+            cond_storage, _, _ = self.globals[name]
+            if self.current_function_name == 'main':
+                cond_ptr = self.builder.bitcast(cond_storage, opaque_ty)
+                self.builder.call(cond_init_fn, [cond_ptr, null_attr])
+        else:
+            storage = self.builder.alloca(ir.ArrayType(ir.IntType(8), 48),
+                                           name=f"{name}_storage")
+            cond_ptr = self.builder.bitcast(storage, opaque_ty)
+            self.locals[name] = (cond_ptr, 'condvar', is_constant)
+            self.builder.call(cond_init_fn, [cond_ptr, null_attr])
+            self.local_condvars.append((name, cond_ptr))
 
     def _decl_barrier(self, name: str, shared: bool, is_constant: bool,
                        init_value_expr) -> None:
@@ -1125,7 +1173,7 @@ class CodeGenerator:
         # --- Shared declarations: mostly already handled in pass 1 ---
         if shared and name in self.globals:
             _, var_type, _ = self.globals[name]
-            if var_type in ('semaphore', 'mutex', 'barrier') and self.current_function_name == 'main':
+            if var_type in ('semaphore', 'mutex', 'barrier', 'condvar') and self.current_function_name == 'main':
                 pass  # fall through for runtime init below
             elif var_type == 'thread_array':
                 init = node['init']
@@ -1182,7 +1230,7 @@ class CodeGenerator:
         evaluated_value = None
         raw_value = None
 
-        _SPECIAL_TYPES = {'mutex', 'semaphore', 'barrier', 'queue',
+        _SPECIAL_TYPES = {'mutex', 'semaphore', 'barrier', 'condvar', 'queue',
                           'create_threads', 'create_thread'}
 
         if isinstance(init_value_expr, dict) and init_value_expr.get('type') == 'function_call':
@@ -1196,6 +1244,8 @@ class CodeGenerator:
                 evaluated_value = raw_value if isinstance(raw_value, int) else 0
             elif fname == 'barrier':
                 var_type = 'barrier'
+            elif fname == 'condvar':
+                var_type = 'condvar'
             elif fname == 'queue':
                 var_type = 'queue'
             elif fname == 'variant':
@@ -1228,6 +1278,9 @@ class CodeGenerator:
             return
         if var_type == 'barrier':
             self._decl_barrier(name, shared, is_constant, init_value_expr)
+            return
+        if var_type == 'condvar':
+            self._decl_condvar(name, shared, is_constant)
             return
         if var_type == 'queue':
             self._decl_queue(name, shared, is_constant, init_value_expr)
@@ -1703,6 +1756,7 @@ class CodeGenerator:
         old_mutexes    = self.local_mutexes[:]
         old_semaphores = self.local_semaphores[:]
         old_barriers   = self.local_barriers[:]
+        old_condvars   = self.local_condvars[:]
 
         self.builder               = ir.IRBuilder(worker_block)
         self.locals                = {}
@@ -1712,6 +1766,7 @@ class CodeGenerator:
         self.local_mutexes         = []
         self.local_semaphores      = []
         self.local_barriers        = []
+        self.local_condvars        = []
 
         thread_num_arg, n_threads_arg, r_start_arg, r_end_arg = worker_func.args
 
@@ -1772,6 +1827,7 @@ class CodeGenerator:
         self.local_mutexes         = old_mutexes
         self.local_semaphores      = old_semaphores
         self.local_barriers        = old_barriers
+        self.local_condvars        = old_condvars
 
         # ----- pthread wrapper: void* wrapper(void* arg) -----
         arg_struct_type = ir.LiteralStructType([i32, i32, i32, i32])
@@ -2040,7 +2096,7 @@ class CodeGenerator:
         debug_print(f"DEBUG: visit_ID for '{name}', dtype={dtype}, ptr type={getattr(ptr, 'type', None)}")
 
         # Opaque C types stored as raw byte arrays — bitcast to i8* on every access
-        if dtype in ('semaphore', 'mutex', 'barrier'):
+        if dtype in ('semaphore', 'mutex', 'barrier', 'condvar'):
             if (hasattr(ptr, 'type') and isinstance(ptr.type, ir.PointerType) and
                     isinstance(ptr.type.pointee, ir.ArrayType) and
                     ptr.type.pointee.element == ir.IntType(8)):
@@ -2363,6 +2419,32 @@ class CodeGenerator:
             c_name = 'pthread_mutex_lock' if func_name == 'lock' else 'pthread_mutex_unlock'
             fn = self._declare_external_fn(c_name, ir.IntType(32), [opaque_ty])
             return self.builder.call(fn, [mutex_ptr])
+        elif func_name == 'cond_wait':
+            # cond_wait(cond, mutex) → pthread_cond_wait(cond_ptr, mutex_ptr)
+            if len(node['arguments']) != 2:
+                raise Exception("cond_wait() requires exactly 2 arguments: cond_wait(cond, mutex)")
+            opaque_ty = ir.IntType(8).as_pointer()
+            cond_ptr  = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
+            mutex_ptr = self._resolve_arg_ptr(node['arguments'][1], opaque_ty)
+            if not hasattr(cond_ptr, 'type') or not isinstance(cond_ptr.type, ir.PointerType):
+                raise Exception("cond_wait() first argument (cond) is not a pointer.")
+            if not hasattr(mutex_ptr, 'type') or not isinstance(mutex_ptr.type, ir.PointerType):
+                raise Exception("cond_wait() second argument (mutex) is not a pointer.")
+            fn = self._declare_external_fn('pthread_cond_wait', ir.IntType(32),
+                                           [opaque_ty, opaque_ty])
+            return self.builder.call(fn, [cond_ptr, mutex_ptr])
+        elif func_name in ('cond_signal', 'cond_broadcast'):
+            # cond_signal(cond) → pthread_cond_signal(cond_ptr)
+            # cond_broadcast(cond) → pthread_cond_broadcast(cond_ptr)
+            if len(node['arguments']) != 1:
+                raise Exception(f"{func_name}() requires exactly 1 argument (condvar)")
+            opaque_ty = ir.IntType(8).as_pointer()
+            cond_ptr  = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
+            if not hasattr(cond_ptr, 'type') or not isinstance(cond_ptr.type, ir.PointerType):
+                raise Exception(f"{func_name}() argument is not a pointer.")
+            c_name = 'pthread_cond_signal' if func_name == 'cond_signal' else 'pthread_cond_broadcast'
+            fn = self._declare_external_fn(c_name, ir.IntType(32), [opaque_ty])
+            return self.builder.call(fn, [cond_ptr])
         elif func_name == 'join_threads':
             return self._handle_join_threads(node)
         elif func_name == 'array':

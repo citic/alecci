@@ -1,0 +1,31 @@
+// Basic condition variable test: producer signals consumer via condvar.
+// The consumer waits on the condvar inside the mutex; the producer
+// sets the ready flag and signals before releasing the mutex.
+
+procedure producer(thread_number as int)
+    lock(m)
+    ready := 1
+    cond_signal(cv)
+    unlock(m)
+end procedure
+
+procedure consumer(thread_number as int)
+    lock(m)
+    while ready = 0 do
+        cond_wait(cv, m)
+    end while
+    print "consumer: received signal"
+    unlock(m)
+end procedure
+
+procedure main()
+    shared mutable m     as mutex   := mutex()
+    shared mutable cv    as condvar := condvar()
+    shared mutable ready := 0
+    print "condvar test start"
+    mutable t_prod := create_threads(1, producer)
+    mutable t_cons := create_threads(1, consumer)
+    join_threads(t_prod, 1)
+    join_threads(t_cons, 1)
+    print "condvar test completed"
+end procedure

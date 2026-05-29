@@ -46,6 +46,7 @@ reserved = {
     'semaphore' : 'SEMAPHORE',
     'mutex' : 'MUTEX',
     'barrier' : 'BARRIER',
+    'condvar' : 'CONDVAR',
     'queue' : 'QUEUE',
     'parallel' : 'PARALLEL',
     'with' : 'WITH',
