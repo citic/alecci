@@ -1,0 +1,27 @@
+// SCTBench benchmark: concurrent-software-benchmarks/din_phil7_sat.c
+// 7 dining philosophers with a shared counter 'phil' (unprotected).
+// Each philosopher increments 'phil' after releasing the forks — no lock held.
+// BUG: concurrent unprotected increments of 'phil' are a data race.
+// Also: TSan detects lock-order inversion on fork mutexes (deadlock warning).
+// Expected: data race on 'phil' + deadlock warning from TSan.
+
+procedure philosopher(thread_number as int)
+    mutable left  := thread_number
+    mutable right := (thread_number + 1) % 7
+    lock(esbmc_m)
+    lock(forks[right])
+    lock(forks[left])
+    unlock(forks[left])
+    unlock(forks[right])
+    unlock(esbmc_m)
+    phil := phil + 1
+    // original: if (phil == N) assert(0); — omitted (Alecci has no assert)
+end procedure
+
+procedure main()
+    shared mutable esbmc_m as mutex := mutex()
+    shared mutable forks := array(7, mutex())
+    shared mutable phil := 0
+    mutable threads := create_threads(7, philosopher)
+    join_threads(threads, 7)
+end procedure

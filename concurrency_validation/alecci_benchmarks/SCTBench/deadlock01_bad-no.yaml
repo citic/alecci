@@ -1,0 +1,8 @@
+# SCTBench benchmark: concurrent-software-benchmarks/deadlock01_bad.c
+# Two threads acquire mutexes a and b in opposite order — lock-order inversion.
+# TSan reports a potential deadlock (LOCK_ORDER_INVERSION) warning.
+# Expected: deadlock warning detected by TSan.
+
+expected_issues:
+  - deadlock
+timeout: 10

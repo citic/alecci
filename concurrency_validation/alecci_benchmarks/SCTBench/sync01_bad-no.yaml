@@ -1,0 +1,9 @@
+# SCTBench benchmark: concurrent-software-benchmarks/sync01_bad.c
+# 1-slot producer-consumer, but consumer never decrements num.
+# The producer loops forever waiting on 'empty' — condvar deadlock (timeout).
+# TSan cannot detect this class of bug; program times out.
+# Expected: no data race (timeout counts as inconclusive, not a race).
+
+expected_issues:
+  - none
+timeout: 5

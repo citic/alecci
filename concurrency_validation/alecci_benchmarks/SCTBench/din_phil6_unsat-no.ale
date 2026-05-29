@@ -1,0 +1,24 @@
+// SCTBench benchmark: concurrent-software-benchmarks/din_phil6_unsat.c
+// 6 dining philosophers. Each philosopher acquires right fork then left fork,
+// both while holding a global esbmc_m mutex (serialising the fork operations).
+// TSan sees different acquisition orders for fork pairs across threads and
+// reports a lock-order-inversion warning.
+// Expected: deadlock warning from TSan (lock-order inversion on fork mutexes).
+
+procedure philosopher(thread_number as int)
+    mutable left  := thread_number
+    mutable right := (thread_number + 1) % 6
+    lock(esbmc_m)
+    lock(forks[right])
+    lock(forks[left])
+    unlock(forks[left])
+    unlock(forks[right])
+    unlock(esbmc_m)
+end procedure
+
+procedure main()
+    shared mutable esbmc_m as mutex := mutex()
+    shared mutable forks := array(6, mutex())
+    mutable threads := create_threads(6, philosopher)
+    join_threads(threads, 6)
+end procedure

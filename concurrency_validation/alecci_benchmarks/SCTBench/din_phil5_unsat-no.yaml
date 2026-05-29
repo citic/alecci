@@ -1,0 +1,10 @@
+# SCTBench benchmark: concurrent-software-benchmarks/din_phil5_unsat.c
+# 5 dining philosophers serialised by esbmc_m; forks acquired in opposite order.
+# Ground truth (buggy.txt): NOT listed — no bug in this variant.
+# Note: TSan reports a lock-order-inversion on fork mutexes, but this is a
+# false positive — esbmc_m serialises the section so no actual deadlock occurs.
+# Expected: no concurrency bug (TSan lock-order-inversion is a false positive).
+
+expected_issues:
+  - none
+timeout: 10

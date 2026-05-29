@@ -1,0 +1,60 @@
+// SCTBench benchmark: concurrent-software-benchmarks/carter01_bad.c
+// Two classes of threads (A and B) share a coarse lock m and a resource lock l.
+// Each class acquires l only when its reference count rises from 0 to 1 and
+// releases it when the count drops back to 0.  Lock order is always m → l.
+// t3 and t4 are empty threads (no operations).
+// TSan will not report a lock-order inversion (order is consistent: m then l).
+// However, both classes competing for l may deadlock at runtime if they both
+// increment their counters to 1 concurrently before either finishes.
+// Expected: no data race (TSan silent; potential runtime deadlock on l).
+
+procedure t1(thread_number as int)
+    lock(m)
+    A := A + 1
+    if A = 1 then
+        lock(l)
+    end if
+    unlock(m)
+    lock(m)
+    A := A - 1
+    if A = 0 then
+        unlock(l)
+    end if
+    unlock(m)
+end procedure
+
+procedure t2(thread_number as int)
+    lock(m)
+    B := B + 1
+    if B = 1 then
+        lock(l)
+    end if
+    unlock(m)
+    lock(m)
+    B := B - 1
+    if B = 0 then
+        unlock(l)
+    end if
+    unlock(m)
+end procedure
+
+procedure t3(thread_number as int)
+end procedure
+
+procedure t4(thread_number as int)
+end procedure
+
+procedure main()
+    shared mutable m as mutex := mutex()
+    shared mutable l as mutex := mutex()
+    shared mutable A := 0
+    shared mutable B := 0
+    mutable a1 := create_threads(1, t1)
+    mutable b1 := create_threads(1, t2)
+    mutable a2 := create_threads(1, t3)
+    mutable b2 := create_threads(1, t4)
+    join_threads(a1, 1)
+    join_threads(b1, 1)
+    join_threads(a2, 1)
+    join_threads(b2, 1)
+end procedure

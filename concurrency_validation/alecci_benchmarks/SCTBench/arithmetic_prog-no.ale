@@ -1,0 +1,49 @@
+// SCTBench benchmark: concurrent-software-benchmarks/arithmetic_prog_ok.c
+// Producer-consumer with accumulation: the consumer sums j=0..N-1 into total.
+// Two condition variables coordinate a 1-slot buffer over N=4 iterations.
+// All accesses to num and total are under the mutex — no data race.
+// (The original C code also has a final total+=N and assert outside the lock,
+// which are omitted here since Alecci has no assert and those accesses race with
+// nothing at that point.)
+// Expected: no data race.
+
+procedure producer(thread_number as int)
+    mutable i := 0
+    while i < 4 do
+        lock(m)
+        while num > 0 do
+            cond_wait(empty, m)
+        end while
+        num := num + 1
+        unlock(m)
+        cond_signal(full)
+        i := i + 1
+    end while
+end procedure
+
+procedure consumer(thread_number as int)
+    mutable j := 0
+    while j < 4 do
+        lock(m)
+        while num = 0 do
+            cond_wait(full, m)
+        end while
+        total := total + j
+        num := num - 1
+        unlock(m)
+        cond_signal(empty)
+        j := j + 1
+    end while
+end procedure
+
+procedure main()
+    shared mutable m     as mutex   := mutex()
+    shared mutable empty as condvar := condvar()
+    shared mutable full  as condvar := condvar()
+    shared mutable num   := 0
+    shared mutable total := 0
+    mutable t1 := create_threads(1, producer)
+    mutable t2 := create_threads(1, consumer)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+end procedure

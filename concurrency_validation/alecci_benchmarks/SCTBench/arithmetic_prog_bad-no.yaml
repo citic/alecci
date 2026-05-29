@@ -1,0 +1,8 @@
+# SCTBench benchmark: concurrent-software-benchmarks/arithmetic_prog_bad.c
+# Producer-consumer accumulation with N=3. The original C has a wrong assert
+# (always fires), omitted here. Synchronisation is correct — no data race.
+# Expected: no concurrency issues.
+
+expected_issues:
+  - none
+timeout: 10

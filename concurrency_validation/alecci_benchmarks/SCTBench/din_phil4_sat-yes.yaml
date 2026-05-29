@@ -1,0 +1,10 @@
+# SCTBench benchmark: concurrent-software-benchmarks/din_phil4_sat.c
+# 4 dining philosophers with unprotected shared counter 'phil'.
+# Ground truth (buggy.txt): listed as buggy — data race on 'phil'.
+# Note: TSan also reports lock-order-inversion on fork mutexes; this is extra
+# detection beyond the ground-truth bug (TSan false positive on fork ordering).
+# Expected: data race on 'phil' (source ground truth).
+
+expected_issues:
+  - data_race
+timeout: 10

@@ -1,0 +1,9 @@
+# SCTBench benchmark: concurrent-software-benchmarks/sync02_bad.c
+# Producer-consumer N=2 with num initialised to 2 instead of 0.
+# Producer blocks immediately; consumer drains then waits forever — deadlock.
+# TSan cannot detect condvar deadlocks; program times out.
+# Expected: no data race (timeout counts as inconclusive, not a race).
+
+expected_issues:
+  - none
+timeout: 5

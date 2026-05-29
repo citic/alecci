@@ -1,0 +1,31 @@
+// SCTBench benchmark: concurrent-software-benchmarks/deadlock01_bad.c
+// Two threads acquire two mutexes in opposite order.
+// BUG: thread1 locks a then b; thread2 locks b then a — lock-order inversion.
+// TSan detects this as a potential deadlock (lock-order-inversion warning).
+// Expected: deadlock warning from TSan.
+
+procedure thread1(thread_number as int)
+    lock(a)
+    lock(b)
+    counter := counter + 1
+    unlock(b)
+    unlock(a)
+end procedure
+
+procedure thread2(thread_number as int)
+    lock(b)
+    lock(a)
+    counter := counter - 1
+    unlock(a)
+    unlock(b)
+end procedure
+
+procedure main()
+    shared mutable a as mutex := mutex()
+    shared mutable b as mutex := mutex()
+    shared mutable counter := 1
+    mutable t1 := create_threads(1, thread1)
+    mutable t2 := create_threads(1, thread2)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+end procedure

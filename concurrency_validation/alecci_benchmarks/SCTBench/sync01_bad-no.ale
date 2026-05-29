@@ -1,0 +1,36 @@
+// SCTBench benchmark: concurrent-software-benchmarks/sync01_bad.c
+// 1-slot producer-consumer with two condition variables.
+// BUG: the consumer never decrements num, so the producer waits on 'empty'
+// forever after the consumer exits — condvar deadlock (timeout).
+// Expected: no data race (TSan silent; deadlock manifests as timeout).
+
+procedure thread1(thread_number as int)
+    lock(m)
+    while num > 0 do
+        cond_wait(empty, m)
+    end while
+    num := num + 1
+    unlock(m)
+    cond_signal(full)
+end procedure
+
+procedure thread2(thread_number as int)
+    lock(m)
+    while num = 0 do
+        cond_wait(full, m)
+    end while
+    // num--;  deliberately omitted — the bug
+    unlock(m)
+    cond_signal(empty)
+end procedure
+
+procedure main()
+    shared mutable m     as mutex   := mutex()
+    shared mutable empty as condvar := condvar()
+    shared mutable full  as condvar := condvar()
+    shared mutable num := 1
+    mutable t1 := create_threads(1, thread1)
+    mutable t2 := create_threads(1, thread2)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+end procedure

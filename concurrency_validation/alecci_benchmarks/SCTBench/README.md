@@ -19,7 +19,7 @@ The original SCTBench repository organises programs into several subdirectories:
 | `radbench/` | Radically concurrency-buggy programs |
 | `splash2/` | SPLASH-2 parallel benchmark suite |
 
-## Selected Benchmarks (21)
+## Selected Benchmarks (42)
 
 ### Race benchmarks — TSan detects `data_race`
 
@@ -37,6 +37,24 @@ The original SCTBench repository organises programs into several subdirectories:
 | `reorder_20-yes.ale` | `concurrent-software-benchmarks/reorder_20_bad.c` | Data race (iSet=10, iCheck=10) | 20 |
 | `wronglock_3-yes.ale` | `concurrent-software-benchmarks/wronglock_3_bad.c` | Data race (wrong mutex, 1+3 threads) | 4 |
 | `wronglock-yes.ale` | `concurrent-software-benchmarks/wronglock_bad.c` | Data race (wrong mutex, 1+7 threads) | 8 |
+| `din_phil2_sat-yes.ale` | `concurrent-software-benchmarks/din_phil2_sat.c` | Data race on `phil` + lock-order inversion | 2 |
+| `din_phil3_sat-yes.ale` | `concurrent-software-benchmarks/din_phil3_sat.c` | Data race on `phil` + lock-order inversion | 3 |
+| `din_phil4_sat-yes.ale` | `concurrent-software-benchmarks/din_phil4_sat.c` | Data race on `phil` + lock-order inversion | 4 |
+| `din_phil5_sat-yes.ale` | `concurrent-software-benchmarks/din_phil5_sat.c` | Data race on `phil` + lock-order inversion | 5 |
+| `din_phil6_sat-yes.ale` | `concurrent-software-benchmarks/din_phil6_sat.c` | Data race on `phil` + lock-order inversion | 6 |
+| `din_phil7_sat-yes.ale` | `concurrent-software-benchmarks/din_phil7_sat.c` | Data race on `phil` + lock-order inversion | 7 |
+
+### Deadlock benchmarks — TSan detects lock-order inversion
+
+| File | Source | Bug type | Threads |
+|---|---|---|---|
+| `deadlock01_bad-no.ale` | `concurrent-software-benchmarks/deadlock01_bad.c` | Lock-order inversion (a→b vs b→a) | 2 |
+| `din_phil2_unsat-no.ale` | `concurrent-software-benchmarks/din_phil2_unsat.c` | Lock-order inversion on fork mutexes | 2 |
+| `din_phil3_unsat-no.ale` | `concurrent-software-benchmarks/din_phil3_unsat.c` | Lock-order inversion on fork mutexes | 3 |
+| `din_phil4_unsat-no.ale` | `concurrent-software-benchmarks/din_phil4_unsat.c` | Lock-order inversion on fork mutexes | 4 |
+| `din_phil5_unsat-no.ale` | `concurrent-software-benchmarks/din_phil5_unsat.c` | Lock-order inversion on fork mutexes | 5 |
+| `din_phil6_unsat-no.ale` | `concurrent-software-benchmarks/din_phil6_unsat.c` | Lock-order inversion on fork mutexes | 6 |
+| `din_phil7_unsat-no.ale` | `concurrent-software-benchmarks/din_phil7_unsat.c` | Lock-order inversion on fork mutexes | 7 |
 
 ### No-race benchmarks — TSan silent
 
@@ -51,6 +69,14 @@ The original SCTBench repository organises programs into several subdirectories:
 | `twostage_100-no.ale` | `concurrent-software-benchmarks/twostage_100_bad.c` | Atomicity violation (no data race) | 100 |
 | `dpor_example1-no.ale` | `inspect_examples/dpor-example1.c` | Correct concurrent hash table | 13 |
 | `account_bad-no.ale` | `concurrent-software-benchmarks/account_bad.c` | Logic bug in assertion (not a race) | 3 |
+| `sync01-no.ale` | `concurrent-software-benchmarks/sync01_ok.c` | Correct condvar producer-consumer | 2 |
+| `sync01_inspect-no.ale` | `inspect_examples/sync01.c` | Correct condvar (1-thread variant) | 1 |
+| `sync02-no.ale` | `concurrent-software-benchmarks/sync02_ok.c` | Correct condvar producer-consumer (N=20) | 2 |
+| `arithmetic_prog-no.ale` | `concurrent-software-benchmarks/arithmetic_prog_ok.c` | Correct condvar accumulation (N=4) | 2 |
+| `arithmetic_prog_bad-no.ale` | `concurrent-software-benchmarks/arithmetic_prog_bad.c` | Wrong assertion (dropped); no race (N=3) | 2 |
+| `sync01_bad-no.ale` | `concurrent-software-benchmarks/sync01_bad.c` | Condvar deadlock (num never decremented); times out | 2 |
+| `sync02_bad-no.ale` | `concurrent-software-benchmarks/sync02_bad.c` | Condvar deadlock (num starts at 2); times out | 2 |
+| `carter01_bad-no.ale` | `concurrent-software-benchmarks/carter01_bad.c` | Potential mutex deadlock; TSan silent | 4 |
 
 The four atomicity-violation benchmarks (`lazy01`, `stack`, `twostage`, `twostage_100`) are from
 **known-buggy** SCTBench entries. Their bugs arise from multiple mutex-protected regions that
@@ -65,13 +91,36 @@ assertion formula — a logic error rather than a concurrency error. Since Alecc
 the formula cannot be expressed, but the program can still run and serves to document that TSan
 is silent on logic bugs.
 
-`micro_unprotected_10-yes.ale` and `dpor_example3-yes.ale` were overlooked in the original
-selection. They follow the same patterns as the existing micro and dpor benchmarks.
+The condvar benchmarks require Alecci's `condvar` type and `cond_wait` / `cond_signal` /
+`cond_broadcast` built-ins. The `_bad` condvar variants deadlock at runtime (condvar hang); TSan
+cannot detect this class of bug so they are classified as `expected_issues: [none]` with a short
+timeout.
+
+The dining-philosopher `_unsat` variants acquire forks in different orders across threads while
+serialised by a shared `esbmc_m` mutex (translating `__ESBMC_atomic_begin/end` from `common.inc`).
+Despite the serialisation, TSan tracks the global lock-order graph and reports an inversion.
+The `_sat` variants additionally have an unprotected `phil` increment after the serialised section,
+producing both a data race and a lock-order-inversion warning.
 
 ## Benchmark Results
 
-All 21 benchmarks pass the test runner (21/21). The 12 data-race benchmarks are consistently
-detected by TSan; the 9 no-race benchmarks produce no false positives.
+Results are labelled against the **source ground truth** from `buggy.txt` / `mapleRes.txt`.
+
+| Outcome | Count | Notes |
+|---|---|---|
+| PASS | 30 | TSan detects exactly what the source says |
+| UNEXPECTED | 11 | TSan reports more than the ground truth |
+| MISS | 0 | — |
+| MISS+UNEXPECTED | 1 | `din_phil2_sat`: data race missed, spurious deadlock reported |
+
+**TSan false positives (lock-order-inversion):** All 12 unexpected/MISS+UNEXPECTED results arise
+from TSan flagging lock-order-inversion on the dining philosopher fork mutexes. Because
+`esbmc_m` serialises the entire fork-acquire/release block, no actual deadlock can occur — but
+TSan still observes the two orderings (right→left vs left→right across threads) and fires.
+
+- `din_phil{2..7}_unsat`: ground truth is *no bug*; TSan's lock-order-inversion is a false positive
+- `din_phil{3..7}_sat`: ground truth is *data race on `phil`*; TSan detects both that and the spurious fork inversion (UNEXPECTED deadlock)
+- `din_phil2_sat`: ground truth is *data race on `phil`*; with only 2 threads TSan misses the race but reports the spurious fork inversion (MISS+UNEXPECTED)
 
 ## Excluded Benchmarks
 
@@ -91,21 +140,30 @@ detected by TSan; the 9 no-race benchmarks produce no false positives.
 
 | File | Reason |
 |---|---|
-| `arithmetic_prog_bad.c` / `arithmetic_prog_ok.c` | Uses `pthread_cond_wait` / `pthread_cond_signal` — Alecci has no condition variables |
-| `sync01_bad.c` / `sync01_ok.c` | Uses condition variables |
-| `sync02_bad.c` / `sync02_ok.c` | Uses condition variables |
-| `deadlock01_bad.c` | Intentional deadlock via mismatched lock ordering; requires condition variables to exercise meaningfully |
-| `din_phil2_sat.c` through `din_phil7_sat.c` | Dining philosophers with condition variables |
-| `phase01_bad.c` | Uses `__ESBMC_atomic_begin()` / `__ESBMC_atomic_end()` — model-checker intrinsics with no POSIX equivalent |
-| `token_ring_bad.c` | Uses `__ESBMC_atomic_begin()` / `__ESBMC_atomic_end()` |
+| `phase01_bad.c` | Uses `__ESBMC_atomic_begin()` / `__ESBMC_atomic_end()` with semantics beyond a simple mutex wrap |
+| `token_ring_bad.c` | Uses `__ESBMC_atomic_begin()` / `__ESBMC_atomic_end()` with semantics beyond a simple mutex wrap |
 | `bluetooth_driver_bad.c` | Complex state machine; uses multiple condition variables and linked list traversal |
-| `circular_buffer_bad.c` | Uses condition variables for producer/consumer coordination |
-| `queue_bad.c` | Uses condition variables |
-| `account_bad.c` | ~~Logic bug in assertion formula, not a concurrency bug~~ — now included as `account_bad-no.ale`; Alecci has no `assert` so the formula cannot be expressed, but the program can run and TSan is correctly silent |
-| `carter01_bad.c` | Reader-writer deadlock pattern with two interleaved mutexes; potential deadlock only, not a data race — deadlocks are not detectable by TSan and cannot be provoked from Alecci without condition variables |
+| `circular_buffer_bad.c` | Uses condition variables for producer/consumer coordination with complex buffer management |
+| `queue_bad.c` | Uses condition variables with dynamic linked-list queue — complex data structures |
 | `fsbench_bad.c` | File-system benchmark — requires file I/O and kernel interfaces unavailable in Alecci |
 | `ctrace-test.c` (inspect_examples) | Tracing library with sockets, linked lists, dynamic allocation, semaphores — far too complex for Alecci |
-| `sync01.c` (inspect_examples) | Uses condition variables |
+
+Previously excluded files that are now included:
+
+| File | Now included as |
+|---|---|
+| `arithmetic_prog_ok.c` | `arithmetic_prog-no.ale` (condvar support added) |
+| `arithmetic_prog_bad.c` | `arithmetic_prog_bad-no.ale` (condvar support added; assert omitted) |
+| `sync01_ok.c` | `sync01-no.ale` |
+| `sync01_bad.c` | `sync01_bad-no.ale` |
+| `sync02_ok.c` | `sync02-no.ale` |
+| `sync02_bad.c` | `sync02_bad-no.ale` |
+| `sync01.c` (inspect_examples) | `sync01_inspect-no.ale` |
+| `deadlock01_bad.c` | `deadlock01_bad-no.ale` |
+| `carter01_bad.c` | `carter01_bad-no.ale` |
+| `din_phil2_unsat.c` through `din_phil7_unsat.c` | `din_philN_unsat-no.ale` |
+| `din_phil2_sat.c` through `din_phil7_sat.c` | `din_philN_sat-yes.ale` |
+| `account_bad.c` | `account_bad-no.ale` |
 
 ## Running the Tests
 

@@ -1,0 +1,45 @@
+// SCTBench benchmark: concurrent-software-benchmarks/sync02_bad.c
+// Producer-consumer with N=2 iterations each.
+// BUG: num is initialised to 2 (not 0), so the producer immediately waits on
+// 'empty'. The consumer drains both slots but the producer can only produce one
+// item after that, leaving the second consumer iteration waiting forever.
+// Expected: no data race (TSan silent; deadlock manifests as timeout).
+
+procedure producer(thread_number as int)
+    mutable i := 0
+    while i < 2 do
+        lock(m)
+        while num > 0 do
+            cond_wait(empty, m)
+        end while
+        num := num + 1
+        unlock(m)
+        cond_signal(full)
+        i := i + 1
+    end while
+end procedure
+
+procedure consumer(thread_number as int)
+    mutable j := 0
+    while j < 2 do
+        lock(m)
+        while num = 0 do
+            cond_wait(full, m)
+        end while
+        num := num - 1
+        unlock(m)
+        cond_signal(empty)
+        j := j + 1
+    end while
+end procedure
+
+procedure main()
+    shared mutable m     as mutex   := mutex()
+    shared mutable empty as condvar := condvar()
+    shared mutable full  as condvar := condvar()
+    shared mutable num := 2   // starts at 2, not 0 — the bug
+    mutable t1 := create_threads(1, producer)
+    mutable t2 := create_threads(1, consumer)
+    join_threads(t1, 1)
+    join_threads(t2, 1)
+end procedure

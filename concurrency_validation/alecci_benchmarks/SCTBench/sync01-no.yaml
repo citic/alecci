@@ -1,0 +1,8 @@
+# SCTBench benchmark: concurrent-software-benchmarks/sync01_ok.c
+# 1-slot producer-consumer coordinated by two condition variables.
+# All shared accesses are mutex-protected — no data race.
+# Expected: no concurrency issues.
+
+expected_issues:
+  - none
+timeout: 10
