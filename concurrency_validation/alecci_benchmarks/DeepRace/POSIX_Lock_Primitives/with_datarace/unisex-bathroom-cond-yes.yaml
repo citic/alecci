@@ -1,0 +1,4 @@
+expected_issues:
+  - data_race
+timeout: 30
+max_runs: 20

@@ -1,0 +1,54 @@
+// Cannibals problem — data race on porcoes
+// Cook writes porcoes := 10 outside the acordar mutex while cannibals
+// may be reading/writing porcoes under that mutex.
+// Source: 130024902_problema_canibais.c (DeepRace POSIX/with_datarace)
+
+procedure canibal(thread_number as int)
+    mutable i := 0
+    while i < 3 do
+        lock(acordar)
+        while porcoes < 1 do
+            cond_signal(cozinhar)
+            cond_wait(comida, acordar)
+        end while
+        porcoes := porcoes - 1
+        unlock(acordar)
+        sleep(100, "ms")
+        i := i + 1
+    end while
+    lock(acordar)
+    done := done + 1
+    if done = 5 then
+        cond_signal(cozinhar)
+    end if
+    unlock(acordar)
+end procedure
+
+procedure cozinheiro()
+    lock(acordar)
+    while done < 5 do
+        while porcoes > 0 and done < 5 do
+            cond_wait(cozinhar, acordar)
+        end while
+        if done < 5 then
+            unlock(acordar)
+            sleep(100, "ms")
+            porcoes := 10
+            lock(acordar)
+            cond_broadcast(comida)
+        end if
+    end while
+    unlock(acordar)
+end procedure
+
+procedure main()
+    shared mutable acordar  as mutex   := mutex()
+    shared mutable cozinhar as condvar := condvar()
+    shared mutable comida   as condvar := condvar()
+    shared mutable porcoes := 10
+    shared mutable done    := 0
+    mutable cans := create_threads(5, canibal)
+    mutable coz  := create_thread(cozinheiro)
+    join_threads(cans)
+    join_thread(coz)
+end procedure

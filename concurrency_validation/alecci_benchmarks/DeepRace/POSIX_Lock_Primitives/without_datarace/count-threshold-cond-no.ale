@@ -1,0 +1,36 @@
+// 2 incrementer threads count to 12; watcher waits under mutex and adds 125.
+// All shared accesses are under count_mutex — no data race.
+// Source: 06_thread_cond_var.c (DeepRace POSIX/without_datarace)
+
+procedure inc_count(thread_number as int)
+    mutable i := 0
+    while i < 10 do
+        lock(count_mutex)
+        count := count + 1
+        if count = 12 then
+            cond_signal(count_threshold_cv)
+        end if
+        unlock(count_mutex)
+        sleep(200, "ms")
+        i := i + 1
+    end while
+end procedure
+
+procedure watch_count(thread_number as int)
+    lock(count_mutex)
+    while count < 12 do
+        cond_wait(count_threshold_cv, count_mutex)
+    end while
+    count := count + 125
+    unlock(count_mutex)
+end procedure
+
+procedure main()
+    shared mutable count_mutex        as mutex   := mutex()
+    shared mutable count_threshold_cv as condvar := condvar()
+    shared mutable count := 0
+    mutable t_watch := create_threads(1, watch_count)
+    mutable t_inc   := create_threads(2, inc_count)
+    join_threads(t_watch)
+    join_threads(t_inc)
+end procedure

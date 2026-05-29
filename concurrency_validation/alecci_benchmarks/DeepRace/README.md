@@ -101,31 +101,65 @@ DeepRace/
 | `local-tmp-no.ale` | (existing) | Per-thread local temporary |
 | `local-vars-no.ale` | (existing) | Fully local variables, no sharing |
 
-### POSIX_Lock_Primitives / with_datarace — 4 translated
+### POSIX_Lock_Primitives / with_datarace — 10 translated
 
-| Alecci file | Source file | Race pattern |
+| Alecci file | Source file | Race / issue |
 |---|---|---|
 | `counter-nolock-yes.ale` | (existing) | Counter increment without lock |
 | `flag-nolock-yes.ale` | (existing) | Shared flag write without lock |
 | `global-sum-nolock-yes.ale` | (existing) | Sum accumulation without lock |
 | `histogram-nolock-yes.ale` | (existing) | Histogram bucket update without lock |
+| `canibais-cond-yes.ale` | `130024902_problema_canibais.c` | Cook writes `porcoes := 10` outside `acordar` mutex |
+| `two-thread-flag-cond-no.ale` | `TwoThreadLoop.c` | Mislabeled in original — all accesses under lock, no race |
+| `unisex-bathroom-cond-yes.ale` | `universidad.c` | `espera_mujeres`/`espera_hombres` incremented under per-sex mutex, decremented under `bano_mutex` |
+| `wait-all-cond-yes.ale` | `wait4mult.c` | Workers created but not joined; main exits after condvar wait → thread_leak |
+| `readwrite-cond-yes.ale` | `zuoye3.c` | Both threads check `n0 < 200` in outer while without holding mutex |
+| `count-threshold-cond-yes.ale` | `threads_cond_mutex.c` | `watch_count` checks `count < 15` in outer while without mutex |
 
-### POSIX_Lock_Primitives / without_datarace — 8 translated
+### POSIX_Lock_Primitives / without_datarace — 15 translated
 
-| Alecci file | Source file | Correctness pattern |
+| Alecci file | Source file | Correctness / issue |
 |---|---|---|
 | `counter-mutex-no.ale` | (existing) | Counter increment with mutex |
-| `counter-mutex2-no.ale` | W9mutex1.c | 2 threads, counter++ once each with mutex |
-| `counter-mutex3-no.ale` | withmutex.c | 4 threads, counter++ 100× with mutex |
-| `counter-mutex4-no.ale` | muxtex_anpham.c | 2 threads, counter++ once with mutex |
-| `bucket-sum-mutex-no.ale` | dana.c *(see note)* | 7 threads, `sum_rest[bucket]` with mutex |
+| `counter-mutex2-no.ale` | `W9mutex1.c` | 2 threads, counter++ once each with mutex |
+| `counter-mutex3-no.ale` | `withmutex.c` | 4 threads, counter++ 100× with mutex |
+| `counter-mutex4-no.ale` | `muxtex_anpham.c` | 2 threads, counter++ once with mutex |
+| `bucket-sum-mutex-no.ale` | `dana.c` *(see note)* | 7 threads, `sum_rest[bucket]` with mutex |
 | `array-sum-mutex-no.ale` | (existing) | Array sum with mutex |
 | `global-sum-mutex-no.ale` | (existing) | Global sum accumulation with mutex |
 | `scatter-add-mutex-no.ale` | (existing) | Scatter-add with mutex protection |
+| `bounded-buffer-cond-no.ale` | `05bounded.c` | Classic bounded buffer (size 4, 30 items) with `more`/`less` condvars |
+| `count-threshold-cond-no.ale` | `06_thread_cond_var.c` | 1 watcher + 2 incrementers, COUNT_LIMIT=12; watcher holds mutex before while |
+| `count-threshold-outer-cond-yes.ale` | `11-14UseConditionVariable.c` | Mislabeled in original — outer `while count < 7` reads count without mutex |
+| `circular-buffer-cond-no.ale` | `ThreadSynCondition.c` | Circular buffer (4 slots), 20 items + sentinel; `notempty`/`notfull` condvars *(see compiler bug note)* |
+| `ping-pong-cond-no.ale` | `ping_pong.c` | Two-thread alternation via single mutex+condvar, 5 rounds |
+| `flag-signal-cond-yes.ale` | `x.c` | Two waiters, one `cond_signal` — only one wakes; other stays blocked → thread_leak |
+| `count-threshold-4t-cond-no.ale` | `thread_with_conditions.c` | 3 incrementers + 1 watcher, COUNT_LIMIT=12; all under mutex |
 
 > **Note on `dana.c`:** This file is in the `POSIX_Lock_Primitives/with_datarace/` folder but contains
 > correct per-bucket mutex synchronisation. It appears mislabeled in the original dataset.
 > The Alecci translation is placed in `without_datarace/` with the correct `expected_issues: [none]` label.
+
+### Known Alecci compiler / runtime bugs found during translation
+
+**Bug 1 — Variant-to-typed-parameter coercion missing in user function calls**
+File: `circular-buffer-cond-no.ale`
+
+Untyped local variables (`mutable x := 0`, without `as int`) are allocated internally as Alecci's **variant** type (`{i32, [16 x i8]}*`). When such a variable is passed to a user-defined procedure that declares a typed parameter (`data as int`, expecting LLVM `i32`), the LLVM builder throws:
+```
+TypeError: Type of #1 arg mismatch: i32 != {i32, [16 x i8]}*
+```
+The argument-coercion path in `visit_func_call` only handles `IntType → IntType` narrowing/widening and does not extract the integer payload from a variant. This means `put_item(n)` where `n` is an untyped local fails to compile.
+
+**Bug 2 — `pthread_cond_destroy` called while a thread is blocked in `pthread_cond_wait`**
+Files: `flag-signal-cond-yes.ale`, and potentially any program where threads remain blocked at main exit.
+
+`_cleanup_concurrency_primitives` unconditionally calls `pthread_cond_destroy` for every `condvar` declared in `main`. If a thread is still blocked inside `cond_wait` when cleanup runs, calling `pthread_cond_destroy` is undefined behaviour (POSIX) and in glibc causes the destroy call to block indefinitely, hanging the process. The same class of bug was previously found with `pthread_barrier_destroy`.
+
+**Bug 3 — `readwrite-cond-yes.ale` deadlocks faithfully**
+File: `readwrite-cond-yes.ale`
+
+The original `zuoye3.c` contains a logical deadlock: if the writer thread advances `n0` to ≥ 200 and exits its loop while the reader thread is blocked inside `cond_wait(cond1)`, the reader will never be woken (no thread is left to signal `cond1`). The Alecci translation faithfully reproduces this bug, causing the program to time out rather than completing.
 
 ---
 
@@ -151,11 +185,15 @@ Affected files (examples):
 - `POSIX/with_datarace`: linked list files (`01_condition.c`, `01_job-queue-mutex.c`, `threads_mutex.c`, etc.)
 - `POSIX/without_datarace`: multiple files using `node *`, `job_t *`, etc.
 
-**3. Condition variables** — `pthread_cond_wait/signal/broadcast` has no equivalent in Alecci's synchronisation primitives.
+**3. Condition variables** — Alecci now supports `condvar()`, `cond_wait(cv, mutex)`, `cond_signal(cv)`, and `cond_broadcast(cv)`. Most POSIX condition variable programs can now be translated. The remaining skips in this category are due to linked lists or structs (see reason 2), not condition variables themselves.
 
-Affected files (examples):
-- `POSIX/with_datarace`: `01_condition.c`, `130024902_problema_canibais.c`, `TwoThreadLoop.c`, `universidad.c`, `wait4mult.c`, `zad8.c`, `zuoye3.c`, `threads_cond_mutex.c`
-- `POSIX/without_datarace`: `02_condition_modify.c`, `05bounded.c`, `06_thread_cond_var.c`, `11-14UseConditionVariable.c`, `ThreadSynCondition.c`, `active.c`, `ping_pong.c`, `x.c`, etc.
+Previously skipped, now translated:
+- `POSIX/with_datarace`: `130024902_problema_canibais.c`, `TwoThreadLoop.c`, `universidad.c`, `wait4mult.c`, `zuoye3.c`, `threads_cond_mutex.c`
+- `POSIX/without_datarace`: `05bounded.c`, `06_thread_cond_var.c`, `11-14UseConditionVariable.c`, `ThreadSynCondition.c`, `ping_pong.c`, `x.c`, `thread_with_conditions.c`
+
+Still skipped (linked list / struct dependency, not condition variable):
+- `POSIX/with_datarace`: `01_condition.c` (linked list with struct Node), `zad8.c` (linked list monitor)
+- `POSIX/without_datarace`: `02_condition_modify.c` (linked list with struct Node), `active.c` (declares condvar but uses busy-wait; condition variable unused), `timedwait.c` (uses `pthread_cond_timedwait` with `clock_gettime` — no Alecci equivalent)
 
 **4. External math functions** — `sin`, `cos`, `sqrt`, `pow`, `rand` are not available in Alecci's standard library.
 
@@ -229,9 +267,9 @@ Affected files:
 | OMP_Critical/without_datarace | 30 | 14 | 16 |
 | OMP_Private/with_datarace | 30 | 8 | 22 |
 | OMP_Private/without_datarace | 30 | 9 | 21 |
-| POSIX_Lock_Primitives/with_datarace | 30 | 4 | 26 |
-| POSIX_Lock_Primitives/without_datarace | 30 | 8 | 22 |
-| **Total** | **180** | **62** | **118** |
+| POSIX_Lock_Primitives/with_datarace | 30 | 10 | 20 |
+| POSIX_Lock_Primitives/without_datarace | 30 | 15 | 15 |
+| **Total** | **180** | **75** | **105** |
 
 ### Primary skip reasons by subdirectory
 

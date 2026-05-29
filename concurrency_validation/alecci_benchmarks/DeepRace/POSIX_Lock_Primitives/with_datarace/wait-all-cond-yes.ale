@@ -1,0 +1,27 @@
+// Main thread waits for 5 workers via condition variable instead of join.
+// Workers are not joined — thread_leak when main exits.
+// Source: wait4mult.c (DeepRace POSIX/with_datarace)
+
+procedure worker(thread_number as int)
+    if thread_number % 2 = 1 then
+        sleep(2000, "ms")
+    else
+        sleep(3000, "ms")
+    end if
+    lock(mtx)
+    count := count + 1
+    if count = 5 then
+        cond_signal(cv)
+    end if
+    unlock(mtx)
+end procedure
+
+procedure main()
+    shared mutable mtx   as mutex   := mutex()
+    shared mutable cv    as condvar := condvar()
+    shared mutable count := 0
+    create_threads(5, worker)
+    lock(mtx)
+    cond_wait(cv, mtx)
+    unlock(mtx)
+end procedure

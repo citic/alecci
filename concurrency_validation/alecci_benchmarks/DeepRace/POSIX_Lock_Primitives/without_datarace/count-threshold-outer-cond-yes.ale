@@ -1,0 +1,36 @@
+// 2 incrementer threads signal when count < 7; watcher loops checking count.
+// Race: watch_count's outer 'while count < 7' reads count without the mutex.
+// Source: 11-14UseConditionVariable.c (DeepRace POSIX/without_datarace — mislabeled)
+
+procedure inc_count(thread_number as int)
+    mutable i := 0
+    while i < 5 do
+        lock(count_mutex)
+        count := count + 1
+        if count < 7 then
+            cond_signal(count_threshold_cv)
+        end if
+        unlock(count_mutex)
+        sleep(100, "ms")
+        i := i + 1
+    end while
+end procedure
+
+procedure watch_count(thread_number as int)
+    while count < 7 do
+        lock(count_mutex)
+        cond_wait(count_threshold_cv, count_mutex)
+        unlock(count_mutex)
+    end while
+end procedure
+
+procedure main()
+    shared mutable count_mutex        as mutex   := mutex()
+    shared mutable count_threshold_cv as condvar := condvar()
+    shared mutable count := 0
+    mutable t_watch := create_threads(1, watch_count)
+    mutable t_inc   := create_threads(2, inc_count)
+    join_threads(t_inc)
+    cond_signal(count_threshold_cv)
+    join_threads(t_watch)
+end procedure

@@ -1,0 +1,50 @@
+// Classic bounded buffer: producer fills 30 items into a circular buffer of
+// size 4; consumer drains them. Two condition variables prevent overflow/underflow.
+// Source: 05bounded.c (DeepRace POSIX/without_datarace)
+
+procedure producer()
+    mutable i := 0
+    while i < 30 do
+        lock(buf_mutex)
+        while occupied >= 4 do
+            cond_wait(less, buf_mutex)
+        end while
+        buf[nextin] := i
+        nextin := (nextin + 1) % 4
+        occupied := occupied + 1
+        cond_signal(more)
+        unlock(buf_mutex)
+        i := i + 1
+    end while
+end procedure
+
+procedure consumer()
+    mutable i := 0
+    while i < 30 do
+        lock(buf_mutex)
+        while occupied <= 0 do
+            cond_wait(more, buf_mutex)
+        end while
+        mutable item := buf[nextout]
+        nextout := (nextout + 1) % 4
+        occupied := occupied - 1
+        cond_signal(less)
+        unlock(buf_mutex)
+        print `consumed {item}`
+        i := i + 1
+    end while
+end procedure
+
+procedure main()
+    shared mutable buf      as array  := array(4, 0)
+    shared mutable occupied := 0
+    shared mutable nextin   := 0
+    shared mutable nextout  := 0
+    shared mutable buf_mutex as mutex   := mutex()
+    shared mutable more      as condvar := condvar()
+    shared mutable less      as condvar := condvar()
+    mutable t_prod := create_thread(producer)
+    mutable t_cons := create_thread(consumer)
+    join_thread(t_prod)
+    join_thread(t_cons)
+end procedure

@@ -1,0 +1,85 @@
+// Unisex bathroom problem — data race on espera_mujeres and espera_hombres.
+// Each counter is incremented with its own mutex but decremented with bano_mutex.
+// Source: universidad.c (DeepRace POSIX/with_datarace)
+
+procedure mujer(thread_number as int)
+    lock(mujer_mutex)
+    espera_mujeres := espera_mujeres + 1
+    unlock(mujer_mutex)
+    mutable listo := 0
+    while listo = 0 do
+        lock(bano_mutex)
+        if estado = 2 then
+            cond_wait(mujer_cond, bano_mutex)
+        end if
+        if estado = 0 then
+            estado := 1
+            espera_mujeres := espera_mujeres - 1
+            personas_dentro := personas_dentro + 1
+            listo := 1
+        else if estado = 1 then
+            espera_mujeres := espera_mujeres - 1
+            personas_dentro := personas_dentro + 1
+            listo := 1
+        end if
+        end if
+        unlock(bano_mutex)
+    end while
+    sleep(3000, "ms")
+    lock(bano_mutex)
+    personas_dentro := personas_dentro - 1
+    if personas_dentro = 0 then
+        estado := 0
+        cond_broadcast(hombre_cond)
+    end if
+    unlock(bano_mutex)
+end procedure
+
+procedure hombre(thread_number as int)
+    lock(hombre_mutex)
+    espera_hombres := espera_hombres + 1
+    unlock(hombre_mutex)
+    mutable listo := 0
+    while listo = 0 do
+        lock(bano_mutex)
+        if estado = 1 then
+            cond_wait(hombre_cond, bano_mutex)
+        end if
+        if estado = 0 then
+            estado := 2
+            espera_hombres := espera_hombres - 1
+            personas_dentro := personas_dentro + 1
+            listo := 1
+        else if estado = 2 then
+            espera_hombres := espera_hombres - 1
+            personas_dentro := personas_dentro + 1
+            listo := 1
+        end if
+        end if
+        unlock(bano_mutex)
+    end while
+    sleep(2000, "ms")
+    lock(bano_mutex)
+    personas_dentro := personas_dentro - 1
+    if personas_dentro = 0 then
+        estado := 0
+        cond_broadcast(mujer_cond)
+    end if
+    unlock(bano_mutex)
+end procedure
+
+procedure main()
+    shared mutable bano_mutex   as mutex   := mutex()
+    shared mutable hombre_mutex as mutex   := mutex()
+    shared mutable mujer_mutex  as mutex   := mutex()
+    shared mutable hombre_cond  as condvar := condvar()
+    shared mutable mujer_cond   as condvar := condvar()
+    shared mutable personas_dentro := 0
+    shared mutable espera_mujeres  := 0
+    shared mutable espera_hombres  := 0
+    shared mutable estado := 0
+    mutable mujeres := create_threads(4, mujer)
+    mutable hombres := create_threads(4, hombre)
+    join_threads(mujeres)
+    join_threads(hombres)
+end procedure

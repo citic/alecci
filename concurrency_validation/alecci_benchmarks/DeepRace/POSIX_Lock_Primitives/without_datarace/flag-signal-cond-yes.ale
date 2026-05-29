@@ -1,0 +1,40 @@
+// Two threads wait on cv while flag=0; one signaler sets flag=1 and signals once.
+// Only one waiter is released; the other blocks forever → thread_leak.
+// Main exits without joining any thread.
+// Source: x.c (DeepRace POSIX/without_datarace)
+
+procedure waiter1()
+    lock(mx)
+    while flag = 0 do
+        cond_wait(cv, mx)
+    end while
+    flag := 0
+    unlock(mx)
+end procedure
+
+procedure waiter2()
+    lock(mx)
+    while flag = 0 do
+        cond_wait(cv, mx)
+    end while
+    flag := 0
+    unlock(mx)
+end procedure
+
+procedure signaler()
+    lock(mx)
+    flag := 1
+    cond_signal(cv)
+    unlock(mx)
+end procedure
+
+procedure main()
+    shared mutable mx   as mutex   := mutex()
+    shared mutable cv   as condvar := condvar()
+    shared mutable flag := 0
+    create_thread(waiter1)
+    create_thread(waiter2)
+    sleep(500, "ms")
+    create_thread(signaler)
+    sleep(1000, "ms")
+end procedure

@@ -1,0 +1,57 @@
+// Ping and pong alternate 5 times using one mutex and one condition variable.
+// g_ready signals that ping is ready; pong wakes ping, then they take turns.
+// Source: ping_pong.c (DeepRace POSIX/without_datarace)
+
+procedure thread_ping()
+    mutable i := 0
+    lock(thr_cond_lock)
+    g_ready := 1
+    cond_wait(thr_cond, thr_cond_lock)
+    while 1 = 1 do
+        i := i + 1
+        print `ping({i})`
+        cond_signal(thr_cond)
+        if i = 5 then
+            unlock(thr_cond_lock)
+            break while
+        else
+            cond_wait(thr_cond, thr_cond_lock)
+        end if
+    end while
+end procedure
+
+procedure thread_pong()
+    mutable ready := 0
+    while ready = 0 do
+        lock(thr_cond_lock)
+        if g_ready = 1 then
+            cond_signal(thr_cond)
+            cond_wait(thr_cond, thr_cond_lock)
+            ready := 1
+        else
+            unlock(thr_cond_lock)
+        end if
+    end while
+    mutable i := 0
+    while 1 = 1 do
+        i := i + 1
+        print `pong({i})`
+        cond_signal(thr_cond)
+        if i = 5 then
+            unlock(thr_cond_lock)
+            break while
+        else
+            cond_wait(thr_cond, thr_cond_lock)
+        end if
+    end while
+end procedure
+
+procedure main()
+    shared mutable thr_cond_lock as mutex   := mutex()
+    shared mutable thr_cond      as condvar := condvar()
+    shared mutable g_ready := 0
+    mutable t_pong := create_thread(thread_pong)
+    mutable t_ping := create_thread(thread_ping)
+    join_thread(t_ping)
+    join_thread(t_pong)
+end procedure

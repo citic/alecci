@@ -1,0 +1,46 @@
+// Writer increments n0; every 3rd increment signals reader via cond1.
+// Race: both threads check 'n0 < 200' in the outer while without the mutex.
+// Source: zuoye3.c (DeepRace POSIX/with_datarace)
+
+procedure myread()
+    while n0 < 200 do
+        lock(mtx)
+        while n2 = 0 do
+            cond_wait(cond1, mtx)
+        end while
+        n2 := 0
+        print `n0={n0} n1={n1}`
+        cond_signal(cond2)
+        unlock(mtx)
+        sleep(500, "ms")
+    end while
+end procedure
+
+procedure mywrite()
+    while n0 < 200 do
+        lock(mtx)
+        while n2 = 1 do
+            cond_wait(cond2, mtx)
+        end while
+        n0 := n0 + 1
+        if n0 % 3 = 0 then
+            n1 := n1 + 1
+            n2 := 1
+            cond_signal(cond1)
+        end if
+        unlock(mtx)
+    end while
+end procedure
+
+procedure main()
+    shared mutable mtx   as mutex   := mutex()
+    shared mutable cond1 as condvar := condvar()
+    shared mutable cond2 as condvar := condvar()
+    shared mutable n0 := 0
+    shared mutable n1 := 0
+    shared mutable n2 := 0
+    mutable t1 := create_thread(myread)
+    mutable t2 := create_thread(mywrite)
+    join_thread(t1)
+    join_thread(t2)
+end procedure

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 """
 Concurrency Validation Test Runner
 
@@ -47,27 +48,38 @@ def parse_alecci_warnings(compile_output: str) -> Dict:
 
 class TestCase:
     """Represents a single concurrency test case"""
-    
-    def __init__(self, yaml_path: Path):
+
+    def __init__(self, yaml_path: Path, root_dir: Optional[Path] = None):
         self.yaml_path = yaml_path
         self.name = yaml_path.stem
-        
+
+        # dataset: first-level folder under root_dir (e.g. "ClassExamples")
+        # benchmark: immediate parent folder of the YAML (e.g. "build_h2o")
+        self.benchmark = yaml_path.parent.name
+        if root_dir is not None:
+            try:
+                self.dataset = yaml_path.relative_to(root_dir).parts[0]
+            except (ValueError, IndexError):
+                self.dataset = self.benchmark
+        else:
+            self.dataset = self.benchmark
+
         # Load YAML configuration
         with open(yaml_path, 'r') as f:
             config = yaml.safe_load(f)
-        
+
         self.expected_issues = config.get('expected_issues', ['none'])
         self.args = config.get('args', [])
         self.stdin_file = config.get('stdin_file', None)
         self.timeout = config.get('timeout', 10)
         self.max_runs = config.get('max_runs', 1)  # For non-deterministic tests
-        
+
         # Resolve paths relative to YAML file location
-        test_dir = yaml_path.parent
+        yaml_dir = yaml_path.parent
         # Auto-discover source file: same stem as yaml, .ale or .pseudo extension
         source_path = None
         for ext in ('.ale', '.pseudo'):
-            candidate = test_dir / (yaml_path.stem + ext)
+            candidate = yaml_dir / (yaml_path.stem + ext)
             if candidate.exists():
                 source_path = candidate
                 break
@@ -77,10 +89,10 @@ class TestCase:
             )
         self.source_path = source_path
         if self.stdin_file:
-            self.stdin_path = test_dir / self.stdin_file
+            self.stdin_path = yaml_dir / self.stdin_file
         else:
             self.stdin_path = None
-    
+
     @property
     def exe_name(self) -> str:
         """Unique executable name based on parent folder + stem (avoids collisions)."""
@@ -92,8 +104,10 @@ class TestCase:
 
 class TestResult:
     """Stores the result of running a test case"""
-    
+
     def __init__(self, test_case: TestCase):
+        self.dataset   = test_case.dataset
+        self.benchmark = test_case.benchmark
         self.test_name = test_case.name
         self.source_file = str(test_case.source_path)
         self.expected_issues = test_case.expected_issues
@@ -106,10 +120,12 @@ class TestResult:
         self.compile_success = False
         self.missed_issues = []      # expected but not detected
         self.unexpected_issues = []  # detected but not expected
-    
+
     def to_csv_row(self) -> Dict[str, str]:
         """Convert result to CSV row dictionary"""
         return {
+            'dataset':   self.dataset,
+            'benchmark': self.benchmark,
             'test_name': self.test_name,
             'source_file': self.source_file,
             'expected_issues': '|'.join(self.expected_issues),
@@ -139,7 +155,7 @@ def discover_test_cases(test_dir: Path) -> List[TestCase]:
     # Recursively search for .yaml files in all subdirectories
     for yaml_file in sorted(test_dir.rglob("*.yaml")):
         try:
-            test_case = TestCase(yaml_file)
+            test_case = TestCase(yaml_file, root_dir=test_dir)
             test_cases.append(test_case)
         except Exception as e:
             print(f"Warning: Failed to load test case {yaml_file}: {e}", file=sys.stderr)
@@ -448,11 +464,41 @@ def run_single_test(
     return result
 
 
-def write_csv_report(results: List[TestResult], output_path: Path):
+def _benchmark_status_counts(group: List[TestResult]) -> Dict[str, int]:
+    return {
+        'total':        len(group),
+        'compile_fail': sum(1 for r in group if r.status == 'COMPILE_FAIL'),
+        'pass':         sum(1 for r in group if r.status == 'PASS'),
+        'unexpected':   sum(1 for r in group if r.status == 'UNEXPECTED'),
+        'miss':         sum(1 for r in group if r.status == 'MISS'),
+        'miss_unexp':   sum(1 for r in group if r.status == 'MISS+UNEXPECTED'),
+    }
+
+
+def _results_by_dataset(results: List[TestResult]) -> Dict[str, List[TestResult]]:
+    groups: Dict[str, List[TestResult]] = {}
+    for r in results:
+        groups.setdefault(r.dataset, []).append(r)
+    return dict(sorted(groups.items()))
+
+
+def write_csv_report(
+    results: List[TestResult],
+    output_path: Path,
+    group_by_benchmark: bool = False,
+):
     """
     Write per-test results to CSV file.
+
+    When *group_by_benchmark* is True the rows are sorted by benchmark,
+    each benchmark section is preceded by a header row and followed by a
+    per-benchmark summary row, and a final combined summary row appears at
+    the end of the file.  Summary / header rows are identified by
+    ``test_name`` values that start with ``===``.
     """
     fieldnames = [
+        'dataset',
+        'benchmark',
         'test_name',
         'source_file',
         'expected_issues',
@@ -463,19 +509,58 @@ def write_csv_report(results: List[TestResult], output_path: Path):
         'timeout_occurred',
         'execution_time_ms',
         'tsan_details',
-        'notes'
+        'notes',
     ]
+
+    def _summary_row(label: str, dname: str, counts: Dict[str, int]) -> Dict[str, str]:
+        return {f: '' for f in fieldnames} | {
+            'dataset':   dname,
+            'test_name': label,
+            'status': (
+                f"PASS={counts['pass']}  MISS={counts['miss']}  "
+                f"UNEXPECTED={counts['unexpected']}  "
+                f"MISS+UNEXPECTED={counts['miss_unexp']}  "
+                f"COMPILE_FAIL={counts['compile_fail']}  "
+                f"total={counts['total']}"
+            ),
+        }
 
     with open(output_path, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
-        for result in results:
-            writer.writerow(result.to_csv_row())
+
+        if group_by_benchmark:
+            groups = _results_by_dataset(results)
+            for dname, group in groups.items():
+                # dataset header row
+                writer.writerow(
+                    {f: '' for f in fieldnames} | {'dataset': f'=== {dname} ==='}
+                )
+                for result in group:
+                    writer.writerow(result.to_csv_row())
+                writer.writerow(
+                    _summary_row('=== DATASET SUMMARY ===', dname,
+                                 _benchmark_status_counts(group))
+                )
+                writer.writerow({f: '' for f in fieldnames})  # blank separator
+
+            # combined summary row at the end
+            writer.writerow(
+                _summary_row('=== COMBINED SUMMARY ===', 'ALL',
+                             _benchmark_status_counts(results))
+            )
+        else:
+            for result in results:
+                writer.writerow(result.to_csv_row())
 
     print(f"Results written to:           {output_path}")
 
 
-def write_detailed_csv_report(results: List[TestResult], output_path: Path):
+def write_detailed_csv_report(
+    results: List[TestResult],
+    output_path: Path,
+    group_by_benchmark: bool = False,
+):
     """
     Write a per-(test, issue_type) breakdown CSV.
 
@@ -487,8 +572,13 @@ def write_detailed_csv_report(results: List[TestResult], output_path: Path):
       correct_detection  – expected and detected
       false_negative     – expected but NOT detected (tool missed it)
       unexpected         – NOT expected but detected (unlisted issue)
+
+    When *group_by_benchmark* is True the rows are grouped by benchmark with
+    separator and per-benchmark summary rows inserted between groups.
     """
     fieldnames = [
+        'dataset',
+        'benchmark',
         'test_name',
         'issue_type',
         'was_expected',
@@ -496,35 +586,82 @@ def write_detailed_csv_report(results: List[TestResult], output_path: Path):
         'outcome',
     ]
 
+    def _issue_rows(result: TestResult):
+        if result.status == 'COMPILE_FAIL':
+            return
+        real_expected = set(result.expected_issues) - {'none'}
+        real_detected = set(result.detected_issues) - {'none'}
+        for issue_type in sorted(real_expected | real_detected):
+            exp = issue_type in real_expected
+            det = issue_type in real_detected
+            if exp and det:
+                outcome = 'correct_detection'
+            elif exp:
+                outcome = 'false_negative'
+            else:
+                outcome = 'unexpected'
+            yield {
+                'dataset':      result.dataset,
+                'benchmark':    result.benchmark,
+                'test_name':    result.test_name,
+                'issue_type':   issue_type,
+                'was_expected': 'yes' if exp else 'no',
+                'was_detected': 'yes' if det else 'no',
+                'outcome':      outcome,
+            }
+
+    def _group_issue_summary(dname: str, group: List[TestResult]) -> Dict[str, str]:
+        correct = miss = unexpected = 0
+        for r in group:
+            for row in _issue_rows(r):
+                if row['outcome'] == 'correct_detection':
+                    correct += 1
+                elif row['outcome'] == 'false_negative':
+                    miss += 1
+                else:
+                    unexpected += 1
+        return {f: '' for f in fieldnames} | {
+            'dataset':   dname,
+            'test_name': '=== DATASET SUMMARY ===',
+            'outcome': (
+                f"correct={correct}  false_negative={miss}  unexpected={unexpected}"
+            ),
+        }
+
     with open(output_path, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
 
-        for result in results:
-            if result.status == 'COMPILE_FAIL':
-                continue
-
-            real_expected = set(result.expected_issues) - {'none'}
-            real_detected = set(result.detected_issues) - {'none'}
-            all_types = sorted(real_expected | real_detected)
-
-            for issue_type in all_types:
-                exp = issue_type in real_expected
-                det = issue_type in real_detected
-                if exp and det:
-                    outcome = 'correct_detection'
-                elif exp:
-                    outcome = 'false_negative'
-                else:
-                    outcome = 'unexpected'
-
-                writer.writerow({
-                    'test_name':   result.test_name,
-                    'issue_type':  issue_type,
-                    'was_expected': 'yes' if exp else 'no',
-                    'was_detected': 'yes' if det else 'no',
-                    'outcome':     outcome,
-                })
+        if group_by_benchmark:
+            groups = _results_by_dataset(results)
+            all_correct = all_miss = all_unexpected = 0
+            for dname, group in groups.items():
+                writer.writerow(
+                    {f: '' for f in fieldnames} | {'dataset': f'=== {dname} ==='}
+                )
+                for result in group:
+                    for row in _issue_rows(result):
+                        writer.writerow(row)
+                summ = _group_issue_summary(dname, group)
+                parts = dict(p.split('=') for p in summ['outcome'].split('  '))
+                all_correct    += int(parts.get('correct', 0))
+                all_miss       += int(parts.get('false_negative', 0))
+                all_unexpected += int(parts.get('unexpected', 0))
+                writer.writerow(summ)
+                writer.writerow({f: '' for f in fieldnames})
+            writer.writerow({f: '' for f in fieldnames} | {
+                'dataset':   'ALL',
+                'test_name': '=== COMBINED SUMMARY ===',
+                'outcome': (
+                    f"correct={all_correct}  "
+                    f"false_negative={all_miss}  "
+                    f"unexpected={all_unexpected}"
+                ),
+            })
+        else:
+            for result in results:
+                for row in _issue_rows(result):
+                    writer.writerow(row)
 
     print(f"Issue breakdown written to:   {output_path}")
 
@@ -533,13 +670,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run concurrency validation tests for Alecci programs"
     )
-    parser.add_argument(
+    test_dir_arg = parser.add_argument(
         '--test-dir',
         type=Path,
         default=Path(__file__).parent / 'test_cases',
         help='Directory containing test cases (default: ./test_cases)'
     )
-    parser.add_argument(
+    output_csv_arg = parser.add_argument(
         '--output-csv',
         type=Path,
         default=None,
@@ -559,7 +696,7 @@ def main():
         metavar='N',
         help='Number of tests to run in parallel (default: number of CPU cores / 2)'
     )
-    parser.add_argument(
+    save_output_arg = parser.add_argument(
         '--save-output',
         type=Path,
         nargs='?',
@@ -568,6 +705,22 @@ def main():
         metavar='DIR',
         help='Save each program\'s stdout to DIR/<test>.txt (default dir: results/outputs/<timestamp>/)'
     )
+    parser.add_argument(
+        '--group-by-benchmark',
+        action='store_true',
+        help=(
+            'Treat each first-level sub-folder of --test-dir as a named benchmark. '
+            'CSV output will include separator rows, per-benchmark summary rows, '
+            'and a final combined summary row. '
+            'The console summary will also show per-benchmark breakdowns.'
+        )
+    )
+
+    if _ARGCOMPLETE:
+        test_dir_arg.completer = DirectoriesCompleter()
+        output_csv_arg.completer = FilesCompleter(['csv'])
+        save_output_arg.completer = DirectoriesCompleter()
+        argcomplete.autocomplete(parser)
 
     args = parser.parse_args()
     
@@ -624,7 +777,10 @@ def main():
         )
         ordered_results[idx] = result
         if not args.verbose:
-            label = f"{test_case.yaml_path.parent.name}/{test_case.name}"
+            if test_case.dataset != test_case.benchmark:
+                label = f"{test_case.dataset}/{test_case.benchmark}/{test_case.name}"
+            else:
+                label = f"{test_case.dataset}/{test_case.name}"
             with _print_cv:
                 # Wait until all earlier tests have printed
                 _print_cv.wait_for(lambda: _next_to_print[0] == idx)
@@ -650,65 +806,78 @@ def main():
         output_csv = results_dir / f"concurrency_test_results_{timestamp}.csv"
     
     # Write main CSV report
-    write_csv_report(results, output_csv)
+    write_csv_report(results, output_csv, group_by_benchmark=args.group_by_benchmark)
 
     # Write detailed issue-breakdown CSV alongside the main report
     breakdown_csv = output_csv.parent / output_csv.name.replace(
         'concurrency_test_results', 'issue_breakdown'
     )
-    write_detailed_csv_report(results, breakdown_csv)
+    write_detailed_csv_report(results, breakdown_csv, group_by_benchmark=args.group_by_benchmark)
 
     # ------------------------------------------------------------------ summary
+    from collections import defaultdict
+
+    def _print_status_block(group: List[TestResult], indent: str = ""):
+        n_total       = len(group)
+        n_compile     = sum(1 for r in group if r.status == "COMPILE_FAIL")
+        n_pass        = sum(1 for r in group if r.status == "PASS")
+        n_unexpected  = sum(1 for r in group if r.status == "UNEXPECTED")
+        n_miss        = sum(1 for r in group if r.status == "MISS")
+        n_miss_unexp  = sum(1 for r in group if r.status == "MISS+UNEXPECTED")
+        print(f"{indent}Total:          {n_total}")
+        print(f"{indent}Compile failed: {n_compile}")
+        print()
+        w = 45
+        print(f"{indent}Detection outcomes:")
+        print(f"{indent}  {'All expected found, none unexpected [PASS]':<{w}} {n_pass}")
+        print(f"{indent}  {'All expected found + extra detected  [UNEXPECTED]':<{w}} {n_unexpected}")
+        print(f"{indent}  {'Missed expected issues               [MISS]':<{w}} {n_miss}")
+        print(f"{indent}  {'Missed expected + extras detected    [MISS+UNEXPECTED]':<{w}} {n_miss_unexp}")
+
+        issue_stats: Dict[str, Dict[str, int]] = defaultdict(
+            lambda: {'expected': 0, 'detected': 0, 'missed': 0, 'unexpected': 0}
+        )
+        for r in group:
+            if r.status == 'COMPILE_FAIL':
+                continue
+            for t in (set(r.expected_issues) - {'none'}):
+                issue_stats[t]['expected'] += 1
+            for t in (set(r.detected_issues) - {'none'}):
+                issue_stats[t]['detected'] += 1
+            for t in r.missed_issues:
+                issue_stats[t]['missed'] += 1
+            for t in r.unexpected_issues:
+                issue_stats[t]['unexpected'] += 1
+
+        if issue_stats:
+            print()
+            print(f"{indent}Breakdown by concurrency issue type:")
+            col = max(len(t) for t in issue_stats) + 2
+            print(f"{indent}  {'Issue type':<{col}}  {'Expected':>8}  {'Detected':>8}  {'Missed':>6}  {'Unexp.':>6}")
+            print(f"{indent}  {'-'*col}  {'--------':>8}  {'--------':>8}  {'------':>6}  {'------':>6}")
+            for issue_type in sorted(issue_stats):
+                s = issue_stats[issue_type]
+                print(
+                    f"{indent}  {issue_type:<{col}}  {s['expected']:>8}  {s['detected']:>8}"
+                    f"  {s['missed']:>6}  {s['unexpected']:>6}"
+                )
+
+        return n_compile, n_miss, n_miss_unexp, n_unexpected
+
     print("\n" + "=" * 60)
     print("TEST SUMMARY")
     print("=" * 60)
 
-    total         = len(results)
-    compile_fail  = sum(1 for r in results if r.status == "COMPILE_FAIL")
-    passed        = sum(1 for r in results if r.status == "PASS")
-    unexpected    = sum(1 for r in results if r.status == "UNEXPECTED")
-    miss          = sum(1 for r in results if r.status == "MISS")
-    miss_unexp    = sum(1 for r in results if r.status == "MISS+UNEXPECTED")
+    if args.group_by_benchmark:
+        groups = _results_by_dataset(results)
+        for dname, group in groups.items():
+            print(f"\n--- Dataset: {dname} ---")
+            _print_status_block(group, indent="  ")
+        print("\n" + "=" * 60)
+        print("COMBINED RESULTS")
+        print("=" * 60)
 
-    print(f"Total:          {total}")
-    print(f"Compile failed: {compile_fail}")
-    print()
-    print("Detection outcomes:")
-    w = 45
-    print(f"  {'All expected found, none unexpected [PASS]':<{w}} {passed}")
-    print(f"  {'All expected found + extra detected  [UNEXPECTED]':<{w}} {unexpected}")
-    print(f"  {'Missed expected issues               [MISS]':<{w}} {miss}")
-    print(f"  {'Missed expected + extras detected    [MISS+UNEXPECTED]':<{w}} {miss_unexp}")
-
-    # Per-issue-type breakdown
-    from collections import defaultdict
-    issue_stats: Dict[str, Dict[str, int]] = defaultdict(
-        lambda: {'expected': 0, 'detected': 0, 'missed': 0, 'unexpected': 0}
-    )
-    for r in results:
-        if r.status == 'COMPILE_FAIL':
-            continue
-        for t in (set(r.expected_issues) - {'none'}):
-            issue_stats[t]['expected'] += 1
-        for t in (set(r.detected_issues) - {'none'}):
-            issue_stats[t]['detected'] += 1
-        for t in r.missed_issues:
-            issue_stats[t]['missed'] += 1
-        for t in r.unexpected_issues:
-            issue_stats[t]['unexpected'] += 1
-
-    if issue_stats:
-        print()
-        print("Breakdown by concurrency issue type:")
-        col = max(len(t) for t in issue_stats) + 2
-        print(f"  {'Issue type':<{col}}  {'Expected':>8}  {'Detected':>8}  {'Missed':>6}  {'Unexp.':>6}")
-        print(f"  {'-'*col}  {'--------':>8}  {'--------':>8}  {'------':>6}  {'------':>6}")
-        for issue_type in sorted(issue_stats):
-            s = issue_stats[issue_type]
-            print(
-                f"  {issue_type:<{col}}  {s['expected']:>8}  {s['detected']:>8}"
-                f"  {s['missed']:>6}  {s['unexpected']:>6}"
-            )
+    compile_fail, miss, miss_unexp, unexpected = _print_status_block(results)
 
     print("=" * 60)
 

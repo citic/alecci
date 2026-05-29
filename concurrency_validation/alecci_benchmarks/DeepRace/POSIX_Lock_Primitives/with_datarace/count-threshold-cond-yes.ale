@@ -1,0 +1,36 @@
+// 2 incrementer threads count to 15; watcher waits for signal and boosts count.
+// Race: watch_count checks 'count < 15' in outer while without the mutex.
+// Source: threads_cond_mutex.c (DeepRace POSIX/with_datarace)
+
+procedure increament_count(thread_number as int)
+    mutable i := 0
+    while i < 15 do
+        lock(count_mutex)
+        count := count + 1
+        if count = 15 then
+            cond_signal(count_cond)
+        end if
+        unlock(count_mutex)
+        sleep(100, "ms")
+        i := i + 1
+    end while
+end procedure
+
+procedure watch_count(thread_number as int)
+    while count < 15 do
+        lock(count_mutex)
+        cond_wait(count_cond, count_mutex)
+        count := count + 1200
+        unlock(count_mutex)
+    end while
+end procedure
+
+procedure main()
+    shared mutable count_mutex as mutex   := mutex()
+    shared mutable count_cond  as condvar := condvar()
+    shared mutable count := 0
+    mutable t1 := create_threads(1, watch_count)
+    mutable t2 := create_threads(2, increament_count)
+    join_threads(t1)
+    join_threads(t2)
+end procedure
