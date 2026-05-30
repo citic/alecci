@@ -1,0 +1,17 @@
+// Two sequential parallel fors with an implicit barrier between them.
+// First pfor fills a[9] := i; second pfor fills b[9] := 2 * a[i].
+// No race: each iteration writes to a unique index; the barrier after the
+// first pfor guarantees a[] is fully populated before b[] is computed.
+// Source: OMP_Private/without_datarace/fig4.12-two-for-loops_-_main.c
+// Ground truth: none (original dataset).
+
+procedure main()
+    shared mutable a := array(9, 0)
+    shared mutable b := array(9, 0)
+    parallel for i := 0 to 9 with 4 thread do
+        a[i] := i
+    end parallel for
+    parallel for i := 0 to 9 with 4 thread do
+        b[i] := 2 * a[i]
+    end parallel for
+end procedure

@@ -1,0 +1,28 @@
+// Fibonacci series under a critical section shared by N threads.
+// The first thread to acquire the mutex runs the while loop from i=0 to n-1;
+// all subsequent threads enter the critical section, see i >= n, and exit.
+// Source: OMP_Critical/without_datarace/fibo_-_main.c
+// Ground truth: none (original dataset).
+
+procedure main()
+    shared mutable n as int := 0
+    shared mutable i as int := 0
+    shared mutable first as int := 0
+    shared mutable second as int := 1
+    shared mutable next_term as int := 1
+    shared mutable mtx as mutex := mutex()
+    scan `enter n: {n}`
+    print `0`
+    print `1`
+    parallel for t := 0 to 4 with 4 thread do
+        lock(mtx)
+        while i < n do
+            print `{next_term}`
+            first := second
+            second := next_term
+            next_term := first + second
+            i := i + 1
+        end while
+        unlock(mtx)
+    end parallel for
+end procedure

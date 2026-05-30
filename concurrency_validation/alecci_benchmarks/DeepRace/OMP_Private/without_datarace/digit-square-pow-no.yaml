@@ -1,0 +1,10 @@
+# OMP_Private/without_datarace benchmark: 9.ved_-_main.c
+# Computes N² via digit decomposition, one thread per digit position.
+# Uses pow(10, k) for place-value arithmetic; tsum accumulated under mutex.
+# Race-free: all per-iteration variables are local; tsum is mutex-protected.
+# Ground truth: none (original dataset).
+expected_issues:
+  - none
+stdin_file: digit-square-pow-no.txt
+timeout: 10
+max_runs: 20

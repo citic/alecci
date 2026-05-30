@@ -1,0 +1,29 @@
+// Matrix multiply a[4][2] * b[2][6] = c[4][6] (arrays flattened to 1D).
+// Race: shared variable k used as inner-loop counter — all parallel threads
+// interfere with each other's k, producing wrong partial sums.
+// Source: OMP_Critical/with_datarace/104_-_main.c
+// Ground truth: data_race (original dataset).
+
+procedure main()
+    shared mutable a := array(8, 0)
+    shared mutable b := array(12, 0)
+    shared mutable c := array(24, 0)
+    shared mutable k as int := 0
+    for i := 0 to 8 do
+        a[i] := rand(10)
+    end for
+    for i := 0 to 12 do
+        b[i] := rand(10)
+    end for
+    parallel for i := 0 to 24 with 3 thread do
+        mutable row := i / 6
+        mutable col := i mod 6
+        mutable sum := 0
+        k := 0
+        while k < 2 do
+            sum := sum + a[row * 2 + k] * b[k * 6 + col]
+            k := k + 1
+        end while
+        c[i] := sum
+    end parallel for
+end procedure

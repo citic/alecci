@@ -1,0 +1,9 @@
+# OMP_Critical/with_datarace benchmark: 104_-_main.c
+# Matrix multiply a[4][2] * b[2][6] = c[4][6] (flattened 1D arrays).
+# Race: inner-loop variable k is shared — 3 parallel threads overwrite each
+# other's k causing wrong partial sums and a TSan-detectable data race.
+# Ground truth: data_race (original dataset).
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

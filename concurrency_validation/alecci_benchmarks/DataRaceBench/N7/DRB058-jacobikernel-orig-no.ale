@@ -1,0 +1,38 @@
+// DRB058 – Jacobi 2D stencil: copy-phase and update-phase parallel fors separated by barrier
+// u[M][M], f[M][M], uold[M][M] flattened: a[i][j] → a[i*20+j], M=20 (reduced from 200)
+// No race: implicit barrier after copy-for ensures uold is fully updated before stencil-for reads it;
+//          stencil-for threads each write to distinct u[i*20+j] rows; error accumulation under mutex
+// Source: DataRaceBench DRB058-jacobikernel-orig-no.c (MSIZE 200→20, mits 1000→10)
+// label: N7
+procedure main()
+    shared mutable u := array(400, 0.0)
+    shared mutable f := array(400, 0.0)
+    shared mutable uold := array(400, 0.0)
+    shared mutable error as float := 0.0
+    shared mutable mtx as mutex := mutex()
+    shared mutable ax as float := 90.25
+    shared mutable ay as float := 90.25
+    shared mutable b as float := 0.0 - 361.0543
+    shared mutable omega as float := 1.0
+    mutable k as int := 1
+    while k <= 10 do
+        error := 0.0
+        parallel for i := 0 to 20 with 4 thread do
+            for j := 0 to 20 do
+                uold[i * 20 + j] := u[i * 20 + j]
+            end for
+        end parallel for
+        parallel for i := 1 to 19 with 4 thread do
+            for j := 1 to 19 do
+                mutable resid as float := (ax * (uold[(i - 1) * 20 + j] + uold[(i + 1) * 20 + j]) + ay * (uold[i * 20 + j - 1] + uold[i * 20 + j + 1]) + b * uold[i * 20 + j] - f[i * 20 + j]) / b
+                u[i * 20 + j] := uold[i * 20 + j] - omega * resid
+                lock(mtx)
+                error := error + resid * resid
+                unlock(mtx)
+            end for
+        end parallel for
+        error := sqrt(error) / 400.0
+        k := k + 1
+    end while
+    print `done k={k}`
+end procedure

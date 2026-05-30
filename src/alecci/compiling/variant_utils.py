@@ -202,7 +202,8 @@ def extract_for_array_type(builder: ir.IRBuilder, module: ir.Module,
     already the right concrete type it is returned as-is.
     """
     variant_ty = get_variant_type()
-    _ELEM = {'array_int': 'int', 'array_thread': 'thread', 'array_string': 'string'}
+    _ELEM = {'array_int': 'int', 'array_float': 'float',
+             'array_thread': 'thread', 'array_string': 'string'}
     extract_kind = _ELEM.get(array_type, 'int')
 
     if hasattr(value, 'type') and value.type == variant_ty:

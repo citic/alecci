@@ -1,0 +1,10 @@
+# OMP_Critical/without_datarace benchmark: fibo_-_main.c
+# Fibonacci series: the first thread to acquire the mutex runs the whole while
+# loop; all others find i >= n and exit immediately.  All shared variables are
+# accessed only under the mutex, so TSan reports no race.
+# Ground truth: none (original dataset).
+expected_issues:
+  - none
+stdin_file: fibonacci-critical-no.txt
+timeout: 10
+max_runs: 20

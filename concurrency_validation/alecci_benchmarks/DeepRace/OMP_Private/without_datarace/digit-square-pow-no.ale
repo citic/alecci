@@ -1,0 +1,32 @@
+// Computes N² via digit decomposition: each of the n digit-positions contributes
+// one term using pow(10, n-j).  All n terms are accumulated into tsum under a mutex.
+// Race-free: each parallel iteration uses only local variables; tsum is mutex-guarded.
+// Source: OMP_Private/without_datarace/9.ved_-_main.c
+// Ground truth: none (original dataset).
+
+procedure main()
+    shared mutable N as int := 0
+    shared mutable n as int := 0
+    shared mutable tsum as int := 0
+    shared mutable mtx as mutex := mutex()
+    shared mutable d := array(10, 0)
+    scan `enter N: {N}`
+    mutable a := N
+    while a != 0 do
+        d[n] := a mod 10
+        a := a / 10
+        n := n + 1
+    end while
+    parallel for j := 1 to n+1 with n thread do
+        mutable nj as int := n - j
+        mutable nj1 as int := nj + 1
+        mutable t1 as int := N mod pow(10, nj)
+        mutable t2 as int := N mod pow(10, nj1)
+        mutable t3 as int := d[nj] * pow(10, nj)
+        mutable s as int := t3 * (t1 + t2)
+        lock(mtx)
+        tsum := tsum + s
+        unlock(mtx)
+    end parallel for
+    print `square of {N} is {tsum}`
+end procedure

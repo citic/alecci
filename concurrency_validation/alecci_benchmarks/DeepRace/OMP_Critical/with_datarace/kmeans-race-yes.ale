@@ -1,0 +1,71 @@
+// K-means clustering: 10 random 2D points assigned to 2 centroids.
+// mat[10][2] and all float arrays flattened to 1D (mat[i][j] → mat[i*2+j]).
+// Race: sum1, sum2, len1, len2 accumulated inside the parallel for without any
+// critical section; multiple threads read-modify-write the shared accumulators.
+// Source: OMP_Critical/with_datarace/eo_-_main.c
+// Ground truth: data_race (original dataset).
+
+procedure main()
+    shared mutable mat := array(20, 0.0)
+    shared mutable c1 := array(2, 0.0)
+    shared mutable c2 := array(2, 0.0)
+    shared mutable cV1 := array(2, 0.0)
+    shared mutable cV2 := array(2, 0.0)
+    shared mutable sum1 := array(2, 0.0)
+    shared mutable sum2 := array(2, 0.0)
+    shared mutable len1 as int := 0
+    shared mutable len2 as int := 0
+    parallel for i := 0 to 10 with 4 thread do
+        mat[i * 2] := rand(32767) / 32767.0
+        mat[i * 2 + 1] := rand(32767) / 32767.0
+    end parallel for
+    c1[0] := rand(32767) / 32767.0
+    c1[1] := rand(32767) / 32767.0
+    c2[0] := rand(32767) / 32767.0
+    c2[1] := rand(32767) / 32767.0
+    mutable converged as int := 0
+    while converged = 0 do
+        sum1[0] := 0.0
+        sum1[1] := 0.0
+        sum2[0] := 0.0
+        sum2[1] := 0.0
+        len1 := 0
+        len2 := 0
+        parallel for i := 0 to 10 with 4 thread do
+            mutable d1 as float := sqrt(pow(c1[0] - mat[i * 2], 2.0) + pow(c1[1] - mat[i * 2 + 1], 2.0))
+            mutable d2 as float := sqrt(pow(c2[0] - mat[i * 2], 2.0) + pow(c2[1] - mat[i * 2 + 1], 2.0))
+            if d1 < d2 then
+                sum1[0] := sum1[0] + mat[i * 2]        // race: no critical section
+                sum1[1] := sum1[1] + mat[i * 2 + 1]    // race
+                len1 := len1 + 1                         // race
+            else
+                sum2[0] := sum2[0] + mat[i * 2]         // race
+                sum2[1] := sum2[1] + mat[i * 2 + 1]     // race
+                len2 := len2 + 1                          // race
+            end if
+        end parallel for
+        cV1[0] := c1[0]
+        cV1[1] := c1[1]
+        cV2[0] := c2[0]
+        cV2[1] := c2[1]
+        if len1 > 0 then
+            c1[0] := sum1[0] / len1
+            c1[1] := sum1[1] / len1
+        end if
+        if len2 > 0 then
+            c2[0] := sum2[0] / len2
+            c2[1] := sum2[1] / len2
+        end if
+        mutable dist1 as float := sqrt(pow(c1[0] - cV1[0], 2.0) + pow(c1[1] - cV1[1], 2.0))
+        mutable dist2 as float := sqrt(pow(c2[0] - cV2[0], 2.0) + pow(c2[1] - cV2[1], 2.0))
+        if dist1 < 0.0001 and dist2 < 0.0001 then
+            converged := 1
+        end if
+    end while
+    mutable c1x as float := c1[0]
+    mutable c1y as float := c1[1]
+    mutable c2x as float := c2[0]
+    mutable c2y as float := c2[1]
+    print `C1=({c1x},{c1y})`
+    print `C2=({c2x},{c2y})`
+end procedure

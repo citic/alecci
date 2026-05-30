@@ -808,6 +808,11 @@ class CodeGenerator:
             element_type = fname
             element_llvm_type, nbytes = _ELEM_TYPES[fname]
             zero_elem = ir.Constant(element_llvm_type, [ir.Constant(ir.IntType(8), 0)] * nbytes)
+        elif (isinstance(elem_node, dict) and elem_node.get('type') == 'literal' and
+              isinstance(elem_node.get('value'), float)):
+            element_type = 'float'
+            element_llvm_type = ir.DoubleType()
+            zero_elem = ir.Constant(element_llvm_type, 0.0)
         else:
             element_type = 'int'
             element_llvm_type = ir.IntType(32)
@@ -1212,8 +1217,12 @@ class CodeGenerator:
             name = elem.get('name')
             if name in ('semaphore', 'mutex', 'barrier', 'thread'):
                 return name
-        if elem.get('type') == 'literal' and elem.get('value') in ('thread', '"thread"'):
-            return 'thread'
+        if elem.get('type') == 'literal':
+            v = elem.get('value')
+            if v in ('thread', '"thread"'):
+                return 'thread'
+            if isinstance(v, float):
+                return 'float'
         return 'int'
 
     # ------------------------------------------------------------------
@@ -1492,9 +1501,16 @@ class CodeGenerator:
 
             element_ptr = self.builder.gep(array_ptr, [ir.Constant(ir.IntType(32), 0), index])
 
-            # Coerce value from variant if needed
+            # Coerce value from variant if needed, then match the element pointer type
             if hasattr(value, 'type'):
                 value = self._extract_for_array_type(value, array_type)
+            # Scalar type coercions: int→double for float arrays, double→int for int arrays
+            if hasattr(value, 'type') and hasattr(element_ptr, 'type'):
+                dest_ty = element_ptr.type.pointee
+                if isinstance(dest_ty, ir.DoubleType) and isinstance(value.type, ir.IntType):
+                    value = self.builder.sitofp(value, dest_ty)
+                elif isinstance(dest_ty, ir.IntType) and isinstance(value.type, ir.DoubleType):
+                    value = self.builder.fptosi(value, dest_ty)
 
             # Thread arrays: unwrap i8** → i8*
             if array_type == 'array_thread' and hasattr(value, 'type'):
@@ -2726,13 +2742,20 @@ class CodeGenerator:
                 'thread':    ('thread',    ir.IntType(8).as_pointer()),
             }
             init_name = None
+            is_float_init = False
             if isinstance(element_init, dict):
                 if element_init.get('type') == 'function_call':
                     init_name = element_init.get('name')
                 elif element_init.get('type') == 'literal':
                     v = element_init.get('value', '')
-                    init_name = v.strip('"') if isinstance(v, str) else None
-            element_type, element_llvm_type = _ELEM_SPEC.get(init_name, ('int', ir.IntType(32)))
+                    if isinstance(v, float):
+                        is_float_init = True
+                    else:
+                        init_name = v.strip('"') if isinstance(v, str) else None
+            if is_float_init:
+                element_type, element_llvm_type = 'float', ir.DoubleType()
+            else:
+                element_type, element_llvm_type = _ELEM_SPEC.get(init_name, ('int', ir.IntType(32)))
             
             # Create local array
             array_llvm_type = ir.ArrayType(element_llvm_type, array_size)
@@ -2957,6 +2980,51 @@ class CodeGenerator:
                     arg_val = self._auto_extract_value(arg_val, 'float')
             sqrt_fn = self._declare_external_fn('sqrt', f64, [f64])
             return self.builder.call(sqrt_fn, [arg_val])
+
+        elif func_name == 'abs':
+            args = node['arguments']
+            if len(args) != 1:
+                raise Exception("abs() requires exactly 1 argument")
+            arg_val = self.visit(args[0])
+            if hasattr(arg_val, 'type') and isinstance(arg_val.type, ir.IntType):
+                # Integer abs: if arg < 0, return -arg
+                zero = ir.Constant(arg_val.type, 0)
+                is_neg = self.builder.icmp_signed('<', arg_val, zero)
+                neg = self.builder.sub(zero, arg_val)
+                return self.builder.select(is_neg, neg, arg_val)
+            else:
+                # Float abs: call C fabs
+                f64 = ir.DoubleType()
+                if hasattr(arg_val, 'type') and not isinstance(arg_val.type, ir.DoubleType):
+                    arg_val = self._auto_extract_value(arg_val, 'float')
+                fabs_fn = self._declare_external_fn('fabs', f64, [f64])
+                return self.builder.call(fabs_fn, [arg_val])
+
+        elif func_name == 'pow':
+            args = node['arguments']
+            if len(args) != 2:
+                raise Exception("pow() requires exactly 2 arguments")
+            base_val = self.visit(args[0])
+            exp_val  = self.visit(args[1])
+            f64 = ir.DoubleType()
+            i32 = ir.IntType(32)
+            # Track whether inputs were integers so we can round-trip back
+            base_is_int = hasattr(base_val, 'type') and isinstance(base_val.type, ir.IntType)
+            exp_is_int  = hasattr(exp_val,  'type') and isinstance(exp_val.type,  ir.IntType)
+            if base_is_int:
+                base_val = self.builder.sitofp(base_val, f64)
+            elif hasattr(base_val, 'type') and not isinstance(base_val.type, ir.DoubleType):
+                base_val = self._auto_extract_value(base_val, 'float')
+            if exp_is_int:
+                exp_val = self.builder.sitofp(exp_val, f64)
+            elif hasattr(exp_val, 'type') and not isinstance(exp_val.type, ir.DoubleType):
+                exp_val = self._auto_extract_value(exp_val, 'float')
+            pow_fn = self._declare_external_fn('pow', f64, [f64, f64])
+            result = self.builder.call(pow_fn, [base_val, exp_val])
+            # Return int if both inputs were integers, else float
+            if base_is_int and exp_is_int:
+                return self.builder.fptosi(result, i32)
+            return result
 
         # Handle constructor functions for synchronization primitives
         elif func_name == 'semaphore':

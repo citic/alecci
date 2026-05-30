@@ -1,0 +1,8 @@
+# OMP_Critical/with_datarace benchmark: eo_-_main.c
+# K-means clustering (2 centroids, 10 points) with 2D float arrays flattened to 1D.
+# Race: sum1, sum2, len1, len2 updated inside parallel for without critical section.
+# Ground truth: data_race (original dataset).
+expected_issues:
+  - data_race
+timeout: 15
+max_runs: 20

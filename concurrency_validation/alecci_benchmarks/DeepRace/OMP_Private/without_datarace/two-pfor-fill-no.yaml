@@ -1,0 +1,8 @@
+# OMP_Private/without_datarace benchmark: fig4.12-two-for-loops_-_main.c
+# Two sequential parallel fors: a[9] := i, then b[9] := 2*a[i].
+# No race: unique indices per iteration; implicit barrier ensures a[] is settled.
+# Ground truth: none (original dataset).
+expected_issues:
+  - none
+timeout: 10
+max_runs: 20

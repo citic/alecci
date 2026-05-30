@@ -1,0 +1,9 @@
+# OMP_Private/with_datarace benchmark: ex6_-_main.c
+# Element-wise A[6][10] + B[6][10] = C[6][10] (1D-flattened), 6 threads.
+# Race: id, sid, eid are shared — all threads overwrite them, causing wrong
+# row assignments and TSan-detectable concurrent writes.
+# Ground truth: data_race (original dataset).
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

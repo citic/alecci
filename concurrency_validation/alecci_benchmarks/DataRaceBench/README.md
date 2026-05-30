@@ -7,7 +7,7 @@ This directory contains Alecci translations of a subset of the C benchmarks.
 
 **Source:** [Github](https://github.com/llnl/dataracebench/tree/master)   
 **Total C/C++ benchmarks in DRB:** 183 (plus 168 Fortran, not translated)  
-**Translated to Alecci:** 55 benchmarks (30 — no race, 25 — race)
+**Translated to Alecci:** 58 benchmarks (33 — no race, 25 — race)
 
 ---
 
@@ -97,12 +97,14 @@ DRB benchmarks are labeled by race category:
 | `DRB103-master-orig-no.ale` | DRB103-master-orig-no.c | Master-thread initialisation, then parallel |
 | `DRB113-default-orig-no.ale` | DRB113-default-orig-no.c | Default-clause parallel, no race |
 
-### N2 — Correct Private/Reduction (8 of 23 translated)
+### N2 — Correct Private/Reduction (10 of 23 translated)
 
 | Alecci file | DRB source | Pattern |
 |---|---|---|
 | `DRB048-firstprivate-orig-no.ale` | DRB048-firstprivate-orig-no.c | First-private copy per thread |
 | `DRB060-matrixmultiply-orig-no.ale` | DRB060-matrixmultiply-orig-no.c | Matrix multiply, local accumulator |
+| `DRB061-matrixvector1-orig-no.ale` | DRB061-matrixvector1-orig-no.c | Matrix-vector, outer loop parallel; local float sum per thread |
+| `DRB062-matrixvector2-orig-no.ale` | DRB062-matrixvector2-orig-no.c | Matrix-vector, inner loop parallel; mutex-guarded reduction |
 | `DRB063-outeronly1-orig-no.ale` | DRB063-outeronly1-orig-no.c | Outer-only parallel, inner serial |
 | `DRB064-outeronly2-orig-no.ale` | DRB064-outeronly2-orig-no.c | Variant |
 | `DRB093-doall2-collapse-orig-no.ale` | DRB093-doall2-collapse-orig-no.c | Collapsed loop DOALL |
@@ -119,11 +121,12 @@ DRB benchmarks are labeled by race category:
 | `DRB141-reduction-barrier-orig-no.ale` | DRB141-reduction-barrier-orig-no.c | Barrier before reduction read |
 | `DRB172-critical2-orig-no.ale` | DRB172-critical2-orig-no.c | Critical section protecting shared update |
 
-### N7 — Complex Numerical Kernels (2 of 7 translated)
+### N7 — Complex Numerical Kernels (3 of 7 translated)
 
 | Alecci file | DRB source | Pattern |
 |---|---|---|
 | `DRB057-jacobiinitialize-orig-no.ale` | DRB057-jacobiinitialize-orig-no.c | Jacobi initialisation loop |
+| `DRB058-jacobikernel-orig-no.ale` | DRB058-jacobikernel-orig-no.c | Jacobi 2D stencil: copy-for + update-for per iteration; float arrays |
 | `DRB065-pireduction-orig-no.ale` | DRB065-pireduction-orig-no.c | PI computation with reduction |
 
 ---
@@ -194,11 +197,11 @@ DRB benchmarks are labeled by race category:
 | DRB139 | Complex worksharing + critical pattern |
 | DRB171 | `threadprivate` |
 
-**N2 — 15 of 23 skipped:**
+**N2 — 13 of 23 skipped:**
 
 | DRB source | Reason |
 |---|---|
-| DRB041-044 | 3mm / ADI polyhedral benchmarks — 2D arrays, very large |
+| DRB041-044 | 3mm / ADI polyhedral benchmarks — compiler-generated fractional index expressions, untranslatable |
 | DRB059 — lastprivate | `lastprivate` clause semantics |
 | DRB076 — flush | Memory-model `flush` |
 | DRB085, DRB091 — threadprivate | `threadprivate` clause |
@@ -222,14 +225,12 @@ DRB benchmarks are labeled by race category:
 | DRB152, DRB154, DRB159 | GPU |
 | DRB182 — atomic3 | Atomic RMW |
 
-**N7 — 5 of 7 skipped:**
+**N7 — 4 of 7 skipped:**
 
 | DRB source | Reason |
 |---|---|
-| DRB052 — indirectaccesssharebase | Indirect array access via shared pointer base |
-| DRB055-056 — jacobi2d | 2D array stencil |
-| DRB058 — jacobikernel | 2D Jacobi kernel |
-| DRB061-062 — matrixvector | Matrix–vector product, 2D array |
+| DRB052 — indirectaccesssharebase | Indirect array access via shared pointer base (`malloc` + pointer arithmetic) |
+| DRB055-056 — jacobi2d | PolyBench polyhedral tiling — compiler-generated fractional index expressions, untranslatable |
 
 ---
 
@@ -245,10 +246,10 @@ DRB benchmarks are labeled by race category:
 | Y6 | 13 | 0 | 13 | Pointer arithmetic |
 | Y7 | 4 | 0 | 4 | Pointer indexing |
 | N1 | 28 | 8 | 20 | SIMD, GPU, task, sections, C++ |
-| N2 | 23 | 8 | 15 | 2D arrays, threadprivate, task, GPU |
+| N2 | 23 | 10 | 13 | polyhedral benchmarks, threadprivate, task, GPU |
 | N3 | 21 | 4 | 17 | task, sections, GPU, ordered |
 | N4 | 3 | 0 | 3 | SIMD |
 | N5 | 1 | 0 | 1 | GPU |
 | N6 | 9 | 0 | 9 | Pointer arithmetic |
-| N7 | 7 | 2 | 5 | 2D arrays, pointer indexing |
-| **Total** | **183** | **55** | **128** | |
+| N7 | 7 | 3 | 4 | polyhedral tiling, pointer indexing |
+| **Total** | **183** | **58** | **125** | |
