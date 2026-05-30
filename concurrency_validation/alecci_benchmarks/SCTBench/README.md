@@ -1,12 +1,18 @@
-# SCTBench — Alecci Translation
+# SCTBench — Alecci Translation Summary
 
-This directory contains Alecci translations of benchmarks from
-[SCTBench](https://github.com/mc-imperial/sctbench), a suite of concurrent C and C# programs
-used to evaluate schedule-driven concurrency testing tools.
+## Overview
 
-## Source Structure
+SCTBench is a suite of concurrent C and C# programs used to evaluate schedule-driven
+concurrency testing tools, drawn from ESBMC/SV-COMP, INSPECT, CHESS, and real-world
+application bugs.
 
-The original SCTBench repository organises programs into several subdirectories:
+**Source:** [Github](https://github.com/mc-imperial/sctbench)  
+**Translated subdirectories:** `concurrent-software-benchmarks/`, `inspect_examples/`  
+**Translated to Alecci:** 45 benchmarks (27 — no race, 18 — race)
+
+---
+
+## Directory Structure
 
 | Directory | Description |
 |---|---|
@@ -19,11 +25,15 @@ The original SCTBench repository organises programs into several subdirectories:
 | `radbench/` | Radically concurrency-buggy programs |
 | `splash2/` | SPLASH-2 parallel benchmark suite |
 
-## Selected Benchmarks (45)
+---
 
-### Race benchmarks — TSan detects `data_race`
+## Translated Benchmarks
 
-| File | Source | Bug type | Threads |
+### Race benchmarks — 18 translated
+
+TSan detects `data_race` on these benchmarks.
+
+| Alecci file | Source | Race pattern | Threads |
 |---|---|---|---|
 | `race01-yes.ale` | `inspect_examples/race01.c` | Data race | 2 |
 | `micro_unprotected_2-yes.ale` | `concurrent-software-benchmarks/micro_2_ok.c` | Data race | 2 |
@@ -44,9 +54,11 @@ The original SCTBench repository organises programs into several subdirectories:
 | `din_phil6_sat-yes.ale` | `concurrent-software-benchmarks/din_phil6_sat.c` | Data race on `phil` + lock-order inversion | 6 |
 | `din_phil7_sat-yes.ale` | `concurrent-software-benchmarks/din_phil7_sat.c` | Data race on `phil` + lock-order inversion | 7 |
 
-### Deadlock benchmarks — TSan detects lock-order inversion
+### Deadlock benchmarks — 7 translated
 
-| File | Source | Bug type | Threads |
+TSan detects lock-order inversion on these benchmarks.
+
+| Alecci file | Source | Bug pattern | Threads |
 |---|---|---|---|
 | `deadlock01_bad-no.ale` | `concurrent-software-benchmarks/deadlock01_bad.c` | Lock-order inversion (a→b vs b→a) | 2 |
 | `din_phil2_unsat-no.ale` | `concurrent-software-benchmarks/din_phil2_unsat.c` | Lock-order inversion on fork mutexes | 2 |
@@ -56,9 +68,11 @@ The original SCTBench repository organises programs into several subdirectories:
 | `din_phil6_unsat-no.ale` | `concurrent-software-benchmarks/din_phil6_unsat.c` | Lock-order inversion on fork mutexes | 6 |
 | `din_phil7_unsat-no.ale` | `concurrent-software-benchmarks/din_phil7_unsat.c` | Lock-order inversion on fork mutexes | 7 |
 
-### No-race benchmarks — TSan silent
+### No-issue benchmarks — 20 translated
 
-| File | Source | Reason | Threads |
+TSan is silent on these benchmarks.
+
+| Alecci file | Source | Correctness pattern | Threads |
 |---|---|---|---|
 | `simple_mutex-no.ale` | `inspect_examples/simple1.c` | Correct mutex use | 2 |
 | `stateful01-no.ale` | `concurrent-software-benchmarks/stateful01_ok.c` | Correct mutex use | 2 |
@@ -81,40 +95,23 @@ The original SCTBench repository organises programs into several subdirectories:
 | `circular-buffer-flag-ok-no.ale` | `concurrent-software-benchmarks/circular_buffer_ok.c` | Correct flag-based buffer; TSan silent | 2 |
 | `queue-flag-no.ale` | `concurrent-software-benchmarks/queue_bad.c` | Atomicity violation — dequeue index diverges from enqueue sequence | 2 |
 
-The seven atomicity-violation benchmarks (`lazy01`, `stack`, `twostage`, `twostage_100`, `circular-buffer-flag`, `circular-buffer-flag-ok`, `queue-flag`) are from
-**known-buggy** SCTBench entries (plus `circular-buffer-flag-ok` which is bug-free but included for
-completeness alongside its `_bad` counterpart). Their bugs arise from atomicity violations between
-separately mutex-protected regions; all memory accesses are under some mutex so TSan cannot
-detect them. They represent the class of beyond-data-race concurrency bug.
+### Notes on specific benchmark groups
 
-`circular-buffer-flag-no.ale` and `queue-flag-no.ale` use flag-based alternation (no condvars): each
-thread checks a `send`/`enqueue_flag` boolean under the single mutex and advances its loop counter
-regardless of whether it acted. The atomicity violation is that the consumer's loop index diverges
-from the producer's insert sequence, causing an assertion failure in the original C. Since Alecci has
-no `assert`, both programs complete without error — the bug is silent. `queue-flag-no.ale` uses an
-Alecci `record` type (`QType`) to model the queue's `head`/`tail`/`amount` fields; the element array
-is a separate shared variable because Alecci does not yet support `record.field[index]` indexing.
+**Atomicity violations**: The six atomicity-violation benchmarks (`lazy01`, `stack`, `twostage`, `twostage_100`, `circular-buffer-flag`, `queue-flag`) contain bugs that arise from atomicity violations between separately mutex-protected regions; all are labeled `expected_issues: [atomicity_violation]` per the source ground truth. All memory accesses are under some mutex so TSan cannot detect them — these are MISS results. `circular-buffer-flag-ok` is the correct counterpart (no bug) and retains `expected_issues: [none]`.
 
-Note on naming: SCTBench uses `_ok` to mean "no assertion violation under tested schedules",
-not "no data race". `micro_2_ok.c`, `micro_3_ok.c`, and `micro_10_ok.c` are in fact racy programs.
+**Flag-based buffers**: `circular-buffer-flag-no.ale` and `queue-flag-no.ale` use flag-based alternation (no condvars): each thread checks a `send`/`enqueue_flag` boolean under the single mutex and advances its loop counter regardless of whether it acted. Since Alecci has no `assert`, both programs complete without error — the atomicity bug is silent. `queue-flag-no.ale` uses an Alecci `record` type (`QType`) to model the queue's `head`/`tail`/`amount` fields; the element array is a separate shared variable because Alecci does not yet support `record.field[index]` indexing.
 
-`account_bad-no.ale` (from `account_bad.c`) was previously excluded because its bug is a wrong
-assertion formula — a logic error rather than a concurrency error. Since Alecci has no `assert`,
-the formula cannot be expressed, but the program can still run and serves to document that TSan
-is silent on logic bugs.
+**Dining philosophers**: The `_unsat` variants acquire forks in different orders across threads while serialised by a shared `esbmc_m` mutex (translating `__ESBMC_atomic_begin/end` from `common.inc`). Despite the serialisation, TSan tracks the global lock-order graph and reports an inversion. The `_sat` variants additionally have an unprotected `phil` increment after the serialised section, producing both a data race and a lock-order-inversion warning.
 
-The condvar benchmarks require Alecci's `condvar` type and `cond_wait` / `cond_signal` /
-`cond_broadcast` built-ins. The `_bad` condvar variants deadlock at runtime (condvar hang); TSan
-cannot detect this class of bug. They are classified as `expected_issues: [deadlock]` (matching
-the `buggy.txt` ground truth) but TSan will miss them — the program simply times out.
+**Condvar deadlocks**: The `_bad` condvar variants (`sync01_bad`, `sync02_bad`) deadlock at runtime; TSan cannot detect this class of bug and the program simply times out. They are classified as `expected_issues: [deadlock]` but TSan will miss them.
 
-The dining-philosopher `_unsat` variants acquire forks in different orders across threads while
-serialised by a shared `esbmc_m` mutex (translating `__ESBMC_atomic_begin/end` from `common.inc`).
-Despite the serialisation, TSan tracks the global lock-order graph and reports an inversion.
-The `_sat` variants additionally have an unprotected `phil` increment after the serialised section,
-producing both a data race and a lock-order-inversion warning.
+**SCTBench naming**: SCTBench uses `_ok` to mean "no assertion violation under tested schedules", not "no data race". `micro_2_ok.c`, `micro_3_ok.c`, and `micro_10_ok.c` are in fact racy programs.
 
-## Benchmark Results
+**Logic bug**: `account_bad-no.ale` (from `account_bad.c`) contains a wrong assertion formula — a logic error rather than a concurrency error. Since Alecci has no `assert`, the formula cannot be expressed, but the program still serves to document that TSan is silent on logic bugs.
+
+---
+
+## TSan Results
 
 Results are labelled against the **source ground truth** from `buggy.txt` / `mapleRes.txt`.
 
@@ -125,23 +122,22 @@ Results are labelled against the **source ground truth** from `buggy.txt` / `map
 | MISS | 2 | `sync01_bad`, `sync02_bad`: condvar deadlocks, TSan silent |
 | MISS+UNEXPECTED | 1 | `din_phil2_sat`: data race missed, spurious deadlock reported |
 
-**TSan false positives (lock-order-inversion):** All 12 unexpected/MISS+UNEXPECTED results arise
-from TSan flagging lock-order-inversion on the dining philosopher fork mutexes. Because
-`esbmc_m` serialises the entire fork-acquire/release block, no actual deadlock can occur — but
-TSan still observes the two orderings (right→left vs left→right across threads) and fires.
+All 12 unexpected/MISS+UNEXPECTED results arise from TSan flagging lock-order-inversion on the dining philosopher fork mutexes. Because `esbmc_m` serialises the entire fork-acquire/release block, no actual deadlock can occur — but TSan still observes the two orderings (right→left vs left→right across threads) and fires.
 
 - `din_phil{2..7}_unsat`: ground truth is *no bug*; TSan's lock-order-inversion is a false positive
 - `din_phil{3..7}_sat`: ground truth is *data race on `phil`*; TSan detects both that and the spurious fork inversion (UNEXPECTED deadlock)
 - `din_phil2_sat`: ground truth is *data race on `phil`*; with only 2 threads TSan misses the race but reports the spurious fork inversion (MISS+UNEXPECTED)
 
-## Excluded Benchmarks
+---
+
+## Skipped Benchmarks
 
 ### Subdirectories excluded entirely
 
 | Directory | Reason |
 |---|---|
 | `chess/`, `chess-m/` | C# programs; Alecci compiles only C/POSIX-thread semantics |
-| `conc-bugs/` | Real application bugs (bzip2, Cherokee, etc.) — complex data structures, file I/O, signal handling; not translatable |
+| `conc-bugs/` | Real application bugs (bzip2, Cherokee, etc.) — complex data structures, file I/O, signal handling |
 | `inspect_benchmarks/` | bzip2 and qsort — too complex |
 | `parsec-2.0/` | Large parallel workloads (PARSEC suite) — complex data structures, file I/O, >1000 LOC each |
 | `radbench/` | Real-world application bugs requiring full runtime stacks |
@@ -156,31 +152,36 @@ TSan still observes the two orderings (right→left vs left→right across threa
 | `token_ring_bad.c` | Uses `__ESBMC_atomic_begin()` / `__ESBMC_atomic_end()` with semantics beyond a simple mutex wrap |
 | `bluetooth_driver_bad.c` | Complex state machine; uses `__ESBMC_atomic_begin/end` plus multiple condition variables |
 | `fsbench_bad.c` | File-system benchmark — requires file I/O and kernel interfaces unavailable in Alecci |
-| `ctrace-test.c` (inspect_examples) | Tracing library with sockets, linked lists, dynamic allocation, semaphores — far too complex for Alecci |
+| `ctrace-test.c` (inspect_examples) | Tracing library with sockets, linked lists, dynamic allocation, semaphores |
 
-Previously excluded files that are now included:
+### Previously excluded, now translated
 
-| File | Now included as |
-|---|---|
-| `arithmetic_prog_ok.c` | `arithmetic_prog-no.ale` (condvar support added) |
-| `arithmetic_prog_bad.c` | `arithmetic_prog_bad-no.ale` (condvar support added; assert omitted) |
-| `sync01_ok.c` | `sync01-no.ale` |
-| `sync01_bad.c` | `sync01_bad-no.ale` |
-| `sync02_ok.c` | `sync02-no.ale` |
-| `sync02_bad.c` | `sync02_bad-no.ale` |
-| `sync01.c` (inspect_examples) | `sync01_inspect-no.ale` |
-| `deadlock01_bad.c` | `deadlock01_bad-no.ale` |
-| `carter01_bad.c` | `carter01_bad-no.ale` |
-| `din_phil2_unsat.c` through `din_phil7_unsat.c` | `din_philN_unsat-no.ale` |
-| `din_phil2_sat.c` through `din_phil7_sat.c` | `din_philN_sat-yes.ale` |
-| `account_bad.c` | `account_bad-no.ale` |
-| `circular_buffer_bad.c` | `circular-buffer-flag-no.ale` (record support; `_Bool`→`int`; assert dropped) |
-| `circular_buffer_ok.c` | `circular-buffer-flag-ok-no.ale` (record support; `_Bool`→`int`; assert dropped) |
-| `queue_bad.c` | `queue-flag-no.ale` (record support for `QType` struct; assert dropped) |
+| Source file | Translated as | Reason unblocked |
+|---|---|---|
+| `arithmetic_prog_ok.c` | `arithmetic_prog-no.ale` | condvar support added |
+| `arithmetic_prog_bad.c` | `arithmetic_prog_bad-no.ale` | condvar support added; assert omitted |
+| `sync01_ok.c` | `sync01-no.ale` | condvar support added |
+| `sync01_bad.c` | `sync01_bad-no.ale` | condvar support added |
+| `sync02_ok.c` | `sync02-no.ale` | condvar support added |
+| `sync02_bad.c` | `sync02_bad-no.ale` | condvar support added |
+| `sync01.c` (inspect_examples) | `sync01_inspect-no.ale` | condvar support added |
+| `deadlock01_bad.c` | `deadlock01_bad-no.ale` | condvar/mutex support sufficient |
+| `carter01_bad.c` | `carter01_bad-no.ale` | condvar/mutex support sufficient |
+| `din_phil2_unsat.c`–`din_phil7_unsat.c` | `din_philN_unsat-no.ale` | condvar/mutex support sufficient |
+| `din_phil2_sat.c`–`din_phil7_sat.c` | `din_philN_sat-yes.ale` | condvar/mutex support sufficient |
+| `account_bad.c` | `account_bad-no.ale` | assert omitted; no other blockers |
+| `circular_buffer_bad.c` | `circular-buffer-flag-no.ale` | record support; `_Bool`→`int`; assert dropped |
+| `circular_buffer_ok.c` | `circular-buffer-flag-ok-no.ale` | record support; `_Bool`→`int`; assert dropped |
+| `queue_bad.c` | `queue-flag-no.ale` | record support for `QType` struct; assert dropped |
 
-## Running the Tests
+---
 
-```bash
-/usr/bin/python3 concurrency_validation/test_runner.py \
-  --test-dir concurrency_validation/alecci_benchmarks/SCTBench -j 4
-```
+## Summary
+
+Out-of-scope subdirectories (`chess/`, `chess-m/`, `conc-bugs/`, `inspect_benchmarks/`, `parsec-2.0/`, `radbench/`, `safestack/`, `splash2/`) are excluded entirely and not counted below.
+
+| Directory | Source | Translated | Skipped |
+|---|---|---|---|
+| `concurrent-software-benchmarks/` | 44 | 40 | 4 |
+| `inspect_examples/` | 6 | 5 | 1 |
+| **Total** | **50** | **45** | **5** |

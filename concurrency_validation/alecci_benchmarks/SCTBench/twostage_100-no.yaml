@@ -4,5 +4,5 @@
 # Included as a known-buggy benchmark that exercises a beyond-data-race bug class.
 
 expected_issues:
-  - none
+  - atomicity_violation
 timeout: 30

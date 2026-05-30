@@ -345,6 +345,29 @@ class CodeGenerator:
                     format_args.append(field_value)
                 continue
 
+            # Handle array element access: {arr[index_expr]}
+            array_access_match = re.match(r'^(\w+)\[(.+)\]$', var_name.strip())
+            if array_access_match:
+                arr_name = array_access_match.group(1)
+                index_str = array_access_match.group(2)
+                from ..parsing.a_parser import toAst as _toAst
+                try:
+                    dummy = f"procedure _e()\n    mutable _r := {index_str}\nend procedure"
+                    dummy_ast = _toAst(dummy)
+                    index_ast = dummy_ast['declarations'][0]['body'][0]['init']['value']
+                except Exception:
+                    index_ast = {'type': 'literal', 'value': 0}
+                access_node = {'type': 'array_access', 'array': arr_name, 'index': index_ast}
+                elem_value = self.visit_array_access(access_node)
+                if hasattr(elem_value, 'type') and isinstance(elem_value.type, ir.PointerType):
+                    elem_value = self.builder.load(elem_value)
+                if hasattr(elem_value, 'type') and elem_value.type == ir.DoubleType():
+                    format_string = format_string.replace(f'{{{var_name}}}', '%f')
+                else:
+                    format_string = format_string.replace(f'{{{var_name}}}', '%d')
+                format_args.append(elem_value)
+                continue
+
             entry = self.get_variable(var_name)
             dtype = entry[1] if entry and len(entry) >= 2 else None
 

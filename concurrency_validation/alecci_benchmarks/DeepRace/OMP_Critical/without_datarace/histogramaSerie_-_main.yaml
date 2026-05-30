@@ -1,0 +1,5 @@
+# DeepRace OMP_Critical/without_datarace: histogramaSerie
+# No race: parallel for increments histogram buckets under mutex
+expected_issues:
+  - none
+timeout: 15

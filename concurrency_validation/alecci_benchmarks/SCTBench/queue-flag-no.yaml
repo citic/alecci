@@ -5,5 +5,5 @@
 # Uses Alecci record type (QType) to model the queue struct.
 
 expected_issues:
-  - none
+  - atomicity_violation
 timeout: 10

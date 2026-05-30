@@ -1,0 +1,34 @@
+// DeepRace OMP_Critical/without_datarace: histogramaSerie
+// Parallel histogram of IMA[100][100] (values 0-255), merged with omp critical.
+// Original IMA[1000][1000] reduced to 100×100 = array(10000, 0);
+// rand() replaced with deterministic (i*7+j*13) mod 256.
+// Translation uses mutex-protected bucket increment to match the no-race ground truth label.
+// Source: DeepRace OMP_Critical/without_datarace/histogramaSerie_-_main.c
+procedure main()
+    shared mutable IMA := array(10000, 0)
+    shared mutable histo := array(256, 0)
+    shared mutable mtx as mutex := mutex()
+    for i := 0 to 100 do
+        for j := 0 to 100 do
+            IMA[i * 100 + j] := (i * 7 + j * 13) mod 256
+        end for
+    end for
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 100 do
+            mutable bucket := IMA[i * 100 + j]
+            lock(mtx)
+            histo[bucket] := histo[bucket] + 1
+            unlock(mtx)
+        end for
+    end parallel for
+    mutable hmin as int := 10001
+    mutable imin as int := 0
+    for i := 0 to 256 do
+        if histo[i] < hmin then
+            hmin := histo[i]
+            imin := i
+        end if
+    end for
+    print `hmin={hmin}`
+    print `imin={imin}`
+end procedure

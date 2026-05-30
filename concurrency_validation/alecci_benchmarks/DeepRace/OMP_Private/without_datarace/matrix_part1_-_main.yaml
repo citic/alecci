@@ -1,0 +1,5 @@
+# DeepRace OMP_Private/without_datarace: matrix_part1
+# No race: parallel for i gives each thread distinct rows of C
+expected_issues:
+  - none
+timeout: 15

@@ -1,0 +1,34 @@
+// DeepRace OMP_Private/without_datarace: matrix2loops
+// Phase 1: parallel for i zeroes c; Phase 2: serial i + parallel for j computes C=A×B.
+// a[dim][dim] flattened: a[i*N+j], N=100 (reduced from 10000); rand() → deterministic fill.
+// Phase 2 pattern: serial outer for i, parallel for j with local sum accumulator (no race on c[row*N+j]).
+// row proxy needed: outer serial for i variable not visible inside parallel for j.
+// Source: DeepRace OMP_Private/without_datarace/matrix2loops_-_main.c (dim 10000→100)
+procedure main()
+    shared mutable a := array(10000, 0)
+    shared mutable b := array(10000, 0)
+    shared mutable c := array(10000, 0)
+    shared mutable row as int := 0
+    for i := 0 to 100 do
+        for j := 0 to 100 do
+            a[i * 100 + j] := (i * 3 + j * 7) mod 100
+            b[i * 100 + j] := (i * 5 + j * 11) mod 100
+        end for
+    end for
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 100 do
+            c[i * 100 + j] := 0
+        end for
+    end parallel for
+    for i := 0 to 100 do
+        row := i
+        parallel for j := 0 to 100 with 4 thread do
+            mutable sum as int := 0
+            for k := 0 to 100 do
+                sum := sum + a[row * 100 + k] * b[k * 100 + j]
+            end for
+            c[row * 100 + j] := sum
+        end parallel for
+    end for
+    print `c[10][20]={c[10 * 100 + 20]}`
+end procedure

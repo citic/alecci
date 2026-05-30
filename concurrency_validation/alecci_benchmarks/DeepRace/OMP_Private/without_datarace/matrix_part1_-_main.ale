@@ -1,0 +1,33 @@
+// DeepRace OMP_Private/without_datarace: matrix_part1
+// Matrix multiply C=A×B; outer loop (i) parallelized, inner j and k serial.
+// A[2000][1000] → array(200, 0) N1=20,N2=10; B[1000][2500] → array(250, 0) N2=10,N3=25;
+// C[2000][2500] → array(500, 0) N1=20,N3=25.
+// Original uses omp_get_thread_num()/omp_get_num_threads() manual partitioning;
+// replaced with parallel for i which distributes rows automatically.
+// No race: each thread writes distinct rows of C (c[i*25+j] unique per i).
+// Source: DeepRace OMP_Private/without_datarace/matrix_part1_-_main.c
+procedure main()
+    shared mutable a := array(200, 0)
+    shared mutable b := array(250, 0)
+    shared mutable c := array(500, 0)
+    for i := 0 to 20 do
+        for j := 0 to 10 do
+            a[i * 10 + j] := i * j
+        end for
+    end for
+    for i := 0 to 10 do
+        for j := 0 to 25 do
+            b[i * 25 + j] := i * j
+        end for
+    end for
+    parallel for i := 0 to 20 with 4 thread do
+        for j := 0 to 25 do
+            mutable sum as int := 0
+            for k := 0 to 10 do
+                sum := sum + a[i * 10 + k] * b[k * 25 + j]
+            end for
+            c[i * 25 + j] := sum
+        end for
+    end parallel for
+    print `c[5][10]={c[5 * 25 + 10]}`
+end procedure

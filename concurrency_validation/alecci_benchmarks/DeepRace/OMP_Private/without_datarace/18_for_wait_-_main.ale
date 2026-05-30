@@ -1,0 +1,24 @@
+// DeepRace OMP_Private/without_datarace: 18_for_wait
+// Upper triangle: a[i][j] = i+j for j >= i; lower triangle: a[i][j] = i-j for j < i
+// a[20000][20000] reduced to array(10000, 0) with N=100 (same parallel structure)
+// No race: each thread handles distinct i-rows; upper/lower elements are disjoint
+// Source: DeepRace OMP_Private/without_datarace/18_for_wait_-_main.c
+procedure main()
+    shared mutable a := array(10000, 0)
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 100 do
+            if j >= i then
+                a[i * 100 + j] := i + j
+            end if
+        end for
+    end parallel for
+    parallel for i := 0 to 100 with 4 thread do
+        for j := 0 to 100 do
+            if j < i then
+                a[i * 100 + j] := i - j
+            end if
+        end for
+    end parallel for
+    print `a[3][5]={a[3 * 100 + 5]}`
+    print `a[5][3]={a[5 * 100 + 3]}`
+end procedure

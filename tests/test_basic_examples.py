@@ -210,6 +210,17 @@ EXAMPLES = {
             "All operator tests passed!",
         ],
     },
+    "print_expr": {
+        "file": "print_expr.ale",
+        "expect": [
+            "print expression test",
+            "a[7]=21",
+            "a[3*2+1]=21",
+            "a[i*5+j]=33",
+            "f[7]=17.500000",
+            "print expression test end",
+        ],
+    },
 }
 
 
@@ -362,3 +373,9 @@ def test_example_undefined_variable_scan(repo_root: Path, bin_dir: Path, compile
         f"[ASSERT FAIL] undefined_variable_scan missing line number in error\nFull output:\n{build_out}"
     
     print("[PASS] undefined_variable_scan")
+
+
+def test_example_print_expr(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    """Test that print template literals support array index expressions like {a[i*5+j]}."""
+    out = _compile_and_run("print_expr", EXAMPLES["print_expr"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] print_expr")

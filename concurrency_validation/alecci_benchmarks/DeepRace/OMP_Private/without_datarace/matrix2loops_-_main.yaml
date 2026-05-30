@@ -1,0 +1,6 @@
+# DeepRace OMP_Private/without_datarace: matrix2loops
+# No race: parallel for i zeroes c (disjoint rows); serial i + parallel for j
+# gives each thread a distinct c[row][j] cell to write.
+expected_issues:
+  - none
+timeout: 60

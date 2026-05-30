@@ -4,5 +4,5 @@
 # All accesses are under a single mutex — no data race. TSan silent.
 
 expected_issues:
-  - none
+  - atomicity_violation
 timeout: 10
