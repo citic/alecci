@@ -1,0 +1,7 @@
+# shared-local-accumulate-yes – 4 threads accumulate 10000 locally, merge into shared m without protection
+# Source: OMP_Critical/with_datarace/datasharing_-_main.c (missing omp critical on m += s)
+# Expected: data race on m during unprotected merge
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

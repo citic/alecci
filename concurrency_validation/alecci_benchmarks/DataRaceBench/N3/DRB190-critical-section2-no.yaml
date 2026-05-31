@@ -1,0 +1,6 @@
+# DRB190-critical-section2-no – producer/consumer share one atomic do; no concurrent size access
+# Source: DRB190-critical-section2-no.c (single omp critical for both sections)
+# Expected: no race
+expected_issues:
+  - none
+timeout: 15

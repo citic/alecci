@@ -141,11 +141,14 @@ def p_statement(p):
                 |  parallel_for_loop
                 |  while_loop
                 |  case_statement
+                |  atomic_block
                 |  BREAK WHILE
                 |  BREAK FOR
                 |  PRINT FORMATTED_STRING
                 |  PRINT expression
                 |  SCAN FORMATTED_STRING
+                |  ASSERT expression
+                |  ASSERT expression COMMA STRING
     '''
     if p[1] == 'return':
         p[0] = {'type': 'return', 'value': p[2]}
@@ -159,6 +162,9 @@ def p_statement(p):
             p[0] = {'type': 'print', 'expression': p[2]}
     elif p[1] == 'scan':
         p[0] = {'type': 'scan', 'format': p[2], 'lineno': p.lineno(1)}
+    elif p[1] == 'assert':
+        msg = p[4] if len(p) == 5 else None
+        p[0] = {'type': 'assert', 'condition': p[2], 'message': msg, 'lineno': p.lineno(1)}
     else:
         p[0] = p[1]  # For declaration, assignment, funcCall, if_condition, for_loop, while_loop
 
@@ -198,6 +204,11 @@ def p_while_loop(p):
     ''' while_loop : WHILE expression DO body END WHILE
     '''
     p[0] = {'type': 'while', 'condition': p[2], 'body': p[4]}
+
+def p_atomic_block(p):
+    ''' atomic_block : ATOMIC DO body END ATOMIC
+    '''
+    p[0] = {'type': 'atomic_block', 'body': p[3]}
 
 
 def p_case_statement(p):

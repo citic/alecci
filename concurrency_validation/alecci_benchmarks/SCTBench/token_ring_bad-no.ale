@@ -1,0 +1,54 @@
+// SCTBench benchmark: concurrent-software-benchmarks/token_ring_bad.c
+// Four threads perform atomic updates on x1, x2, x3 and a checker thread t4
+// asserts x1==x2==x3 when all flags are set — can fail depending on thread order.
+// Original uses __ESBMC_atomic_begin/end (a global mutex wrap); translated with
+// Alecci's native `atomic do` which provides equivalent serialisation semantics.
+// No data race (all accesses in atomic blocks). TSan silent.
+// Bug detectable only by model checking that explores all orderings.
+// Expected: no concurrency issues detectable by TSan at runtime.
+
+procedure t1(thread_number as int)
+    atomic do
+        x1 := (x3 + 1) mod 4
+        flag1 := 1
+    end atomic
+end procedure
+
+procedure t2(thread_number as int)
+    atomic do
+        x2 := x1
+        flag2 := 1
+    end atomic
+end procedure
+
+procedure t3(thread_number as int)
+    atomic do
+        x3 := x2
+        flag3 := 1
+    end atomic
+end procedure
+
+procedure t4(thread_number as int)
+    atomic do
+        if flag1 = 1 and flag2 = 1 and flag3 = 1 then
+            assert x1 = x2 and x2 = x3, "token ring: x values should all be equal"
+        end if
+    end atomic
+end procedure
+
+procedure main()
+    shared mutable x1 := 1
+    shared mutable x2 := 2
+    shared mutable x3 := 1
+    shared mutable flag1 := 0
+    shared mutable flag2 := 0
+    shared mutable flag3 := 0
+    mutable id1 := create_threads(1, t1)
+    mutable id2 := create_threads(1, t2)
+    mutable id3 := create_threads(1, t3)
+    mutable id4 := create_threads(1, t4)
+    join_threads(id1, 1)
+    join_threads(id2, 1)
+    join_threads(id3, 1)
+    join_threads(id4, 1)
+end procedure

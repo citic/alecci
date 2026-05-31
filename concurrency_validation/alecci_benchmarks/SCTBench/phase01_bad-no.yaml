@@ -1,0 +1,9 @@
+# SCTBench benchmark: concurrent-software-benchmarks/phase01_bad.c
+# Two threads each run thread1. Bug: missing unlock(x) between two lock(x)
+# calls — POSIX mutexes are non-recursive, so the program deadlocks.
+# TSan detects lock-order-inversion (potential deadlock).
+# Expected: deadlock warning from TSan.
+
+expected_issues:
+  - deadlock
+timeout: 15

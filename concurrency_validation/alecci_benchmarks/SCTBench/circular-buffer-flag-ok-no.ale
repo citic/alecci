@@ -1,9 +1,9 @@
 // SCTBench benchmark: concurrent-software-benchmarks/circular_buffer_ok.c
 // Correct version of the flag-based circular buffer. Producer records the
 // inserted value in 'last_inserted' before flipping the flag; consumer
-// verifies removed == last_inserted (always correct). No bug.
+// asserts removed == last_inserted (always holds — correct synchronisation).
 // All shared accesses are under a single mutex — no data race.
-// TSan silent (same as _bad variant; Alecci has no assert to exercise the fix).
+// TSan silent; assertion never fires.
 
 procedure insert_element(b as int)
     if buf_next < buf_size then
@@ -41,6 +41,7 @@ procedure consumer(thread_number as int)
         lock(m)
         if receive = 1 then
             last_removed := remove_element()
+            assert last_removed = last_inserted, "consumer: removed element should equal last inserted"
             receive := 0
             send := 1
         end if

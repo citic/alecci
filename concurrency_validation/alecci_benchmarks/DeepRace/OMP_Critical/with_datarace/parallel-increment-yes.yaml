@@ -1,0 +1,7 @@
+# parallel-increment-yes – 4 threads increment shared x once each, no atomic protection
+# Source: OMP_Critical/with_datarace/05_omp_crit_-_main.c
+# Expected: data race on x
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

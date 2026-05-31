@@ -1,0 +1,12 @@
+// Race: 4 threads each increment shared x once, no protection
+// Source: OMP_Critical/with_datarace/05_omp_crit_-_main.c (x = x + 1 in parallel)
+// Race: x (write) vs x (read/write) across threads
+procedure main()
+    shared mutable x := 0
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    x := x + 1
+end procedure

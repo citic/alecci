@@ -1,0 +1,8 @@
+# SCTBench benchmark: concurrent-software-benchmarks/phase01_ok.c
+# Two threads each run thread1. Correct version: all lock/unlock calls are
+# properly paired — no deadlock or race.
+# Expected: no concurrency issues.
+
+expected_issues:
+  - none
+timeout: 10

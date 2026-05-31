@@ -1,0 +1,6 @@
+# shared-local-accumulate-no – 4 threads accumulate locally, atomic do protects the merge into shared m
+# Source: datasharing_-_main.c (corrected version with omp critical on m += s)
+# Expected: no race; assert m = 40000 must hold
+expected_issues:
+  - none
+timeout: 10

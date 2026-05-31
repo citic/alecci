@@ -23,6 +23,7 @@ reserved = {
     # Input/output
     'scan' : 'SCAN',
     'print' : 'PRINT',
+    'assert' : 'ASSERT',
     # Function-like operators (mod is an alias for the % operator)
     'mod' : 'MOD',
     # 'log' : 'LOG',

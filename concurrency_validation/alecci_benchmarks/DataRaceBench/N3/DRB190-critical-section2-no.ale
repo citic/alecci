@@ -1,0 +1,31 @@
+// DRB190 – Producer-consumer: single shared atomic do serialises both producer and consumer
+// No race: one global mutex prevents concurrent size modifications
+// Source: DRB190-critical-section2-no.c (single omp critical covers both sections)
+// label: N3
+procedure main()
+    shared mutable size := 0
+    mutable t_prod := create_thread(producer)
+    mutable t_cons := create_thread(consumer)
+    join_thread(t_prod)
+    join_thread(t_cons)
+end procedure
+
+procedure producer()
+    for i := 0 to 100 do
+        atomic do
+            if size < 10 then
+                size := size + 1
+            end if
+        end atomic
+    end for
+end procedure
+
+procedure consumer()
+    for i := 0 to 100 do
+        atomic do
+            if size > 0 then
+                size := size - 1
+            end if
+        end atomic
+    end for
+end procedure

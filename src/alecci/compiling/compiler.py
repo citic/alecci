@@ -1856,6 +1856,25 @@ class CodeGenerator:
             self.builder.branch(cond_bb)
         self.builder.position_at_start(end_bb)
 
+    def visit_atomic_block(self, node: Dict[str, Any]) -> None:
+        ATOMIC_MUTEX_NAME = '__alecci_atomic__'
+        if ATOMIC_MUTEX_NAME not in self.globals:
+            ty = ir.ArrayType(ir.IntType(8), 40)
+            g = ir.GlobalVariable(self.module, ty, name=f'{ATOMIC_MUTEX_NAME}_storage')
+            g.linkage = 'internal'
+            # Zero-initialised pthread_mutex_t == PTHREAD_MUTEX_INITIALIZER on Linux.
+            g.initializer = ir.Constant(ty, [ir.Constant(ir.IntType(8), 0)] * 40)
+            self.globals[ATOMIC_MUTEX_NAME] = (g, 'mutex', False)
+        mutex_storage, _, _ = self.globals[ATOMIC_MUTEX_NAME]
+        opaque_ty = ir.IntType(8).as_pointer()
+        mutex_ptr = self.builder.bitcast(mutex_storage, opaque_ty)
+        lock_fn   = self._declare_external_fn('pthread_mutex_lock',   ir.IntType(32), [opaque_ty])
+        unlock_fn = self._declare_external_fn('pthread_mutex_unlock', ir.IntType(32), [opaque_ty])
+        self.builder.call(lock_fn, [mutex_ptr])
+        self.visit(node['body'])
+        if not self.builder.block.is_terminated:
+            self.builder.call(unlock_fn, [mutex_ptr])
+
     def visit_for(self, node: Dict[str, Any]) -> None:
         # Only support integer for-loops: for i := start to end
         var = node['iterator']
@@ -2114,6 +2133,47 @@ class CodeGenerator:
         
         debug_print(f"DEBUG: visit_print - calling printf with fmt_arg: {fmt_arg}, val: {val}")
         self.builder.call(printf, [fmt_arg, val])
+
+    def visit_assert(self, node: Dict[str, Any]) -> None:
+        cond_val = self._auto_extract_value(self.visit(node['condition']), 'int')
+        if hasattr(cond_val, 'type') and isinstance(cond_val.type, ir.IntType) and cond_val.type.width != 1:
+            cond_i1 = self.builder.icmp_signed('!=', cond_val, ir.Constant(cond_val.type, 0))
+        elif hasattr(cond_val, 'type') and isinstance(cond_val.type, ir.DoubleType):
+            cond_i1 = self.builder.fcmp_ordered('!=', cond_val, ir.Constant(ir.DoubleType(), 0.0))
+        elif hasattr(cond_val, 'type') and isinstance(cond_val.type, ir.IntType):
+            cond_i1 = cond_val  # already i1
+        else:
+            cond_i1 = ir.Constant(ir.IntType(1), 1)
+
+        ok_bb   = self.builder.append_basic_block('assert_ok')
+        fail_bb = self.builder.append_basic_block('assert_fail')
+        self.builder.cbranch(cond_i1, ok_bb, fail_bb)
+
+        self.builder.position_at_start(fail_bb)
+        msg = node.get('message')
+        if msg is not None:
+            if isinstance(msg, str) and msg.startswith('"') and msg.endswith('"'):
+                msg = msg[1:-1]
+        else:
+            msg = 'Assertion failed'
+        msg_bytes = bytearray(msg.encode('utf8')) + b'\0'
+        msg_name = f'assert_msg_{abs(hash(msg))}'
+        if msg_name not in self.module.globals:
+            msg_ty = ir.ArrayType(ir.IntType(8), len(msg_bytes))
+            msg_gv = ir.GlobalVariable(self.module, msg_ty, name=msg_name)
+            msg_gv.linkage = 'internal'
+            msg_gv.global_constant = True
+            msg_gv.initializer = ir.Constant(msg_ty, msg_bytes)
+        else:
+            msg_gv = self.module.get_global(msg_name)
+        msg_ptr = self.builder.bitcast(msg_gv, ir.IntType(8).as_pointer())
+        puts_fn = self._declare_external_fn('puts', ir.IntType(32), [ir.IntType(8).as_pointer()])
+        self.builder.call(puts_fn, [msg_ptr])
+        abort_fn = self._declare_external_fn('abort', ir.VoidType(), [])
+        self.builder.call(abort_fn, [])
+        self.builder.unreachable()
+
+        self.builder.position_at_start(ok_bb)
 
     def visit_scan(self, node: Dict[str, Any]) -> None:
         """Handle SCAN formatted input statements.

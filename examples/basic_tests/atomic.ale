@@ -1,0 +1,12 @@
+procedure worker(thread_number as int)
+    atomic do
+        counter := counter + 1
+    end atomic
+end procedure
+
+procedure main()
+    shared mutable counter as int := 0
+    mutable t := create_threads(4, worker)
+    join_threads(t, 4)
+    print `counter={counter}`
+end procedure

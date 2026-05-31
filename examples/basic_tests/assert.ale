@@ -1,0 +1,6 @@
+procedure main()
+    mutable x as int := 5
+    assert x > 0
+    assert x < 10, "x must be less than 10"
+    print "assert test passed"
+end procedure

@@ -1,8 +1,8 @@
 # SCTBench benchmark: concurrent-software-benchmarks/queue_bad.c
 # Flag-based circular queue (20 slots). QType record holds head/tail/amount;
 # element data in a separate shared array. Atomicity violation: consumer index
-# diverges from dequeue sequence when it skips iterations. TSan silent.
-# Uses Alecci record type (QType) to model the queue struct.
+# diverges from dequeue sequence when it skips iterations — assertion fires.
+# TSan silent. Uses Alecci record type (QType) to model the queue struct.
 
 expected_issues:
   - atomicity_violation

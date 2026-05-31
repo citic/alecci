@@ -1,0 +1,28 @@
+// No race: parallel max over fixed array, atomic do protects both check and update
+// Adapted from OMP_Critical/without_datarace/omp12_-_main.c
+// Assert: the correct maximum (18) must be found after all threads join
+procedure main()
+    shared mutable a := array(10, 0)
+    a[0] := 5
+    a[1] := 12
+    a[2] := 3
+    a[3] := 18
+    a[4] := 7
+    a[5] := 2
+    a[6] := 11
+    a[7] := 4
+    a[8] := 9
+    a[9] := 6
+
+    shared mutable max_val := 0
+
+    parallel for i := 0 to 10 with 4 thread do
+        atomic do
+            if a[i] > max_val then
+                max_val := a[i]
+            end if
+        end atomic
+    end parallel for
+
+    assert max_val = 18, "parallel max must equal 18 (the largest element)"
+end procedure

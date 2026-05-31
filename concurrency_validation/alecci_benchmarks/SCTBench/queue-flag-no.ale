@@ -3,7 +3,7 @@
 // is shared between a producer and a consumer. The producer enqueues 0..19 when
 // enqueue_flag=1; the consumer dequeues when dequeue_flag=1. Both threads advance
 // their own loop counters regardless of whether they acted. Bug: consumer's index
-// into stored_elements diverges from the dequeue sequence (assertion failure).
+// into stored_elements diverges from the dequeue sequence — assertion fires.
 // All shared accesses are protected by a single mutex — no data race.
 // TSan cannot detect this class of atomicity-violation bug.
 
@@ -63,6 +63,7 @@ procedure consumer(thread_number as int)
             last_removed := dequeue_item()
             // Bug: stored_elements[i] may not equal last_removed because i
             // advanced past skipped iterations before this dequeue occurred.
+            assert last_removed = stored_elements[i], "dequeued element should match stored"
             dequeue_flag := 0
             enqueue_flag := 1
         end if

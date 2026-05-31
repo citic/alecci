@@ -1,0 +1,13 @@
+// No race: 2 threads each print their ID inside an atomic do block
+// Source: OMP_Critical/without_datarace/helloworld_-_main.c (#pragma omp critical wrapping printf)
+// atomic do serialises the print, preventing interleaved output
+procedure main()
+    mutable threads := create_threads(2, worker)
+    join_threads(threads, 2)
+end procedure
+
+procedure worker(thread_number as int)
+    atomic do
+        print `hello from thread {thread_number}`
+    end atomic
+end procedure

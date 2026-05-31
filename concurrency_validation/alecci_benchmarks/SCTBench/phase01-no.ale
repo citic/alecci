@@ -1,0 +1,22 @@
+// SCTBench benchmark: concurrent-software-benchmarks/phase01_ok.c
+// Two threads both run thread1. Correct version: each lock(x)/lock(y) is
+// followed by the matching unlock — no deadlock.
+// Expected: no concurrency issues.
+
+procedure thread1(thread_number as int)
+    lock(x)
+    unlock(x)
+    lock(x)
+    unlock(x)
+    lock(y)
+    unlock(y)
+    lock(y)
+    unlock(y)
+end procedure
+
+procedure main()
+    shared mutable x as mutex := mutex()
+    shared mutable y as mutex := mutex()
+    mutable threads := create_threads(2, thread1)
+    join_threads(threads, 2)
+end procedure

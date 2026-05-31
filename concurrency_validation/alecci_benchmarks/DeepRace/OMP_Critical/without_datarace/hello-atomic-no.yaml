@@ -1,0 +1,6 @@
+# hello-atomic-no – 2 threads print inside atomic do to serialise output
+# Source: OMP_Critical/without_datarace/helloworld_-_main.c
+# Expected: no race
+expected_issues:
+  - none
+timeout: 10

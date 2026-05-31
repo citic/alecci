@@ -1,0 +1,6 @@
+# parallel-increment-atomic-no – 4 threads increment shared x once each with atomic do
+# Source: 05_omp_crit_-_main.c (corrected version using omp critical)
+# Expected: no race; assert x = 4 must hold
+expected_issues:
+  - none
+timeout: 10

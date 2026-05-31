@@ -1,0 +1,15 @@
+// No race: 4 threads each increment shared x once, protected by atomic do
+// Source: 05_omp_crit_-_main.c corrected with #pragma omp critical
+// Assert: all 4 increments must be visible after join
+procedure main()
+    shared mutable x := 0
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+    assert x = 4, "4 threads each increment x once: x must equal 4"
+end procedure
+
+procedure worker(thread_number as int)
+    atomic do
+        x := x + 1
+    end atomic
+end procedure

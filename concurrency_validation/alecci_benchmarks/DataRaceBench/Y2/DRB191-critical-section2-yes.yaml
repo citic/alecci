@@ -1,0 +1,7 @@
+# DRB191-critical-section2-yes – producer/consumer use separate mutexes; concurrent size access causes race
+# Source: DRB191-critical-section2-yes.c (omp critical(A) != omp critical(B) — different lock objects)
+# Expected: data race on size (and packages)
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

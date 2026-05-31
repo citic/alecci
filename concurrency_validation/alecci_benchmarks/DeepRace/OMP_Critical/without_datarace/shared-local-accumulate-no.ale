@@ -1,0 +1,19 @@
+// No race: each thread accumulates 10000 locally, merges into shared m via atomic do
+// Source: datasharing_-_main.c corrected — omp critical protects m += s
+// Assert: 4 threads × 10000 = 40000 must hold after join
+procedure main()
+    shared mutable m := 0
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+    assert m = 40000, "4 threads × 10000 local increments must sum to 40000"
+end procedure
+
+procedure worker(thread_number as int)
+    mutable s := 0
+    for i := 0 to 10000 do
+        s := s + 1
+    end for
+    atomic do
+        m := m + s
+    end atomic
+end procedure

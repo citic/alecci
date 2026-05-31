@@ -221,6 +221,14 @@ EXAMPLES = {
             "print expression test end",
         ],
     },
+    "assert": {
+        "file": "assert.ale",
+        "expect": ["assert test passed"],
+    },
+    "atomic": {
+        "file": "atomic.ale",
+        "expect": ["counter=4"],
+    },
 }
 
 
@@ -379,3 +387,13 @@ def test_example_print_expr(repo_root: Path, bin_dir: Path, compile_pseudo_fn, r
     """Test that print template literals support array index expressions like {a[i*5+j]}."""
     out = _compile_and_run("print_expr", EXAMPLES["print_expr"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] print_expr")
+
+
+def test_example_assert(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    out = _compile_and_run("assert", EXAMPLES["assert"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] assert")
+
+
+def test_example_atomic(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    out = _compile_and_run("atomic", EXAMPLES["atomic"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] atomic")

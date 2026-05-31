@@ -1,8 +1,9 @@
 # SCTBench benchmark: concurrent-software-benchmarks/account_bad.c
 # Three threads share one mutex protecting balance.
-# The original C code contains a wrong assertion formula (logic bug, not a concurrency bug).
-# Alecci has no assert — the logic error cannot be represented.
-# Expected: no concurrency issues (TSan cannot detect logic bugs, only races).
+# BUG: wrong assertion formula balance == (x-y)-z instead of x+y-z.
+# With x=1, y=2, z=4 the assertion fires when check_result sees both flags set.
+# Logic bug, not a concurrency bug — TSan finds no races.
+# Expected: no concurrency issues (program may abort due to bad formula).
 
 expected_issues:
   - none

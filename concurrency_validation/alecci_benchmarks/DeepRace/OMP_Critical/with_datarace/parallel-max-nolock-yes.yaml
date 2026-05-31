@@ -1,0 +1,7 @@
+# parallel-max-nolock-yes – parallel max-find without atomic protection (TOCTOU race on max_val)
+# Adapted from OMP_Critical/without_datarace/omp12_-_main.c
+# Expected: data race on max_val
+expected_issues:
+  - data_race
+timeout: 10
+max_runs: 20

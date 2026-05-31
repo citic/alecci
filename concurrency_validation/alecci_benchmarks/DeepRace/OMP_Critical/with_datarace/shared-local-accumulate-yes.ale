@@ -1,0 +1,16 @@
+// Race: each thread accumulates 10000 in a local variable, then merges into shared m
+// Source: OMP_Critical/with_datarace/datasharing_-_main.c (firstprivate s, m += s)
+// Race: m (write) vs m (read/write) across threads — merge is unprotected
+procedure main()
+    shared mutable m := 0
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable s := 0
+    for i := 0 to 10000 do
+        s := s + 1
+    end for
+    m := m + s
+end procedure

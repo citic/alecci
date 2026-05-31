@@ -1,0 +1,6 @@
+# parallel-max-atomic-no – parallel max with atomic do protecting check+update; assert max_val = 18
+# Adapted from OMP_Critical/without_datarace/omp12_-_main.c
+# Expected: no race; assert must pass
+expected_issues:
+  - none
+timeout: 10

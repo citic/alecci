@@ -1,6 +1,7 @@
 # SCTBench benchmark: concurrent-software-benchmarks/circular_buffer_bad.c
 # Flag-based circular buffer (10 slots, 7 items). Atomicity violation: consumer's
 # loop counter diverges from the inserted value sequence when it skips iterations.
+# Assert last_removed==i fires when consumer index diverges from dequeue sequence.
 # All accesses are under a single mutex — no data race. TSan silent.
 
 expected_issues:

@@ -1,0 +1,34 @@
+// DRB191 – Producer-consumer: named critical sections (A for producer, B for consumer)
+// Race: different mutexes allow concurrent size modifications
+// Source: DRB191-critical-section2-yes.c (omp critical(A) vs omp critical(B))
+// Race: size (write) vs size (write) across producer and consumer
+// label: Y2
+procedure main()
+    shared mutable size := 0
+    shared mutable mtx_prod as mutex := mutex()
+    shared mutable mtx_cons as mutex := mutex()
+    mutable t_prod := create_thread(producer)
+    mutable t_cons := create_thread(consumer)
+    join_thread(t_prod)
+    join_thread(t_cons)
+end procedure
+
+procedure producer()
+    for i := 0 to 100 do
+        lock(mtx_prod)
+        if size < 10 then
+            size := size + 1
+        end if
+        unlock(mtx_prod)
+    end for
+end procedure
+
+procedure consumer()
+    for i := 0 to 100 do
+        lock(mtx_cons)
+        if size > 0 then
+            size := size - 1
+        end if
+        unlock(mtx_cons)
+    end for
+end procedure

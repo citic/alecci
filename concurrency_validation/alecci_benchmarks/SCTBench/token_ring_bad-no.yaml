@@ -1,0 +1,11 @@
+# SCTBench benchmark: concurrent-software-benchmarks/token_ring_bad.c
+# Four threads atomically update x1/x2/x3 and a checker asserts x1==x2==x3.
+# Assertion can fail depending on thread ordering — a model-checking bug.
+# Translated using Alecci `atomic do` (equivalent to __ESBMC_atomic_begin/end).
+# TSan sees no races (all accesses serialised by the implicit atomic mutex).
+# Bug is only detectable by exhaustive schedule exploration (model checker).
+# Expected: no concurrency issues detectable by TSan at runtime.
+
+expected_issues:
+  - none
+timeout: 10

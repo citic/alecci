@@ -2,7 +2,7 @@
 // Atomicity violation: producer inserts i into a 10-slot buffer when send=1 and
 // advances its counter regardless; consumer removes when receive=1 and advances
 // its counter regardless. Bug: consumer's loop counter i diverges from the
-// values actually inserted, so the implicit assertion (removed==i) fails.
+// values actually inserted, so the assertion (removed==i) can fail.
 // All shared accesses are under a single mutex — no data race.
 // TSan cannot detect this class of atomicity-violation bug.
 
@@ -41,6 +41,7 @@ procedure consumer(thread_number as int)
         lock(m)
         if receive = 1 then
             last_removed := remove_element()
+            assert last_removed = i, "consumer: removed element should equal loop counter i"
             receive := 0
             send := 1
         end if

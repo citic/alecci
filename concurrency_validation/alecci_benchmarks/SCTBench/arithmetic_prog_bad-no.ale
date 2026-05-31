@@ -1,9 +1,9 @@
 // SCTBench benchmark: concurrent-software-benchmarks/arithmetic_prog_bad.c
 // Producer-consumer with accumulation, N=3 iterations.
 // BUG: the original C code asserts total != N*(N+1)/2 after the run, which is
-// always false (assertion would always fire). Omitted here since Alecci has no
-// assert. The synchronisation logic itself is correct — no data race.
-// Expected: no data race.
+// always false — consumer always accumulates total=6=N*(N+1)/2, so the
+// assertion always fires. Logic bug, not a concurrency bug. No data race.
+// Expected: no data race (assertion aborts due to wrong formula).
 
 procedure producer(thread_number as int)
     mutable i := 0
@@ -48,5 +48,8 @@ procedure main()
     mutable t2 := create_threads(1, consumer)
     join_threads(t1, 1)
     join_threads(t2, 1)
-    // original: if (flag) assert(total != N*(N+1)/2); — omitted (no assert in Alecci)
+    // N=3: N*(N+1)/2 = 6. Consumer always accumulates total=6, so this always fires.
+    if flag = 1 then
+        assert total != 6, "arithmetic progression: total should not equal N*(N+1)/2"
+    end if
 end procedure
