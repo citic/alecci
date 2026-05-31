@@ -705,7 +705,6 @@ def write_latex_table(results: List[TestResult], output_path: Path) -> None:
     ISSUE_TYPES = [
         ('data_race',          'Data Race'),
         ('deadlock',           'Deadlock'),
-        ('atomicity_violation','Atomicity Viol.'),
         ('thread_leak',        'Thread Leak'),
         ('mutex_destruction',  'Mutex Dest.'),
     ]
@@ -803,8 +802,8 @@ def write_latex_table(results: List[TestResult], output_path: Path) -> None:
         r'',
         r'\begin{table*}[t]',
         r'\centering',
-        r'\caption{TSan detection results per benchmark suite and concurrency issue type.}',
-        r'\label{tab:tsan-results}',
+        r'\caption{Alecci detection results, by labeled issues.}',
+        r'\label{tab:results}',
         r'\resizebox{\textwidth}{!}{%',
         f'\\begin{{tabular}}{{{col_spec}}}',
         r'\toprule',
@@ -834,31 +833,51 @@ def write_latex_table(results: List[TestResult], output_path: Path) -> None:
 
 
 def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -> None:
-    """Generate a booktabs LaTeX confusion matrix at the benchmark level.
+    """Generate a booktabs LaTeX confusion matrix.
 
-    Each benchmark test is classified as:
-      TP  – has expected issue(s) AND TSan detected something
-      FN  – has expected issue(s) AND TSan detected nothing
-      FP  – no expected issues   AND TSan detected something
-      TN  – no expected issues   AND TSan detected nothing
+    Each test is classified as:
+      TP  – has expected issue(s) AND bug detected (TSan / crash / timeout)
+      FN  – has expected issue(s) AND bug NOT detected
+      FP  – no expected issues   AND bug detected
+      TN  – no expected issues   AND no bug detected
 
-    The table has one row per dataset (in discovery order) plus a Total row.
+    Grouping strategy:
+      - Binary mode (all labels are bug/none): one row per unique benchmark name,
+        collapsing flat directories into a single aggregate row.
+      - Mixed/typed mode: one row per dataset (top-level folder).
     """
     from collections import OrderedDict
+
+    # Decide grouping key
+    binary_mode = all(
+        set(r.expected_issues) <= {'bug', 'none'}
+        for r in results
+        if r.status != 'COMPILE_FAIL'
+    )
+    key_fn = (lambda r: r.benchmark) if binary_mode else (lambda r: r.dataset)
 
     counts: 'OrderedDict[str, dict]' = OrderedDict()
     for r in results:
         if r.status == 'COMPILE_FAIL':
             continue
-        ds = r.dataset
-        if ds not in counts:
-            counts[ds] = {'TP': 0, 'FP': 0, 'FN': 0, 'TN': 0}
-        actual_pos  = bool(set(r.expected_issues) - {'none'})
-        pred_pos    = bool(set(r.detected_issues) - {'none'}) or r.crash_occurred
-        if   actual_pos and pred_pos:      counts[ds]['TP'] += 1
-        elif actual_pos and not pred_pos:  counts[ds]['FN'] += 1
-        elif pred_pos:                     counts[ds]['FP'] += 1
-        else:                              counts[ds]['TN'] += 1
+        key = key_fn(r)
+        if key not in counts:
+            counts[key] = {'TP': 0, 'FP': 0, 'FN': 0, 'TN': 0}
+        actual_pos = bool(set(r.expected_issues) - {'none'})
+        # Derive TP/FN/FP/TN from the validated status so that all detection
+        # signals (TSan, crash, timeout) are counted consistently.
+        if actual_pos:
+            # Buggy program: PASS = bug found (TP), anything else = missed (FN)
+            if r.status == 'PASS':
+                counts[key]['TP'] += 1
+            else:
+                counts[key]['FN'] += 1
+        else:
+            # Correct program: UNEXPECTED = tool reported false issue (FP), PASS = clean (TN)
+            if r.status in ('UNEXPECTED', 'MISS+UNEXPECTED'):
+                counts[key]['FP'] += 1
+            else:
+                counts[key]['TN'] += 1
 
     def _fmt(num: int, denom: int) -> str:
         return f'{num/denom:.2f}' if denom else '--'
@@ -872,15 +891,16 @@ def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -
 
     totals = {'TP': 0, 'FP': 0, 'FN': 0, 'TN': 0}
     data_lines = []
-    for ds, c in counts.items():
+    for key, c in counts.items():
         for k in totals:
             totals[k] += c[k]
         n = c['TP'] + c['FP'] + c['FN'] + c['TN']
         data_lines.append(
-            f'{ds:<14} & {c["TP"]:3} & {c["FN"]:3} & {c["FP"]:3} & {c["TN"]:3}'
+            f'{key:<14} & {c["TP"]:3} & {c["FN"]:3} & {c["FP"]:3} & {c["TN"]:3}'
             f' & {n:3} & {_recall(c)} & {_f1(c)} \\\\'
         )
 
+    # Only show a separate Total row when there is more than one data row
     nt = sum(totals.values())
     def _b(v): return f'\\textbf{{{v}}}'
     total_line = (
@@ -904,9 +924,10 @@ def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -
         r'\midrule',
     ]
     lines += data_lines
+    lines += [r'\midrule']
+    if len(counts) > 1:
+        lines += [total_line]
     lines += [
-        r'\midrule',
-        total_line,
         r'\bottomrule',
         r'\end{tabular}',
         r'\end{table}',
@@ -1099,6 +1120,14 @@ def main():
     # ------------------------------------------------------------------ summary
     from collections import defaultdict
 
+    def _is_binary_mode(group: List[TestResult]) -> bool:
+        """True when all expected labels are 'bug' or 'none' (SCTBench-style)."""
+        return all(
+            set(r.expected_issues) <= {'bug', 'none'}
+            for r in group
+            if r.status != 'COMPILE_FAIL'
+        )
+
     def _print_status_block(group: List[TestResult], indent: str = ""):
         n_total       = len(group)
         n_compile     = sum(1 for r in group if r.status == "COMPILE_FAIL")
@@ -1109,40 +1138,57 @@ def main():
         print(f"{indent}Total:          {n_total}")
         print(f"{indent}Compile failed: {n_compile}")
         print()
-        w = 45
-        print(f"{indent}Detection outcomes:")
-        print(f"{indent}  {'All expected found, none unexpected [PASS]':<{w}} {n_pass}")
-        print(f"{indent}  {'All expected found + extra detected  [UNEXPECTED]':<{w}} {n_unexpected}")
-        print(f"{indent}  {'Missed expected issues               [MISS]':<{w}} {n_miss}")
-        print(f"{indent}  {'Missed expected + extras detected    [MISS+UNEXPECTED]':<{w}} {n_miss_unexp}")
 
-        issue_stats: Dict[str, Dict[str, int]] = defaultdict(
-            lambda: {'expected': 0, 'detected': 0, 'missed': 0, 'unexpected': 0}
-        )
-        for r in group:
-            if r.status == 'COMPILE_FAIL':
-                continue
-            for t in (set(r.expected_issues) - {'none'}):
-                issue_stats[t]['expected'] += 1
-            for t in (set(r.detected_issues) - {'none'}):
-                issue_stats[t]['detected'] += 1
-            for t in r.missed_issues:
-                issue_stats[t]['missed'] += 1
-            for t in r.unexpected_issues:
-                issue_stats[t]['unexpected'] += 1
+        if _is_binary_mode(group):
+            # SCTBench-style: show a binary bug/none breakdown
+            buggy   = [r for r in group if r.status != 'COMPILE_FAIL' and 'bug'  in r.expected_issues]
+            correct = [r for r in group if r.status != 'COMPILE_FAIL' and 'none' in r.expected_issues]
+            n_bug_detected  = sum(1 for r in buggy   if r.status == 'PASS')
+            n_bug_missed    = sum(1 for r in buggy   if r.status in ('MISS', 'MISS+UNEXPECTED'))
+            n_true_neg      = sum(1 for r in correct if r.status == 'PASS')
+            n_false_pos     = sum(1 for r in correct if r.status in ('UNEXPECTED', 'MISS+UNEXPECTED'))
+            w = 40
+            print(f"{indent}Buggy programs   (expected: bug):  {len(buggy):>3}")
+            print(f"{indent}  {'Detected [PASS]':<{w}} {n_bug_detected:>3}")
+            print(f"{indent}  {'Missed   [MISS]':<{w}} {n_bug_missed:>3}")
+            print(f"{indent}Correct programs (expected: none): {len(correct):>3}")
+            print(f"{indent}  {'Clean            [PASS]':<{w}} {n_true_neg:>3}")
+            print(f"{indent}  {'False positives  [UNEXPECTED]':<{w}} {n_false_pos:>3}")
+        else:
+            w = 45
+            print(f"{indent}Detection outcomes:")
+            print(f"{indent}  {'All expected found, none unexpected [PASS]':<{w}} {n_pass}")
+            print(f"{indent}  {'All expected found + extra detected  [UNEXPECTED]':<{w}} {n_unexpected}")
+            print(f"{indent}  {'Missed expected issues               [MISS]':<{w}} {n_miss}")
+            print(f"{indent}  {'Missed expected + extras detected    [MISS+UNEXPECTED]':<{w}} {n_miss_unexp}")
 
-        if issue_stats:
-            print()
-            print(f"{indent}Breakdown by concurrency issue type:")
-            col = max(len(t) for t in issue_stats) + 2
-            print(f"{indent}  {'Issue type':<{col}}  {'Expected':>8}  {'Detected':>8}  {'Missed':>6}  {'Unexp.':>6}")
-            print(f"{indent}  {'-'*col}  {'--------':>8}  {'--------':>8}  {'------':>6}  {'------':>6}")
-            for issue_type in sorted(issue_stats):
-                s = issue_stats[issue_type]
-                print(
-                    f"{indent}  {issue_type:<{col}}  {s['expected']:>8}  {s['detected']:>8}"
-                    f"  {s['missed']:>6}  {s['unexpected']:>6}"
-                )
+            issue_stats: Dict[str, Dict[str, int]] = defaultdict(
+                lambda: {'expected': 0, 'detected': 0, 'missed': 0, 'unexpected': 0}
+            )
+            for r in group:
+                if r.status == 'COMPILE_FAIL':
+                    continue
+                for t in (set(r.expected_issues) - {'none'}):
+                    issue_stats[t]['expected'] += 1
+                for t in (set(r.detected_issues) - {'none'}):
+                    issue_stats[t]['detected'] += 1
+                for t in r.missed_issues:
+                    issue_stats[t]['missed'] += 1
+                for t in r.unexpected_issues:
+                    issue_stats[t]['unexpected'] += 1
+
+            if issue_stats:
+                print()
+                print(f"{indent}Breakdown by concurrency issue type:")
+                col = max(len(t) for t in issue_stats) + 2
+                print(f"{indent}  {'Issue type':<{col}}  {'Expected':>8}  {'Detected':>8}  {'Missed':>6}  {'Unexp.':>6}")
+                print(f"{indent}  {'-'*col}  {'--------':>8}  {'--------':>8}  {'------':>6}  {'------':>6}")
+                for issue_type in sorted(issue_stats):
+                    s = issue_stats[issue_type]
+                    print(
+                        f"{indent}  {issue_type:<{col}}  {s['expected']:>8}  {s['detected']:>8}"
+                        f"  {s['missed']:>6}  {s['unexpected']:>6}"
+                    )
 
         return n_compile, n_miss, n_miss_unexp, n_unexpected
 
