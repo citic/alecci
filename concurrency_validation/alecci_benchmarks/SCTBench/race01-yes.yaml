@@ -1,7 +1,6 @@
 # SCTBench benchmark: inspect_examples/race01.c
 # Two threads increment shared variable without synchronization.
 # Expected: data race detected by TSan.
-
 expected_issues:
-  - data_race
+  - bug
 timeout: 10

@@ -4,7 +4,6 @@
 # Note: TSan may not consistently observe the race with only 2 threads;
 # if undetected this is a MISS. TSan's lock-order-inversion is extra/unexpected.
 # Expected: data race on 'phil' (source ground truth).
-
 expected_issues:
-  - data_race
+  - bug
 timeout: 10

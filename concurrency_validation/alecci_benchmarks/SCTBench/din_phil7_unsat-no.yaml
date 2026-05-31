@@ -4,7 +4,6 @@
 # Note: TSan reports a lock-order-inversion on fork mutexes, but this is a
 # false positive — esbmc_m serialises the section so no actual deadlock occurs.
 # Expected: no concurrency bug (TSan lock-order-inversion is a false positive).
-
 expected_issues:
   - none
 timeout: 10

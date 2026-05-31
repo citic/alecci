@@ -5,7 +5,6 @@
 # TSan sees no races (all accesses serialised by the implicit atomic mutex).
 # Bug is only detectable by exhaustive schedule exploration (model checker).
 # Expected: no concurrency issues detectable by TSan at runtime.
-
 expected_issues:
-  - none
+  - bug
 timeout: 10

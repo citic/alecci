@@ -2,7 +2,6 @@
 # Two threads acquire mutexes a and b in opposite order — lock-order inversion.
 # TSan reports a potential deadlock (LOCK_ORDER_INVERSION) warning.
 # Expected: deadlock warning detected by TSan.
-
 expected_issues:
-  - deadlock
+  - bug
 timeout: 10

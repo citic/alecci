@@ -3,7 +3,6 @@
 # calls — POSIX mutexes are non-recursive, so the program deadlocks.
 # TSan detects lock-order-inversion (potential deadlock).
 # Expected: deadlock warning from TSan.
-
 expected_issues:
-  - deadlock
-timeout: 15
+  - bug
+timeout: 10

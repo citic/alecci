@@ -2,7 +2,6 @@
 # Correct flag-based circular buffer (10 slots, 7 items). Producer records the
 # inserted value in last_inserted; consumer asserts last_removed == last_inserted
 # (always holds). No bug; all accesses under a single mutex. TSan silent.
-
 expected_issues:
   - none
 timeout: 10

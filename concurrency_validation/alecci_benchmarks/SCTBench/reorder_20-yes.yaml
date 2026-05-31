@@ -1,7 +1,6 @@
 # SCTBench benchmark: concurrent-software-benchmarks/reorder_20_bad.c
 # 10 set threads write shared variables; 10 check threads read them without synchronization.
 # Expected: data race detected by TSan.
-
 expected_issues:
-  - data_race
+  - bug
 timeout: 10

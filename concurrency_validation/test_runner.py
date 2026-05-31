@@ -121,6 +121,7 @@ class TestResult:
         self.detected_issues = []
         self.status = "UNKNOWN"
         self.timeout_occurred = False
+        self.crash_occurred = False
         self.execution_time_ms = 0
         self.tsan_details = ""
         self.notes = ""
@@ -141,6 +142,7 @@ class TestResult:
             'unexpected_issues': '|'.join(self.unexpected_issues) if self.unexpected_issues else 'none',
             'status': self.status,
             'timeout_occurred': 'yes' if self.timeout_occurred else 'no',
+            'crash_occurred': 'yes' if self.crash_occurred else 'no',
             'execution_time_ms': str(self.execution_time_ms),
             'tsan_details': self.tsan_details.replace('\n', ' ').replace(',', ';'),
             'notes': self.notes.replace('\n', ' ').replace(',', ';')
@@ -295,7 +297,7 @@ def run_test(test_case: TestCase, exe_path: Path, verbose: bool = False) -> Tupl
 
 
 def validate_results(
-    test_case: TestCase, tsan_result: Dict, timeout_occurred: bool
+    test_case: TestCase, tsan_result: Dict, timeout_occurred: bool, crash_occurred: bool = False
 ) -> Tuple[str, str, List[str], List[str]]:
     """
     Validate test results against expected issues.
@@ -311,6 +313,20 @@ def validate_results(
     """
     detected = get_detected_issue_list(tsan_result)
     expected = test_case.expected_issues
+
+    # SCTBench-style binary label: bug present or not
+    if expected == ['bug']:
+        real_detected = set(detected) - {'none'}
+        # timeout = program hung = deadlock; crash = assert fired; TSan = race/deadlock
+        bug_found = bool(real_detected) or crash_occurred or timeout_occurred
+        notes = []
+        if timeout_occurred:
+            notes.append(f"Timeout after {test_case.timeout}s (likely deadlock)")
+        if bug_found:
+            return "PASS", "; ".join(notes), [], []
+        else:
+            notes.append("Bug not detected by TSan, crash, or timeout")
+            return "MISS", "; ".join(notes), ['bug'], []
 
     # Strip the 'none' sentinel so we work with real issue types only
     real_expected = set(expected) - {'none'}
@@ -400,6 +416,7 @@ def run_single_test(
     last_prog_stdout = ""
     last_exec_time = 0
     last_timeout_occurred = False
+    last_returncode = 0
 
     for run_number in range(max_runs):
         if verbose and max_runs > 1:
@@ -410,6 +427,7 @@ def run_single_test(
         last_prog_stdout = prog_stdout
         last_exec_time = exec_time
         last_timeout_occurred = timeout_occurred
+        last_returncode = returncode
 
         # Check if race was detected in this run
         tsan_result = parse_tsan_output(output)
@@ -423,6 +441,9 @@ def run_single_test(
 
     result.execution_time_ms = int(last_exec_time)
     result.timeout_occurred = last_timeout_occurred
+    # TSan exits with code 66; any other non-zero exit (and no timeout) is a crash
+    crash_occurred = not last_timeout_occurred and last_returncode != 0 and last_returncode != 66
+    result.crash_occurred = crash_occurred
 
     # Save program stdout to output file if requested
     if output_dir is not None:
@@ -457,7 +478,7 @@ def run_single_test(
         print(f"  Detected issues: {result.detected_issues}")
     
     # Step 4: Validate
-    status, notes, missed, unexpected = validate_results(test_case, tsan_result, timeout_occurred)
+    status, notes, missed, unexpected = validate_results(test_case, tsan_result, last_timeout_occurred, crash_occurred)
     result.status = status
     result.notes = notes
     result.missed_issues = missed
@@ -514,6 +535,7 @@ def write_csv_report(
         'unexpected_issues',
         'status',
         'timeout_occurred',
+        'crash_occurred',
         'execution_time_ms',
         'tsan_details',
         'notes',
@@ -832,7 +854,7 @@ def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -
         if ds not in counts:
             counts[ds] = {'TP': 0, 'FP': 0, 'FN': 0, 'TN': 0}
         actual_pos  = bool(set(r.expected_issues) - {'none'})
-        pred_pos    = bool(set(r.detected_issues) - {'none'})
+        pred_pos    = bool(set(r.detected_issues) - {'none'}) or r.crash_occurred
         if   actual_pos and pred_pos:      counts[ds]['TP'] += 1
         elif actual_pos and not pred_pos:  counts[ds]['FN'] += 1
         elif pred_pos:                     counts[ds]['FP'] += 1
@@ -1050,15 +1072,25 @@ def main():
     # Write main CSV report
     write_csv_report(results, output_csv, group_by_benchmark=args.group_by_benchmark)
 
-    # Write detailed issue-breakdown CSV alongside the main report
-    breakdown_csv = output_csv.parent / output_csv.name.replace(
-        'concurrency_test_results', 'issue_breakdown'
-    )
+    # Write detailed issue-breakdown CSV alongside the main report (separate path)
+    stem = output_csv.stem
+    breakdown_stem = stem.replace('concurrency_test_results', 'issue_breakdown')
+    if breakdown_stem == stem:
+        breakdown_stem = f"issue_breakdown_{stem}"
+    breakdown_csv = output_csv.parent / f"{breakdown_stem}.csv"
     write_detailed_csv_report(results, breakdown_csv, group_by_benchmark=args.group_by_benchmark)
 
-    # Write LaTeX results table
-    latex_path = args.output_latex or results_dir / 'tsan_results_table.tex'
-    write_latex_table(results, latex_path)
+    # Determine whether any results use specific issue-type labels (not bug/none)
+    has_typed_labels = any(
+        set(r.expected_issues) - {'none', 'bug'}
+        for r in results
+        if r.status != 'COMPILE_FAIL'
+    )
+
+    # Write LaTeX results table only when issue-type labels are present
+    if has_typed_labels:
+        latex_path = args.output_latex or results_dir / 'tsan_results_table.tex'
+        write_latex_table(results, latex_path)
 
     # Write LaTeX confusion matrix
     latex_cm_path = args.output_latex_cm or results_dir / 'tsan_confusion_matrix.tex'

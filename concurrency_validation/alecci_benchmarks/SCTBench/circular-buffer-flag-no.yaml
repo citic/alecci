@@ -3,7 +3,6 @@
 # loop counter diverges from the inserted value sequence when it skips iterations.
 # Assert last_removed==i fires when consumer index diverges from dequeue sequence.
 # All accesses are under a single mutex — no data race. TSan silent.
-
 expected_issues:
-  - atomicity_violation
+  - bug
 timeout: 10

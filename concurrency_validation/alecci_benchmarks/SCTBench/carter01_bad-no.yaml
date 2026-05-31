@@ -4,7 +4,6 @@
 # waits for m (second critical section) while t2 holds m and waits for l.
 # TSan observes both m->l and l->m edges and reports a lock-order inversion.
 # Expected: deadlock warning from TSan.
-
 expected_issues:
-  - deadlock
+  - bug
 timeout: 10

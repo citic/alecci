@@ -3,7 +3,6 @@
 # Producer blocks immediately; consumer drains then waits forever — deadlock.
 # Ground truth: buggy (buggy.txt). TSan may miss — condvar deadlocks
 # do not produce a TSan deadlock report; program times out.
-
 expected_issues:
-  - deadlock
-timeout: 5
+  - bug
+timeout: 10

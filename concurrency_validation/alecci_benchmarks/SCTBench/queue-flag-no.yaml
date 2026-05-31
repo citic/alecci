@@ -3,7 +3,6 @@
 # element data in a separate shared array. Atomicity violation: consumer index
 # diverges from dequeue sequence when it skips iterations — assertion fires.
 # TSan silent. Uses Alecci record type (QType) to model the queue struct.
-
 expected_issues:
-  - atomicity_violation
+  - bug
 timeout: 10

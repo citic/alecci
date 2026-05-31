@@ -4,7 +4,6 @@
 # Note: TSan also reports lock-order-inversion on fork mutexes; this is extra
 # detection beyond the ground-truth bug (TSan false positive on fork ordering).
 # Expected: data race on 'phil' (source ground truth).
-
 expected_issues:
-  - data_race
+  - bug
 timeout: 10

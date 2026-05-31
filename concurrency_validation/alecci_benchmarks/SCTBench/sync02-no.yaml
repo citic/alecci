@@ -2,7 +2,6 @@
 # 1-slot producer-consumer with N=20 iterations coordinated by two condvars.
 # All shared accesses are mutex-protected — no data race.
 # Expected: no concurrency issues.
-
 expected_issues:
   - none
-timeout: 15
+timeout: 10

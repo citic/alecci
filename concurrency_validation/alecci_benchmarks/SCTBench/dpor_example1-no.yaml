@@ -1,7 +1,6 @@
 # SCTBench benchmark: inspect_examples/dpor-example1.c
 # Concurrent open-addressing hash table: 13 threads, per-slot mutex array.
 # Expected: no concurrency issues.
-
 expected_issues:
   - none
 timeout: 10

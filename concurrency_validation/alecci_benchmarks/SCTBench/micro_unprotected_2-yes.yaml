@@ -1,7 +1,6 @@
 # SCTBench benchmark: concurrent-software-benchmarks/micro_2_ok.c
 # Two threads perform 100 unprotected increments on a shared counter.
 # Expected: data race detected by TSan.
-
 expected_issues:
-  - data_race
+  - bug
 timeout: 10

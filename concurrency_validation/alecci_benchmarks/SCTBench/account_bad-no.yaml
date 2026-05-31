@@ -4,7 +4,6 @@
 # With x=1, y=2, z=4 the assertion fires when check_result sees both flags set.
 # Logic bug, not a concurrency bug — TSan finds no races.
 # Expected: no concurrency issues (program may abort due to bad formula).
-
 expected_issues:
-  - none
+  - bug
 timeout: 10

@@ -2,7 +2,6 @@
 # Minimal 1-slot producer-consumer: single produce-consume cycle via two condvars.
 # All shared accesses are mutex-protected — no data race.
 # Expected: no concurrency issues.
-
 expected_issues:
   - none
 timeout: 10

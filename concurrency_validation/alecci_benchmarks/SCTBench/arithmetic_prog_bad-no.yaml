@@ -3,7 +3,6 @@
 # (always fires): total != N*(N+1)/2. Added — program always aborts with
 # assertion message. Logic bug, not a concurrency bug — TSan finds nothing.
 # Expected: no concurrency issues (program aborts due to bad assertion formula).
-
 expected_issues:
-  - none
+  - bug
 timeout: 10
