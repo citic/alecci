@@ -8,12 +8,12 @@
 procedure philosopher(thread_number as int)
     mutable left  := thread_number
     mutable right := (thread_number + 1) % 5
-    lock(esbmc_m)
+    atomic do
     lock(forks[right])
     lock(forks[left])
     unlock(forks[left])
     unlock(forks[right])
-    unlock(esbmc_m)
+    end atomic
 end procedure
 
 procedure main()

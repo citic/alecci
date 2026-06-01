@@ -70,7 +70,13 @@ SIGNALS = [
     ('timeout',   'Timeout\n(Hung / Deadlock)'),
 ]
 
-COLOUR_EXPECTED   = '#2d2d2d'   # dark grey
+# ── LaTeX-like font ───────────────────────────────────────────────────────────
+plt.rcParams.update({
+    'font.family':      'STIXGeneral',
+    'mathtext.fontset': 'stix',
+})
+
+COLOUR_EXPECTED   = "#575353"   # dark grey
 COLOUR_UNEXPECTED = '#999999'   # mid grey
 COLOUR_MISSED     = '#bbbbbb'   # light grey (hatched to distinguish from unexpected)
 
@@ -156,7 +162,7 @@ def plot(df: pd.DataFrame, output: Path) -> None:
     # Light separator line between signal bars and missed bar
     ax.axhline(n + 0.1, color='#cccccc', linewidth=0.8, linestyle=':')
 
-    ax.legend(fontsize=10, loc='upper right', framealpha=0.9)
+    ax.legend(fontsize=11, loc='upper right', framealpha=0.9)
 
     # Summary footer
     footer = (
@@ -164,7 +170,7 @@ def plot(df: pd.DataFrame, output: Path) -> None:
         f"Buggy: {total_buggy} (detected {detected}, missed {n_missed})   ·   "
         f"Correct: {total_correct}"
     )
-    fig.text(0.5, 0.01, footer, ha='center', va='bottom', fontsize=9,
+    fig.text(0.5, 0.01, footer, ha='center', va='bottom', fontsize=11,
              style='italic', color='#555555')
 
     plt.tight_layout(rect=[0, 0.04, 1, 1])
