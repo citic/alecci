@@ -1,0 +1,113 @@
+% Alecci language definition for the listings package (GRAYSCALE variant).
+% Same language as alecci.tex, but distinguishes token classes with font
+% weight/shape and shades of gray instead of colour, for print-friendly /
+% monochrome documents.
+% Required in preamble: \usepackage{listings} and \usepackage{xcolor}
+%
+% Differentiation strategy (no colour):
+%   [1] control-flow / structure / logical ops .... black, bold
+%   [2] primitive scalar types .................... dark gray, italic
+%   [3] concurrency-primitive type keywords ....... dark gray, bold
+%   [4] built-in procedures and functions ......... medium gray, bold italic
+%   comments ...................................... medium gray, italic
+%   strings ....................................... dark gray, italic
+%
+% NOTE: this defines the SAME \lstdefinelanguage{Alecci} name as alecci.tex,
+% so \input only ONE of the two files in a given document.
+%
+% Usage:
+%   \begin{lstlisting}[language=Alecci]
+%   ...code...
+%   \end{lstlisting}
+
+\lstdefinelanguage{Alecci}{%
+  %
+  % -------------------------------------------------------------------------
+  % Class 1: control-flow, declarations, structure, logical/bitwise operators
+  % -------------------------------------------------------------------------
+  keywords=[1]{%
+    procedure, function, return, end,%
+    if, then, else,%
+    while, do,%
+    for, parallel,%
+    break, case,%
+    shared, mutable, const, atomic,%
+    as, of, to, pointed, by,%
+    record, enum, pointer,%
+    with,%
+    variant,%
+    and, or, not, xor, mod,%
+    true, false,%
+    print, scan%
+  },%
+  keywordstyle=[1]{\bfseries\color{black}},%
+  %
+  % -------------------------------------------------------------------------
+  % Class 2: primitive scalar types
+  % -------------------------------------------------------------------------
+  keywords=[2]{%
+    int, float, bool, char, string,%
+    i8, i16, i32, i64,%
+    u8, u16, u32, u64,%
+    f32, f64, f128%
+  },%
+  keywordstyle=[2]{\itshape\color{black!70}},%
+  %
+  % -------------------------------------------------------------------------
+  % Class 3: concurrency-primitive type keywords / constructors
+  % -------------------------------------------------------------------------
+  keywords=[3]{%
+    thread, semaphore, mutex, barrier, condvar, queue, array%
+  },%
+  keywordstyle=[3]{\bfseries\color{black!70}},%
+  %
+  % -------------------------------------------------------------------------
+  % Class 4: built-in procedures and functions
+  % -------------------------------------------------------------------------
+  keywords=[4]{%
+    create_threads, create_thread,%
+    join_threads, join_thread,%
+    lock, unlock,%
+    wait, signal, barrier_wait,%
+    cond_wait, cond_signal, cond_broadcast,%
+    sleep, rand, seed,%
+    enqueue, dequeue, queue_size, queue_capacity,%
+    variant_type, variant_copy, variant_equals, variant_to_string%
+  },%
+  keywordstyle=[4]{\bfseries\itshape\color{black!55}},%
+  %
+  % -------------------------------------------------------------------------
+  % Comments: // to end of line
+  % -------------------------------------------------------------------------
+  comment=[l]{//},%
+  commentstyle={\itshape\color{black!50}},%
+  %
+  % -------------------------------------------------------------------------
+  % String literals: "..." and backtick `...` (formatted strings)
+  % -------------------------------------------------------------------------
+  string=[b]{"},%
+  morestring=[b]{`},%
+  stringstyle={\itshape\color{black!75}},%
+  %
+  % -------------------------------------------------------------------------
+  % Multi-character operators: prevent listings from breaking them apart.
+  % If mathtools is available, replace := with the proper \coloneqq symbol by
+  % adding  literate+={{:=}{{\ensuremath{\coloneqq}}}2}  after \input-ing this
+  % file. The entries below keep := <= >= != << >> as single tokens.
+  % -------------------------------------------------------------------------
+  literate=%
+    {:=}{{:=}}2%
+    {!=}{{!=}}2%
+    {<=}{{<=}}2%
+    {>=}{{>=}}2%
+    {<<}{{<<}}2%
+    {>>}{{>>}}2,%
+  %
+  % -------------------------------------------------------------------------
+  % Miscellaneous
+  % -------------------------------------------------------------------------
+  sensitive=true,%        % Alecci is case-sensitive
+  morecomment=[l]{//},%   % ensure // is always a line comment
+  columns=flexible,%
+  keepspaces=true%
+}
