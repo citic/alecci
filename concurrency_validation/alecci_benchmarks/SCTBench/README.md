@@ -8,7 +8,7 @@ application bugs.
 
 **Source:** [Github](https://github.com/mc-imperial/sctbench)  
 **Translated subdirectories:** `concurrent-software-benchmarks/`, `inspect_examples/`  
-**Translated to Alecci:** 45 benchmarks (27 — no race, 18 — race)
+**Translated to Alecci:** 48 benchmarks (30 — no race, 18 — race)
 
 ---
 
@@ -54,9 +54,9 @@ TSan detects `data_race` on these benchmarks.
 | `din_phil6_sat-yes.ale` | `concurrent-software-benchmarks/din_phil6_sat.c` | Data race on `phil` + lock-order inversion | 6 |
 | `din_phil7_sat-yes.ale` | `concurrent-software-benchmarks/din_phil7_sat.c` | Data race on `phil` + lock-order inversion | 7 |
 
-### Deadlock benchmarks — 7 translated
+### Deadlock benchmarks — 8 translated
 
-TSan detects lock-order inversion on these benchmarks.
+TSan detects lock-order inversion on these benchmarks, or the program deadlocks at runtime (caught by timeout).
 
 | Alecci file | Source | Bug pattern | Threads |
 |---|---|---|---|
@@ -67,8 +67,9 @@ TSan detects lock-order inversion on these benchmarks.
 | `din_phil5_unsat-no.ale` | `concurrent-software-benchmarks/din_phil5_unsat.c` | Lock-order inversion on fork mutexes | 5 |
 | `din_phil6_unsat-no.ale` | `concurrent-software-benchmarks/din_phil6_unsat.c` | Lock-order inversion on fork mutexes | 6 |
 | `din_phil7_unsat-no.ale` | `concurrent-software-benchmarks/din_phil7_unsat.c` | Lock-order inversion on fork mutexes | 7 |
+| `phase01_bad-no.ale` | `concurrent-software-benchmarks/phase01_bad.c` | Non-recursive mutex locked twice without unlock — program deadlocks at runtime (caught by timeout) | 2 |
 
-### No-issue benchmarks — 20 translated
+### No-issue benchmarks — 22 translated
 
 TSan is silent on these benchmarks.
 
@@ -94,6 +95,8 @@ TSan is silent on these benchmarks.
 | `circular-buffer-flag-no.ale` | `concurrent-software-benchmarks/circular_buffer_bad.c` | Atomicity violation — consumer counter diverges from insert sequence | 2 |
 | `circular-buffer-flag-ok-no.ale` | `concurrent-software-benchmarks/circular_buffer_ok.c` | Correct flag-based buffer; TSan silent | 2 |
 | `queue-flag-no.ale` | `concurrent-software-benchmarks/queue_bad.c` | Atomicity violation — dequeue index diverges from enqueue sequence | 2 |
+| `phase01-no.ale` | `concurrent-software-benchmarks/phase01_ok.c` | Correct version of phase01: all lock/unlock calls properly paired; no deadlock or race | 2 |
+| `token_ring_bad-no.ale` | `concurrent-software-benchmarks/token_ring_bad.c` | Four threads update `x1/x2/x3` atomically; assertion `x1==x2==x3` can fail under specific schedules — a model-checking bug; TSan sees no races (all accesses serialised by `atomic do`) | 4 |
 
 ### Notes on specific benchmark groups
 
@@ -117,9 +120,9 @@ Results are labelled against the **source ground truth** from `buggy.txt` / `map
 
 | Outcome | Count | Notes |
 |---|---|---|
-| PASS | 31 | TSan detects exactly what the source says |
+| PASS | 33 | TSan detects exactly what the source says (includes `phase01_bad` detected via timeout) |
 | UNEXPECTED | 11 | TSan reports more than the ground truth |
-| MISS | 2 | `sync01_bad`, `sync02_bad`: condvar deadlocks, TSan silent |
+| MISS | 3 | `sync01_bad`, `sync02_bad`: condvar deadlocks, TSan silent; `token_ring_bad`: model-checking bug, TSan silent |
 | MISS+UNEXPECTED | 1 | `din_phil2_sat`: data race missed, spurious deadlock reported |
 
 All 12 unexpected/MISS+UNEXPECTED results arise from TSan flagging lock-order-inversion on the dining philosopher fork mutexes. Because `esbmc_m` serialises the entire fork-acquire/release block, no actual deadlock can occur — but TSan still observes the two orderings (right→left vs left→right across threads) and fires.
@@ -148,31 +151,9 @@ All 12 unexpected/MISS+UNEXPECTED results arise from TSan flagging lock-order-in
 
 | File | Reason |
 |---|---|
-| `phase01_bad.c` | Uses `__ESBMC_atomic_begin()` / `__ESBMC_atomic_end()` with semantics beyond a simple mutex wrap |
-| `token_ring_bad.c` | Uses `__ESBMC_atomic_begin()` / `__ESBMC_atomic_end()` with semantics beyond a simple mutex wrap |
 | `bluetooth_driver_bad.c` | Complex state machine; uses `__ESBMC_atomic_begin/end` plus multiple condition variables |
 | `fsbench_bad.c` | File-system benchmark — requires file I/O and kernel interfaces unavailable in Alecci |
 | `ctrace-test.c` (inspect_examples) | Tracing library with sockets, linked lists, dynamic allocation, semaphores |
-
-### Previously excluded, now translated
-
-| Source file | Translated as | Reason unblocked |
-|---|---|---|
-| `arithmetic_prog_ok.c` | `arithmetic_prog-no.ale` | condvar support added |
-| `arithmetic_prog_bad.c` | `arithmetic_prog_bad-no.ale` | condvar support added; assert omitted |
-| `sync01_ok.c` | `sync01-no.ale` | condvar support added |
-| `sync01_bad.c` | `sync01_bad-no.ale` | condvar support added |
-| `sync02_ok.c` | `sync02-no.ale` | condvar support added |
-| `sync02_bad.c` | `sync02_bad-no.ale` | condvar support added |
-| `sync01.c` (inspect_examples) | `sync01_inspect-no.ale` | condvar support added |
-| `deadlock01_bad.c` | `deadlock01_bad-no.ale` | condvar/mutex support sufficient |
-| `carter01_bad.c` | `carter01_bad-no.ale` | condvar/mutex support sufficient |
-| `din_phil2_unsat.c`–`din_phil7_unsat.c` | `din_philN_unsat-no.ale` | condvar/mutex support sufficient |
-| `din_phil2_sat.c`–`din_phil7_sat.c` | `din_philN_sat-yes.ale` | condvar/mutex support sufficient |
-| `account_bad.c` | `account_bad-no.ale` | assert omitted; no other blockers |
-| `circular_buffer_bad.c` | `circular-buffer-flag-no.ale` | record support; `_Bool`→`int`; assert dropped |
-| `circular_buffer_ok.c` | `circular-buffer-flag-ok-no.ale` | record support; `_Bool`→`int`; assert dropped |
-| `queue_bad.c` | `queue-flag-no.ale` | record support for `QType` struct; assert dropped |
 
 ---
 
@@ -182,6 +163,6 @@ Out-of-scope subdirectories (`chess/`, `chess-m/`, `conc-bugs/`, `inspect_benchm
 
 | Directory | Source | Translated | Skipped |
 |---|---|---|---|
-| `concurrent-software-benchmarks/` | 44 | 40 | 4 |
+| `concurrent-software-benchmarks/` | 44 | 43 | 1 |
 | `inspect_examples/` | 6 | 5 | 1 |
-| **Total** | **50** | **45** | **5** |
+| **Total** | **50** | **48** | **2** |

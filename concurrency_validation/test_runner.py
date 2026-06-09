@@ -109,6 +109,41 @@ class TestCase:
         return f"TestCase({self.name}, source={self.source_path.name})"
 
 
+class CsvResult:
+    """A minimal result loaded from an existing CSV file (no TestCase needed)."""
+
+    def __init__(self, row: Dict[str, str]):
+        self.dataset   = row.get('dataset', '')
+        self.benchmark = row.get('benchmark', '')
+        self.test_name = row.get('test_name', '')
+        self.status    = row.get('status', 'UNKNOWN')
+        raw_exp = row.get('expected_issues', 'none')
+        self.expected_issues = [x for x in raw_exp.split('|') if x] or ['none']
+        raw_det = row.get('detected_issues', 'none')
+        self.detected_issues = [x for x in raw_det.split('|') if x] or ['none']
+        raw_miss = row.get('missed_issues', 'none')
+        self.missed_issues = [] if raw_miss in ('none', '') else [x for x in raw_miss.split('|') if x]
+        raw_unexp = row.get('unexpected_issues', 'none')
+        self.unexpected_issues = [] if raw_unexp in ('none', '') else [x for x in raw_unexp.split('|') if x]
+
+
+def load_results_from_csv(csv_path: Path) -> List['CsvResult']:
+    """Load test results from a previously written CSV, skipping summary rows."""
+    results = []
+    with open(csv_path, newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            test_name = row.get('test_name', '')
+            dataset   = row.get('dataset', '')
+            # Skip separator / summary rows inserted by group_by_benchmark mode
+            if test_name.startswith('===') or dataset.startswith('==='):
+                continue
+            if not test_name and not dataset:
+                continue
+            results.append(CsvResult(row))
+    return results
+
+
 class TestResult:
     """Stores the result of running a test case"""
 
@@ -832,7 +867,7 @@ def write_latex_table(results: List[TestResult], output_path: Path) -> None:
     print(f"LaTeX table written to:       {output_path}")
 
 
-def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -> None:
+def write_latex_confusion_matrix(results: List, output_path: Path) -> None:
     """Generate a booktabs LaTeX confusion matrix.
 
     Each test is classified as:
@@ -841,39 +876,32 @@ def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -
       FP  – no expected issues   AND bug detected
       TN  – no expected issues   AND no bug detected
 
-    Grouping strategy:
-      - Binary mode (all labels are bug/none): one row per unique benchmark name,
-        collapsing flat directories into a single aggregate row.
-      - Mixed/typed mode: one row per dataset (top-level folder).
+    Grouping: binary-labelled rows (bug/none) are grouped by benchmark name;
+    typed-labelled rows are grouped by dataset.  This handles mixed result
+    lists (e.g. labeled benchmarks + SCTBench) correctly.
     """
     from collections import OrderedDict
 
-    # Decide grouping key
-    binary_mode = all(
-        set(r.expected_issues) <= {'bug', 'none'}
-        for r in results
-        if r.status != 'COMPILE_FAIL'
-    )
-    key_fn = (lambda r: r.benchmark) if binary_mode else (lambda r: r.dataset)
+    def _group_key(r) -> str:
+        # SCTBench has a flat structure: dataset = the yaml filename (ends with .yaml)
+        if r.dataset.endswith('.yaml'):
+            return r.benchmark
+        return r.dataset
 
     counts: 'OrderedDict[str, dict]' = OrderedDict()
     for r in results:
         if r.status == 'COMPILE_FAIL':
             continue
-        key = key_fn(r)
+        key = _group_key(r)
         if key not in counts:
             counts[key] = {'TP': 0, 'FP': 0, 'FN': 0, 'TN': 0}
         actual_pos = bool(set(r.expected_issues) - {'none'})
-        # Derive TP/FN/FP/TN from the validated status so that all detection
-        # signals (TSan, crash, timeout) are counted consistently.
         if actual_pos:
-            # Buggy program: PASS = bug found (TP), anything else = missed (FN)
             if r.status == 'PASS':
                 counts[key]['TP'] += 1
             else:
                 counts[key]['FN'] += 1
         else:
-            # Correct program: UNEXPECTED = tool reported false issue (FP), PASS = clean (TN)
             if r.status in ('UNEXPECTED', 'MISS+UNEXPECTED'):
                 counts[key]['FP'] += 1
             else:
@@ -882,12 +910,13 @@ def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -
     def _fmt(num: int, denom: int) -> str:
         return f'{num/denom:.2f}' if denom else '--'
 
-    def _recall(c): return _fmt(c['TP'], c['TP'] + c['FN'])
-    def _f1(c):     return _fmt(2*c['TP'], 2*c['TP'] + c['FP'] + c['FN'])
+    def _accuracy(c): return _fmt(c['TP'] + c['TN'], c['TP'] + c['FP'] + c['FN'] + c['TN'])
+    def _recall(c):   return _fmt(c['TP'], c['TP'] + c['FN'])
+    def _f1(c):       return _fmt(2*c['TP'], 2*c['TP'] + c['FP'] + c['FN'])
 
-    # Column spec: [TP FN] sep [FP TN] sep [Total] sep [Recall F1]
+    # Column spec: [TP FN] sep [FP TN] sep [Total] sep [Accuracy Recall F1]
     sep      = r'@{\hspace{1.5em}}'
-    col_spec = f'l rr {sep} rr {sep} r {sep} rr'
+    col_spec = f'l rr {sep} rr {sep} r {sep} rrr'
 
     totals = {'TP': 0, 'FP': 0, 'FN': 0, 'TN': 0}
     data_lines = []
@@ -897,10 +926,9 @@ def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -
         n = c['TP'] + c['FP'] + c['FN'] + c['TN']
         data_lines.append(
             f'{key:<14} & {c["TP"]:3} & {c["FN"]:3} & {c["FP"]:3} & {c["TN"]:3}'
-            f' & {n:3} & {_recall(c)} & {_f1(c)} \\\\'
+            f' & {n:3} & {_accuracy(c)} & {_recall(c)} & {_f1(c)} \\\\'
         )
 
-    # Only show a separate Total row when there is more than one data row
     nt = sum(totals.values())
     def _b(v): return f'\\textbf{{{v}}}'
     total_line = (
@@ -908,19 +936,19 @@ def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -
         f' & {_b(totals["TP"])} & {_b(totals["FN"])}'
         f' & {_b(totals["FP"])} & {_b(totals["TN"])}'
         f' & {_b(nt)}'
-        f' & {_b(_recall(totals))} & {_b(_f1(totals))} \\\\'
+        f' & {_b(_accuracy(totals))} & {_b(_recall(totals))} & {_b(_f1(totals))} \\\\'
     )
 
     lines = [
         '% Auto-generated by test_runner.py -- do not edit by hand',
         r'\begin{table}[t]',
         r'\centering',
-        r'\caption{Confusion matrix for TSan detection by test file.}',
+        r'\caption{Confusion matrix for TSan detection by test suite.}',
         r'\label{tab:confusion}',
         f'\\begin{{tabular}}{{{col_spec}}}',
         r'\toprule',
         r'\textbf{Suite} & \textbf{TP} & \textbf{FN} & \textbf{FP} & \textbf{TN}'
-        r' & \textbf{Total} & \textbf{Recall} & \textbf{F1} \\',
+        r' & \textbf{Total} & \textbf{Accuracy} & \textbf{Recall} & \textbf{F1} \\',
         r'\midrule',
     ]
     lines += data_lines
@@ -940,6 +968,18 @@ def write_latex_confusion_matrix(results: List[TestResult], output_path: Path) -
 def main():
     parser = argparse.ArgumentParser(
         description="Run concurrency validation tests for Alecci programs"
+    )
+    parser.add_argument(
+        '--from-csv',
+        type=Path,
+        nargs='+',
+        metavar='CSV',
+        default=None,
+        help=(
+            'Skip running tests; load results from one or more existing CSV files '
+            'and regenerate LaTeX outputs.  Multiple files are merged (useful for '
+            'combining labeled and SCTBench results into a single confusion matrix).'
+        ),
     )
     test_dir_arg = parser.add_argument(
         '--test-dir',
@@ -1008,15 +1048,44 @@ def main():
         argcomplete.autocomplete(parser)
 
     args = parser.parse_args()
-    
+
+    results_dir = Path(__file__).parent / 'results'
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # --from-csv mode: load existing CSVs, regenerate LaTeX, then exit.
+    # ------------------------------------------------------------------
+    if args.from_csv:
+        all_results: List[CsvResult] = []
+        for csv_path in args.from_csv:
+            csv_path = csv_path.resolve()
+            print(f"Loading results from: {csv_path}")
+            all_results.extend(load_results_from_csv(csv_path))
+        print(f"Loaded {len(all_results)} result(s) total")
+
+        has_typed_labels = any(
+            set(r.expected_issues) - {'none', 'bug'}
+            for r in all_results
+            if r.status != 'COMPILE_FAIL'
+        )
+        if has_typed_labels:
+            latex_path = args.output_latex or results_dir / 'tsan_results_table.tex'
+            write_latex_table(all_results, latex_path)
+
+        latex_cm_path = args.output_latex_cm or results_dir / 'confusion_matrix.tex'
+        write_latex_confusion_matrix(all_results, latex_cm_path)
+        return
+
+    # ------------------------------------------------------------------
+    # Normal mode: discover, compile, run tests, then write CSV + LaTeX.
+    # ------------------------------------------------------------------
+
     # Setup paths
     test_dir = args.test_dir.resolve()
     bin_dir = Path(__file__).parent / 'bin'
-    results_dir = Path(__file__).parent / 'results'
-    
+
     # Ensure directories exist
     bin_dir.mkdir(parents=True, exist_ok=True)
-    results_dir.mkdir(parents=True, exist_ok=True)
 
     # Resolve output directory for program stdout
     output_dir: Optional[Path] = None
@@ -1028,15 +1097,15 @@ def main():
             output_dir = args.save_output.resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"Program outputs will be saved to: {output_dir}")
-    
+
     # Discover test cases
     print(f"Discovering test cases in: {test_dir}")
     test_cases = discover_test_cases(test_dir)
-    
+
     if not test_cases:
         print(f"No test cases found in {test_dir}")
         sys.exit(1)
-    
+
     print(f"Found {len(test_cases)} test case(s)")
     print(f"Running with {args.jobs} parallel job(s)")
     if args.verbose and args.jobs > 1:
@@ -1082,14 +1151,14 @@ def main():
             future.result()  # re-raise any exception
 
     results: List[TestResult] = ordered_results  # type: ignore[assignment]
-    
+
     # Generate output CSV path if not specified
     if args.output_csv:
         output_csv = args.output_csv
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_csv = results_dir / f"concurrency_test_results_{timestamp}.csv"
-    
+
     # Write main CSV report
     write_csv_report(results, output_csv, group_by_benchmark=args.group_by_benchmark)
 
@@ -1113,9 +1182,9 @@ def main():
         latex_path = args.output_latex or results_dir / 'tsan_results_table.tex'
         write_latex_table(results, latex_path)
 
-    # Write LaTeX confusion matrix
-    latex_cm_path = args.output_latex_cm or results_dir / 'tsan_confusion_matrix.tex'
-    write_latex_confusion_matrix(results, latex_cm_path)
+    # Write LaTeX confusion matrix (single-run mode; combined via --from-csv)
+    if args.output_latex_cm:
+        write_latex_confusion_matrix(results, args.output_latex_cm)
 
     # ------------------------------------------------------------------ summary
     from collections import defaultdict

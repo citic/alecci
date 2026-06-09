@@ -7,7 +7,7 @@ This directory contains Alecci translations of a subset of the C benchmarks.
 
 **Source:** [Github](https://github.com/llnl/dataracebench/tree/master)   
 **Total C/C++ benchmarks in DRB:** 183 (plus 168 Fortran, not translated)  
-**Translated to Alecci:** 58 benchmarks (33 — no race, 25 — race)
+**Translated to Alecci:** 60 benchmarks (34 — race, 26 — no race)
 
 ---
 
@@ -63,7 +63,7 @@ DRB benchmarks are labeled by race category:
 | `DRB075-getthreadnum-orig-yes.ale` | DRB075-getthreadnum-orig-yes.c | Shared variable written with thread ID |
 | `DRB169-missingsyncwrite-orig-yes.ale` | DRB169-missingsyncwrite-orig-yes.c | Unprotected write then read |
 
-### Y2 — Missing Private/Reduction Variable (8 of 19 translated)
+### Y2 — Missing Private/Reduction Variable (9 of 19 translated)
 
 | Alecci file | DRB source | Pattern |
 |---|---|---|
@@ -75,6 +75,7 @@ DRB benchmarks are labeled by race category:
 | `DRB023-reductionmissing-var-yes.ale` | DRB023-reductionmissing-var-yes.c | Reduction variant |
 | `DRB028-privatemissing-orig-yes.ale` | DRB028-taskdependmissing-orig-yes.c | Missing private (adapted from task) |
 | `DRB111-linearmissing-orig-yes.ale` | DRB111-linearmissing-orig-yes.c | Linear clause missing, shared pointer |
+| `DRB191-critical-section2-yes.ale` | DRB191-critical-section2-yes.c | Producer-consumer with named critical sections A/B — different mutexes allow concurrent `size` modifications |
 
 ### Y3 — Missing Synchronization (3 of 22 translated)
 
@@ -112,7 +113,7 @@ DRB benchmarks are labeled by race category:
 | `DRB121-reduction-orig-no.ale` | DRB121-reduction-orig-no.c | Proper reduction with mutex |
 | `DRB170-nestedloops-orig-no.ale` | DRB170-nestedloops-orig-no.c | Nested loops, no race |
 
-### N3 — Proper Synchronization (4 of 21 translated)
+### N3 — Proper Synchronization (5 of 21 translated)
 
 | Alecci file | DRB source | Pattern |
 |---|---|---|
@@ -120,6 +121,7 @@ DRB benchmarks are labeled by race category:
 | `DRB120-barrier-orig-no.ale` | DRB120-barrier-orig-no.c | Barrier synchronisation |
 | `DRB141-reduction-barrier-orig-no.ale` | DRB141-reduction-barrier-orig-no.c | Barrier before reduction read |
 | `DRB172-critical2-orig-no.ale` | DRB172-critical2-orig-no.c | Critical section protecting shared update |
+| `DRB190-critical-section2-no.ale` | DRB190-critical-section2-no.c | Producer-consumer with a single shared `atomic do` serialising both sides — no concurrent `size` modification |
 
 ### N7 — Complex Numerical Kernels (3 of 7 translated)
 
@@ -239,7 +241,7 @@ DRB benchmarks are labeled by race category:
 | Category | Total C | Translated | Skipped | Skip reason (primary) |
 |---|---|---|---|---|
 | Y1 | 31 | 22 | 9 | SIMD, GPU, task, complex dependence |
-| Y2 | 19 | 8 | 11 | threadprivate, C++, dynamic storage, task |
+| Y2 | 19 | 9 | 10 | threadprivate, C++, dynamic storage, task |
 | Y3 | 22 | 3 | 19 | sections, task, GPU, ordered, atomic |
 | Y4 | 1 | 0 | 1 | SIMD |
 | Y5 | 1 | 0 | 1 | GPU |
@@ -247,9 +249,9 @@ DRB benchmarks are labeled by race category:
 | Y7 | 4 | 0 | 4 | Pointer indexing |
 | N1 | 28 | 8 | 20 | SIMD, GPU, task, sections, C++ |
 | N2 | 23 | 10 | 13 | polyhedral benchmarks, threadprivate, task, GPU |
-| N3 | 21 | 4 | 17 | task, sections, GPU, ordered |
+| N3 | 21 | 5 | 16 | task, sections, GPU, ordered |
 | N4 | 3 | 0 | 3 | SIMD |
 | N5 | 1 | 0 | 1 | GPU |
 | N6 | 9 | 0 | 9 | Pointer arithmetic |
 | N7 | 7 | 3 | 4 | polyhedral tiling, pointer indexing |
-| **Total** | **183** | **58** | **125** | |
+| **Total** | **183** | **60** | **123** | |

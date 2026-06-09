@@ -7,7 +7,7 @@ GitHub. Programs are labeled by whether they contain a data race.
 
 **Source:** [Github](https://github.com/tehranixyz/DeepRace)  
 **Total source files:** 180 C programs across 3 categories × 2 labels  
-**Translated to Alecci:** 89 benchmarks (46 — no race, 43 — race)
+**Translated to Alecci:** 96 benchmarks (50 — no race, 46 — race)
 
 ---
 
@@ -16,8 +16,8 @@ GitHub. Programs are labeled by whether they contain a data race.
 ```
 DeepRace/
 ├── OMP_Critical/          OpenMP programs using #pragma omp critical
-│   ├── with_datarace/     (30 sources → 21 translated)
-│   └── without_datarace/  (30 sources → 16 translated)
+│   ├── with_datarace/     (30 sources → 24 translated)
+│   └── without_datarace/  (30 sources → 20 translated)
 ├── OMP_Private/           OpenMP programs with shared/private variables
 │   ├── with_datarace/     (30 sources → 9 translated)
 │   └── without_datarace/  (30 sources → 14 translated)
@@ -30,7 +30,7 @@ DeepRace/
 
 ## Translated Benchmarks
 
-### OMP_Critical / with_datarace — 21 translated
+### OMP_Critical / with_datarace — 24 translated
 
 | Alecci file | Source file | Race pattern |
 |---|---|---|
@@ -56,8 +56,11 @@ DeepRace/
 | `sum-private-nolock-yes.ale` | mapexpCritical_-_main.c | `total := total + private_sum` no lock |
 | `matrix-mul-k-race-yes.ale` | 104_-_main.c | Matrix multiply a[4×2]×b[2×6] (1D-flattened), shared inner-loop `k` races across 3 threads |
 | `kmeans-race-yes.ale` | eo_-_main.c | K-means (2 centroids, 10 points); float arrays flattened; sum1/sum2/len1/len2 raced without critical |
+| `parallel-increment-yes.ale` | 05_omp_crit_-_main.c | 4 threads each increment shared `x` once without protection; write-vs-write race |
+| `parallel-max-nolock-yes.ale` | omp12_-_main.c | Parallel max over fixed array; check and update are separate (TOCTOU), no atomic — race on `max_val` |
+| `shared-local-accumulate-yes.ale` | datasharing_-_main.c | Each thread accumulates locally then merges into shared `m` without a critical — race on merge |
 
-### OMP_Critical / without_datarace — 16 translated
+### OMP_Critical / without_datarace — 20 translated
 
 | Alecci file | Source file | Synchronisation pattern |
 |---|---|---|
@@ -77,6 +80,10 @@ DeepRace/
 | `reduction-mutex-no.ale` | sum_padded_-_main.c | Padded reduction with mutex |
 | `fibonacci-critical-no.ale` | fibo_-_main.c | Fibonacci via mutex-serialised while loop; first thread runs all n iterations, others exit immediately; stdin for n |
 | `histogramaSerie_-_main.ale` | histogramaSerie_-_main.c | Parallel histogram of 100×100 matrix (values 0-255); each bucket increment under mutex; hmin/imin printed |
+| `hello-atomic-no.ale` | helloworld_-_main.c | 2 threads each print their ID inside an `atomic do` block; no shared mutable state beyond the atomic serialisation |
+| `parallel-increment-atomic-no.ale` | 05_omp_crit_-_main.c | 4 threads increment shared `x` once each, protected by `atomic do`; no race |
+| `parallel-max-atomic-no.ale` | omp12_-_main.c | Parallel max over fixed array; `atomic do` covers both check and update — no TOCTOU |
+| `shared-local-accumulate-no.ale` | datasharing_-_main.c | Each thread accumulates locally then merges into shared `m` via `atomic do`; no race |
 
 ### OMP_Private / with_datarace — 9 translated
 
@@ -168,14 +175,9 @@ The original `zuoye3.c` contains a logical deadlock: if the writer thread advanc
 
 ### Reasons for skipping
 
-**1. Two-dimensional arrays** — 2D arrays can be flattened: `a[i][j]` becomes `a[i*cols + j]` in a 1D Alecci array. This unlocked several previously skipped benchmarks. The remaining skips in this category are blocked by a secondary reason (external functions, complex/buggy algorithms, or runtime support gaps like `clock_t`).
+**1. Two-dimensional arrays** — 2D arrays can be flattened: `a[i][j]` becomes `a[i*cols + j]` in a 1D Alecci array. Remaining skips in this category are blocked by a secondary reason (external functions, complex/buggy algorithms, or runtime support gaps like `clock_t`).
 
-Previously skipped, now translated via 1D flattening:
-- `OMP_Critical/with_datarace/104_-_main.c` → `matrix-mul-k-race-yes.ale` (a[4×2]×b[2×6]=c[4×6])
-- `OMP_Critical/with_datarace/eo_-_main.c` → `kmeans-race-yes.ale` (float mat[10][2] + pow + sqrt)
-- `OMP_Private/with_datarace/ex6_-_main.c` → `matrix-add-shared-yes.ale` (A[6×10]+B[6×10]=C[6×10])
-
-Still skipped (secondary blocker):
+Skipped (secondary blocker):
 - `OMP_Critical/with_datarace`: `c_neighbor_-_main.c` (gettimeofday struct + heavy init loop), `7_-_main.c` (undefined helpers `populate_points`/`get_distance`; stdin)
 - `OMP_Critical/without_datarace`: `exercise_4_-_main.c` (triple nested init + gettimeofday struct), `1braj_-_main.c` (uninitialized `k` makes inner while dead; rand(); clock_t)
 - `OMP_Private/with_datarace`: `sum2matrix_-_main.c` (same race pattern as ex6, not adding), `mmOMP_-_main.c` (same shared-tid race pattern as existing benchmarks), `stencil9_-_main.c` (fabs/fmax/clock_gettime)
@@ -191,35 +193,23 @@ Affected files (examples):
 - `POSIX/with_datarace`: linked list files (`01_condition.c`, `01_job-queue-mutex.c`, `threads_mutex.c`, etc.) — all require `malloc`+`*next` chaining
 - `POSIX/without_datarace`: multiple files using `node *`, `job_t *`, etc. — same
 
-**3. Condition variables** — Alecci now supports `condvar()`, `cond_wait(cv, mutex)`, `cond_signal(cv)`, and `cond_broadcast(cv)`. Most POSIX condition variable programs can now be translated. The remaining skips in this category are due to linked lists or structs (see reason 2), not condition variables themselves.
+**3. Condition variables** — Alecci supports `condvar()`, `cond_wait(cv, mutex)`, `cond_signal(cv)`, and `cond_broadcast(cv)`. Remaining skips in this category are due to linked lists or structs (see reason 2), not condition variables.
 
-Previously skipped, now translated:
-- `POSIX/with_datarace`: `130024902_problema_canibais.c`, `TwoThreadLoop.c`, `universidad.c`, `wait4mult.c`, `zuoye3.c`, `threads_cond_mutex.c`
-- `POSIX/without_datarace`: `05bounded.c`, `06_thread_cond_var.c`, `11-14UseConditionVariable.c`, `ThreadSynCondition.c`, `ping_pong.c`, `x.c`, `thread_with_conditions.c`
-
-Still skipped (linked list / struct dependency, not condition variable):
+Skipped (linked list / struct dependency):
 - `POSIX/with_datarace`: `01_condition.c` (linked list with struct Node), `zad8.c` (linked list monitor)
 - `POSIX/without_datarace`: `02_condition_modify.c` (linked list with struct Node), `active.c` (declares condvar but uses busy-wait; condition variable unused), `timedwait.c` (uses `pthread_cond_timedwait` with `clock_gettime` — no Alecci equivalent)
 
-**4. External math functions** — Alecci provides `sqrt(x)`, `abs(x)` (int and float), `pow(x, y)` (int and float), and `rand([max])`. The functions still missing are `sin`, `cos`, `log`, `log10`, `fmax`, `floor`.
+**4. External math functions** — Alecci provides `sqrt(x)`, `abs(x)` (int and float), `pow(x, y)` (int and float), and `rand([max])`. Missing: `sin`, `cos`, `log`, `log10`, `fmax`, `floor`.
 
-Previously skipped, now translated:
-- `9.ved_-_main.c` → `digit-square-pow-no.ale` (uses `pow(10, nj)` for place-value arithmetic)
-- `eo_-_main.c` → `kmeans-race-yes.ale` (pow + sqrt + float arrays, all now supported)
-
-Still blocked:
+Skipped:
 - `ziggurat_openmp_original_-_test01.c` (complex random number generators — algorithm too complex)
 - `HW3ParallelCorrelationFunc2_2_-_main.c` (`log10`, `cos`, `sin`, file I/O — beyond scope)
 - `fft_openmp_-_main.c` (complex FFT — trig functions)
 - `1braj_-_main.c` (n-body: rand() for init; clock_t for timing; complex nested loop structure)
 
-**5. Interactive stdin** — Alecci supports `scan \`prompt {var}\`` and the test suite pipes `stdin_file` to the program.
+**5. Interactive stdin** — Alecci supports `scan \`prompt {var}\`` and the test suite pipes `stdin_file` to the program. Remaining skips have secondary blockers beyond stdin.
 
-Previously skipped, now translated:
-- `fibo_-_main.c` → `fibonacci-critical-no.ale` (reads n for fibonacci length)
-- `9.ved_-_main.c` → `digit-square-pow-no.ale` (reads N to compute N²)
-
-Still blocked (stdin now available but secondary blockers remain):
+Skipped:
 - `11_-_main.c` (uses `fib()` function not defined in the file)
 - `11MultiThreadedFibonacciSeries_-_main.c` (complex nested parallel structure)
 - `concurrent_prims_-_main.c` (Prim's MST — complex linked list + stdin)
@@ -278,13 +268,13 @@ Affected files:
 
 | Subdirectory | Source files | Translated | Skipped |
 |---|---|---|---|
-| OMP_Critical/with_datarace | 30 | 21 | 9 |
-| OMP_Critical/without_datarace | 30 | 16 | 14 |
+| OMP_Critical/with_datarace | 30 | 24 | 6 |
+| OMP_Critical/without_datarace | 30 | 20 | 10 |
 | OMP_Private/with_datarace | 30 | 9 | 21 |
 | OMP_Private/without_datarace | 30 | 14 | 16 |
 | POSIX_Lock_Primitives/with_datarace | 30 | 13 | 17 |
 | POSIX_Lock_Primitives/without_datarace | 30 | 16 | 14 |
-| **Total** | **180** | **89** | **91** |
+| **Total** | **180** | **96** | **84** |
 
 ### Primary skip reasons by subdirectory
 
