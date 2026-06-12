@@ -617,7 +617,7 @@ class CodeGenerator:
         return method(node)
 
     def generic_visit(self, node: Dict[str, Any]) -> None:
-        raise Exception(f"No visit_{node.get('type')} method")
+        raise AleError(f"unsupported construct '{node.get('type')}'", node)
     
     def visit_program(self, node: Dict[str, Any]) -> None:
         # Two-pass compilation to handle circular dependencies
@@ -815,7 +815,7 @@ class CodeGenerator:
         """Declare a shared array global (all element types)."""
         args = value_node.get('arguments', [])
         if len(args) < 2:
-            raise Exception("Array function requires at least 2 arguments: size and element_type/init_value")
+            raise AleError("'array()' requires at least 2 arguments: size and initial value", value_node)
 
         array_size = self._resolve_shared_array_size(args[0])
 
@@ -1315,9 +1315,9 @@ class CodeGenerator:
         assignment_op = init.get('assignment_op')
         if assignment_op is not None:
             if is_constant and assignment_op != '=':
-                raise Exception(f"Constants must use '=' not '{assignment_op}' in declaration of '{name}'.")
+                raise AleError(f"constant '{name}' must be declared with '=' not ':='", node)
             if not is_constant and assignment_op != ':=':
-                raise Exception(f"Mutable variables must use ':=' not '{assignment_op}' in declaration of '{name}'.")
+                raise AleError(f"mutable variable '{name}' must be declared with ':=' not '='", node)
 
         init_value_expr = init.get('value')
         var_type = init.get('var_type')
@@ -1411,7 +1411,7 @@ class CodeGenerator:
 
         if var_type == 'thread_array':
             if evaluated_value is None:
-                raise Exception(f"thread_array '{name}' must be initialised with create_threads()")
+                raise AleError(f"thread array '{name}' must be initialised with create_threads()", node)
             self.locals[name] = (evaluated_value, 'thread_array', is_constant)
             # Store the thread count so join_threads can find it by variable name
             if isinstance(init_value_expr, dict) and init_value_expr.get('name') == 'create_threads':
@@ -1473,7 +1473,7 @@ class CodeGenerator:
                 self.semantic_error(f"undefined variable '{target}' in assignment", node)
             ptr, dtype, is_constant = entry
             if is_constant:
-                raise Exception(f"Cannot assign to constant variable '{target}'.")
+                raise AleError(f"cannot assign to constant '{target}'", node)
 
             if dtype == 'variant':
                 if hasattr(value, 'type'):
@@ -1506,10 +1506,10 @@ class CodeGenerator:
 
             entry = self.get_variable(array_name)
             if entry is None:
-                raise Exception(f"Undefined array in assignment: {array_name}")
+                raise AleError(f"undefined array '{array_name}'", node)
             array_ptr, array_type, is_constant = entry
             if is_constant:
-                raise Exception(f"Cannot assign to constant array '{array_name}'.")
+                raise AleError(f"cannot assign to constant array '{array_name}'", node)
 
             # Unwrap variant index
             if hasattr(index, 'type'):
@@ -1559,7 +1559,7 @@ class CodeGenerator:
                 self.semantic_error(f"undefined variable '{obj_name}'", node)
             obj_ptr, dtype, is_constant = entry
             if is_constant:
-                raise Exception(f"Cannot assign to field of const record '{obj_name}'.")
+                raise AleError(f"cannot assign to field of constant record '{obj_name}'", node)
             if not is_record_type(dtype):
                 self.semantic_error(f"'{obj_name}' is not a record (type: '{dtype}')", node)
             idx = get_record_field_index(dtype, field_name)
@@ -1577,7 +1577,7 @@ class CodeGenerator:
                 self.insert_yield()
 
         else:
-            raise Exception(f"Unsupported assignment target type: {target}")
+            raise AleError(f"unsupported assignment target", node)
 
     def visit_literal(self, node: Dict[str, Any]) -> ir.Constant:
         debug_print(f"DEBUG: visit_literal - Processing node: {node}")
@@ -1603,7 +1603,7 @@ class CodeGenerator:
                 str_global.global_constant = True
                 str_global.initializer = ir.Constant(str_type, str_bytes)
             return self.builder.bitcast(str_global, ir.IntType(8).as_pointer())
-        raise Exception(f"Unsupported literal type: {type(v)} with value {v}")
+        raise AleError(f"unsupported literal value '{v}'", node)
 
     def visit_binary_op(self, node: Dict[str, Any]) -> ir.Value:
         op = node['op']
@@ -1690,9 +1690,9 @@ class CodeGenerator:
             if hasattr(right, 'type') and isinstance(right.type, ir.IntType) and right.type.width < 32:
                 right = self.builder.sext(right, ir.IntType(32))
             if hasattr(left, 'type') and left.type != right.type:
-                raise Exception(f"Type mismatch in comparison: {left.type} vs {right.type}")
+                raise AleError(f"type mismatch in comparison: {left.type} vs {right.type}", node)
             if hasattr(left, 'type') and isinstance(left.type, ir.PointerType):
-                raise Exception("Direct pointer comparison is not supported.")
+                raise AleError("pointer comparison is not supported", node)
             cmp = (self.builder.fcmp_ordered(pred, left, right)
                    if operation_type == 'float'
                    else self.builder.icmp_signed(pred, left, right))
@@ -1708,7 +1708,7 @@ class CodeGenerator:
             comb = self.builder.and_(lb, rb) if op == 'and' else self.builder.or_(lb, rb)
             return self.builder.zext(comb, ir.IntType(32))
 
-        raise Exception(f"Unsupported operator: {op}")
+        raise AleError(f"unsupported operator '{op}'", node)
 
     def visit_unary_op(self, node: Dict[str, Any]) -> ir.Value:
         """Handle unary operators like unary minus, logical NOT, bitwise NOT"""
@@ -1730,9 +1730,9 @@ class CodeGenerator:
                     zero = ir.Constant(operand.type, 0)
                     return self.builder.sub(zero, operand)
                 else:
-                    raise Exception(f"Unsupported type for unary minus: {operand.type}")
+                    raise AleError(f"unsupported type for unary minus: {operand.type}", node)
             else:
-                raise Exception("Operand for unary minus has no type information")
+                raise AleError("operand for unary minus has no type information", node)
         elif op == 'not':
             # Logical NOT: not x = (x == 0)
             # Returns 1 if operand is 0, returns 0 otherwise
@@ -1741,7 +1741,7 @@ class CodeGenerator:
                 result_bool = self.builder.icmp_signed('==', operand, zero)
                 return self.builder.zext(result_bool, ir.IntType(32))
             else:
-                raise Exception(f"Unsupported type for logical NOT: {operand.type if hasattr(operand, 'type') else 'unknown'}")
+                raise AleError("'not' requires an integer operand", node)
         elif op == '~':
             # Bitwise NOT: ~x
             if hasattr(operand, 'type') and isinstance(operand.type, ir.IntType):
@@ -1749,9 +1749,9 @@ class CodeGenerator:
                 all_ones = ir.Constant(operand.type, -1)
                 return self.builder.xor(operand, all_ones)
             else:
-                raise Exception(f"Unsupported type for bitwise NOT: {operand.type if hasattr(operand, 'type') else 'unknown'}")
+                raise AleError("'~' requires an integer operand", node)
         else:
-            raise Exception(f"Unsupported unary operator: {op}")
+            raise AleError(f"unsupported unary operator '{op}'", node)
 
     def visit_body(self, node: List[Dict[str, Any]]) -> None:
         self.visit(node)
@@ -1828,7 +1828,7 @@ class CodeGenerator:
 
     def visit_break(self, node: Dict[str, Any]) -> None:
         if not self.loop_exit_stack:
-            raise Exception("'break' used outside of a loop")
+            raise AleError("'break' used outside of a loop", node)
         self.builder.branch(self.loop_exit_stack[-1])
         # Append an unreachable block so the builder has somewhere to emit
         # any subsequent instructions without corrupting the IR
@@ -2185,7 +2185,7 @@ class CodeGenerator:
         import re
         fmt = node.get('format')
         if not isinstance(fmt, str):
-            raise Exception(f"SCAN expects a formatted string, got: {fmt}")
+            raise AleError("scan format must be a string literal", node)
 
         # Extract template between backticks if present
         template = fmt
@@ -2507,12 +2507,12 @@ class CodeGenerator:
                 for i in range(1, len(node['arguments']))]
 
         if target_func not in self.funcs:
-            raise Exception(f"Undefined function: {target_func}")
+            raise AleError(f"call to undefined procedure '{target_func}'", node)
         target_func_obj = self.funcs[target_func]
 
         if len(target_func_obj.args) != len(args):
-            raise Exception(f"Function '{target_func}' expects {len(target_func_obj.args)} arguments, "
-                            f"but got {len(args)}")
+            raise AleError(f"'{target_func}' expects {len(target_func_obj.args)} argument(s), "
+                           f"got {len(args)}", node)
 
         from .base_types import get_variant_type
         variant_ty = get_variant_type()
@@ -2556,7 +2556,7 @@ class CodeGenerator:
                 threads_ptr, *_ = self.globals[threads_name]
                 debug_print(f"DEBUG: join_threads - global '{threads_name}'")
             else:
-                raise Exception(f"Undefined thread array variable: {threads_name}")
+                raise AleError(f"undefined thread array '{threads_name}'", node)
         else:
             threads_ptr = self.visit(threads_arg)
 
@@ -2578,7 +2578,7 @@ class CodeGenerator:
         """Handle rand([max]) or rand(min, max) — thread-safe, OS-seeded."""
         args = node.get('arguments', [])
         if len(args) not in (0, 1, 2):
-            raise Exception(f"rand() requires 0, 1 or 2 arguments, got {len(args)}")
+            raise AleError(f"rand() requires 0, 1 or 2 arguments, got {len(args)}", node)
 
         i32 = ir.IntType(32)
         i64 = ir.IntType(64)
@@ -2679,7 +2679,7 @@ class CodeGenerator:
         def ensure_i32(val: ir.Value) -> ir.Value:
             v = self._auto_extract_value(val, 'int')
             if not hasattr(v, 'type') or not isinstance(v.type, ir.IntType):
-                raise Exception("rand() argument must be an integer expression")
+                raise AleError("rand() argument must be an integer expression", node)
             if v.type.width == 32:
                 return v
             return self.builder.zext(v, i32) if v.type.width < 32 else self.builder.trunc(v, i32)
@@ -2714,16 +2714,16 @@ class CodeGenerator:
             target_func = target_func_arg['value'] if isinstance(target_func_arg, dict) else target_func_arg
             thread_count = self.visit(thread_count_arg)
             if target_func not in self.funcs:
-                raise Exception(f"Undefined function: {target_func}")
+                raise AleError(f"call to undefined procedure '{target_func}'", node)
             target_func_obj = self.funcs[target_func]
             if len(target_func_obj.args) == 0:
-                raise Exception(f"Function '{target_func}' called by create_threads must have at least one parameter (thread_number)")
+                raise AleError(f"procedure '{target_func}' must have at least one parameter when used with create_threads()", node)
             return create_threads(self.builder, self.module, thread_count, target_func_obj)
         elif func_name == 'create_thread':
             return self._handle_create_thread(node)
         elif func_name == 'join_thread':
             if len(node['arguments']) != 1:
-                raise Exception(f"join_thread() requires exactly 1 argument (thread handle), got {len(node['arguments'])}")
+                raise AleError(f"join_thread() requires exactly 1 argument (thread handle), got {len(node['arguments'])}", node)
             thread_arg = self.visit(node['arguments'][0])
             if hasattr(thread_arg, 'type'):
                 from .base_types import get_variant_type
@@ -2745,7 +2745,7 @@ class CodeGenerator:
                 )
             sem_ptr = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
             if not hasattr(sem_ptr, 'type') or not isinstance(sem_ptr.type, ir.PointerType):
-                raise Exception(f"Semaphore argument to {func_name}() is not a pointer.")
+                raise AleError(f"argument to {func_name}() must be a semaphore variable", node)
             c_name = 'sem_wait' if func_name == 'wait' else 'sem_post'
             fn = self._declare_external_fn(c_name, ir.IntType(32), [opaque_ty])
             if len(node['arguments']) >= 2:
@@ -2755,11 +2755,11 @@ class CodeGenerator:
         elif func_name == 'barrier_wait':
             # Barrier wait — maps to pthread_barrier_wait
             if len(node['arguments']) != 1:
-                raise Exception(f"barrier_wait() requires exactly 1 argument (barrier), got {len(node['arguments'])}")
+                raise AleError(f"barrier_wait() requires exactly 1 argument (barrier), got {len(node['arguments'])}", node)
             opaque_ty = ir.IntType(8).as_pointer()
             barrier_ptr = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
             if not hasattr(barrier_ptr, 'type') or not isinstance(barrier_ptr.type, ir.PointerType):
-                raise Exception(f"barrier_wait() argument is not a pointer. Got type: {getattr(barrier_ptr, 'type', type(barrier_ptr))}")
+                raise AleError("argument to barrier_wait() must be a barrier variable", node)
             debug_print(f"DEBUG: barrier_wait - barrier_ptr: {barrier_ptr}")
             fn = self._declare_external_fn('pthread_barrier_wait', ir.IntType(32), [opaque_ty])
             return self.builder.call(fn, [barrier_ptr])
@@ -2767,21 +2767,21 @@ class CodeGenerator:
             opaque_ty = ir.IntType(8).as_pointer()
             mutex_ptr = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
             if not hasattr(mutex_ptr, 'type') or not isinstance(mutex_ptr.type, ir.PointerType):
-                raise Exception(f"Mutex argument to {func_name}() is not a pointer.")
+                raise AleError(f"argument to {func_name}() must be a mutex variable", node)
             c_name = 'pthread_mutex_lock' if func_name == 'lock' else 'pthread_mutex_unlock'
             fn = self._declare_external_fn(c_name, ir.IntType(32), [opaque_ty])
             return self.builder.call(fn, [mutex_ptr])
         elif func_name == 'cond_wait':
             # cond_wait(cond, mutex) → pthread_cond_wait(cond_ptr, mutex_ptr)
             if len(node['arguments']) != 2:
-                raise Exception("cond_wait() requires exactly 2 arguments: cond_wait(cond, mutex)")
+                raise AleError("cond_wait() requires exactly 2 arguments: cond_wait(cond, mutex)", node)
             opaque_ty = ir.IntType(8).as_pointer()
             cond_ptr  = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
             mutex_ptr = self._resolve_arg_ptr(node['arguments'][1], opaque_ty)
             if not hasattr(cond_ptr, 'type') or not isinstance(cond_ptr.type, ir.PointerType):
-                raise Exception("cond_wait() first argument (cond) is not a pointer.")
+                raise AleError("first argument to cond_wait() must be a condvar variable", node)
             if not hasattr(mutex_ptr, 'type') or not isinstance(mutex_ptr.type, ir.PointerType):
-                raise Exception("cond_wait() second argument (mutex) is not a pointer.")
+                raise AleError("second argument to cond_wait() must be a mutex variable", node)
             fn = self._declare_external_fn('pthread_cond_wait', ir.IntType(32),
                                            [opaque_ty, opaque_ty])
             return self.builder.call(fn, [cond_ptr, mutex_ptr])
@@ -2789,11 +2789,11 @@ class CodeGenerator:
             # cond_signal(cond) → pthread_cond_signal(cond_ptr)
             # cond_broadcast(cond) → pthread_cond_broadcast(cond_ptr)
             if len(node['arguments']) != 1:
-                raise Exception(f"{func_name}() requires exactly 1 argument (condvar)")
+                raise AleError(f"{func_name}() requires exactly 1 argument (condvar), got {len(node['arguments'])}", node)
             opaque_ty = ir.IntType(8).as_pointer()
             cond_ptr  = self._resolve_arg_ptr(node['arguments'][0], opaque_ty)
             if not hasattr(cond_ptr, 'type') or not isinstance(cond_ptr.type, ir.PointerType):
-                raise Exception(f"{func_name}() argument is not a pointer.")
+                raise AleError(f"argument to {func_name}() must be a condvar variable", node)
             c_name = 'pthread_cond_signal' if func_name == 'cond_signal' else 'pthread_cond_broadcast'
             fn = self._declare_external_fn(c_name, ir.IntType(32), [opaque_ty])
             return self.builder.call(fn, [cond_ptr])
@@ -2803,7 +2803,7 @@ class CodeGenerator:
             # Handle array() function calls for local arrays
             args = node.get('arguments', [])
             if len(args) < 2:
-                raise Exception(f"Array function requires at least 2 arguments: size and element_type/init_value")
+                raise AleError("'array()' requires at least 2 arguments: size and element type", node)
             
             # Get array size
             size_arg = args[0]
@@ -2812,7 +2812,7 @@ class CodeGenerator:
             else:
                 array_size = self.visit(size_arg)
                 if not isinstance(array_size, ir.Constant):
-                    raise Exception(f"Array size must be a constant value for local arrays")
+                    raise AleError("array size must be a constant integer", node)
                 array_size = array_size.constant
             
             # Get element type/initialization
@@ -2850,7 +2850,7 @@ class CodeGenerator:
         elif func_name == 'int':
             # Handle int() type conversion function
             if len(node['arguments']) != 1:
-                raise Exception(f"int() function requires exactly 1 argument, got {len(node['arguments'])}")
+                raise AleError(f"int() requires exactly 1 argument, got {len(node['arguments'])}", node)
             
             arg = self.visit(node['arguments'][0])
             debug_print(f"DEBUG: int() conversion - arg type: {getattr(arg, 'type', type(arg))}, value: {arg}")
@@ -2888,7 +2888,7 @@ class CodeGenerator:
                 elif variant_type == 'null':
                     func_ty = ir.FunctionType(variant_ty, [])
                 else:
-                    raise Exception(f"Unknown variant type: {variant_type}")
+                    raise AleError(f"unknown variant type '{variant_type}'", node)
                 runtime_func = ir.Function(self.module, func_ty, name=func_name)
             
             # Process arguments and call function
@@ -2898,13 +2898,13 @@ class CodeGenerator:
                 arg_val = self.visit(args[0])
                 return self.builder.call(runtime_func, [arg_val])
             else:
-                raise Exception(f"{func_name} requires exactly 1 argument, got {len(args)}")
+                raise AleError(f"{func_name}() requires exactly 1 argument, got {len(args)}", node)
         # Variant type checking functions
         elif func_name.startswith('variant_is_'):
             # Handle variant_is_* functions
             args = node.get('arguments', [])
             if len(args) != 1:
-                raise Exception(f"{func_name} requires exactly 1 argument, got {len(args)}")
+                raise AleError(f"{func_name}() requires exactly 1 argument, got {len(args)}", node)
                 
             variant_arg = self.visit(args[0])
             
@@ -2923,10 +2923,10 @@ class CodeGenerator:
             get_type = func_name[12:]  # Remove 'variant_get_' prefix
             args = node.get('arguments', [])
             if len(args) != 1:
-                raise Exception(f"{func_name} requires exactly 1 argument, got {len(args)}")
-                
+                raise AleError(f"{func_name}() requires exactly 1 argument, got {len(args)}", node)
+
             variant_arg = self.visit(args[0])
-            
+
             # Get or create the runtime function
             runtime_func = self.module.globals.get(func_name)
             if not runtime_func:
@@ -2939,7 +2939,7 @@ class CodeGenerator:
                 elif get_type in ['string', 'pointer']:
                     return_ty = ir.IntType(8).as_pointer()
                 else:
-                    raise Exception(f"Unknown variant get type: {get_type}")
+                    raise AleError(f"unknown variant get type '{get_type}'", node)
                 func_ty = ir.FunctionType(return_ty, [variant_ty])
                 runtime_func = ir.Function(self.module, func_ty, name=func_name)
             
@@ -2979,12 +2979,12 @@ class CodeGenerator:
             # Usage: sleep(value) or sleep(value, "ms"|"milliseconds"|"ns"|"nanoseconds"|"s"|"seconds")
             args = node.get('arguments', [])
             if len(args) == 0 or len(args) > 2:
-                raise Exception(f"sleep() requires 1 or 2 arguments, got {len(args)}")
+                raise AleError(f"sleep() requires 1 or 2 arguments, got {len(args)}", node)
 
             # Duration (expects integer; unwrap variant if passed a local variable)
             duration_val = self._auto_extract_value(self.visit(args[0]), 'int')
             if not hasattr(duration_val, 'type') or not isinstance(duration_val.type, ir.IntType):
-                raise Exception("sleep() duration must be an integer expression")
+                raise AleError("sleep() duration must be an integer expression", node)
 
             # Determine unit (default seconds)
             unit = 's'
@@ -3004,7 +3004,7 @@ class CodeGenerator:
                     elif unit_l in ('ns', 'nsec', 'nsecs', 'nanosecond', 'nanoseconds'):
                         unit = 'ns'
                     else:
-                        raise Exception(f"Unsupported sleep() unit: {unit_raw}")
+                        raise AleError(f"unknown sleep() unit '{unit_raw}'; use 's', 'ms', or 'ns'", node)
                 else:
                     # If not a string literal, default to seconds
                     unit = 's'
@@ -3047,13 +3047,13 @@ class CodeGenerator:
             return self.builder.call(nanosleep, [ts_ptr, null_rem])
         elif func_name == 'seed':
             # Remove explicit seeding API in favor of automatic OS-entropy seeding on first rand() use
-            raise Exception("seed() was removed. rand() now auto-seeds from OS entropy on first use.")
+            raise AleError("seed() is no longer needed; rand() auto-seeds from OS entropy on first use", node)
         elif func_name == 'rand':
             return self._handle_rand(node)
         elif func_name == 'sqrt':
             args = node['arguments']
             if len(args) != 1:
-                raise Exception("sqrt() requires exactly 1 argument")
+                raise AleError("sqrt() requires exactly 1 argument", node)
             arg_val = self.visit(args[0])
             f64 = ir.DoubleType()
             if hasattr(arg_val, 'type'):
@@ -3067,7 +3067,7 @@ class CodeGenerator:
         elif func_name == 'abs':
             args = node['arguments']
             if len(args) != 1:
-                raise Exception("abs() requires exactly 1 argument")
+                raise AleError("abs() requires exactly 1 argument", node)
             arg_val = self.visit(args[0])
             if hasattr(arg_val, 'type') and isinstance(arg_val.type, ir.IntType):
                 # Integer abs: if arg < 0, return -arg
@@ -3086,7 +3086,7 @@ class CodeGenerator:
         elif func_name == 'pow':
             args = node['arguments']
             if len(args) != 2:
-                raise Exception("pow() requires exactly 2 arguments")
+                raise AleError("pow() requires exactly 2 arguments", node)
             base_val = self.visit(args[0])
             exp_val  = self.visit(args[1])
             f64 = ir.DoubleType()
@@ -3113,7 +3113,7 @@ class CodeGenerator:
         elif func_name == 'semaphore':
             # semaphore(initial_value) - return the initial value for use in declarations
             if len(node['arguments']) != 1:
-                raise Exception(f"semaphore() constructor requires exactly 1 argument (initial value), got {len(node['arguments'])}")
+                raise AleError(f"semaphore() requires exactly 1 argument (initial value), got {len(node['arguments'])}", node)
             initial_value = self.visit(node['arguments'][0])
             return initial_value
         elif func_name == 'mutex':
@@ -3122,7 +3122,7 @@ class CodeGenerator:
         elif func_name == 'barrier':
             # barrier(participant_count) - return the participant count for use in declarations
             if len(node['arguments']) != 1:
-                raise Exception(f"barrier() constructor requires exactly 1 argument (participant count), got {len(node['arguments'])}")
+                raise AleError(f"barrier() requires exactly 1 argument (participant count), got {len(node['arguments'])}", node)
             participant_count = self.visit(node['arguments'][0])
             return participant_count
         elif func_name == 'queue':
@@ -3132,7 +3132,7 @@ class CodeGenerator:
         elif func_name == 'enqueue':
             # enqueue(q, value) - push value onto back of circular buffer (NOT thread-safe)
             if len(node['arguments']) != 2:
-                raise Exception(f"enqueue() requires exactly 2 arguments (queue, value), got {len(node['arguments'])}")
+                raise AleError(f"enqueue() requires exactly 2 arguments (queue, value), got {len(node['arguments'])}", node)
             queue_ptr = self._get_queue_ptr(node['arguments'][0])
             i32 = ir.IntType(32)
             zero = ir.Constant(i32, 0)
@@ -3172,7 +3172,7 @@ class CodeGenerator:
         elif func_name == 'dequeue':
             # dequeue(q) - pop value from front of circular buffer (NOT thread-safe)
             if len(node['arguments']) != 1:
-                raise Exception(f"dequeue() requires exactly 1 argument (queue), got {len(node['arguments'])}")
+                raise AleError(f"dequeue() requires exactly 1 argument (queue), got {len(node['arguments'])}", node)
             queue_ptr = self._get_queue_ptr(node['arguments'][0])
             i32 = ir.IntType(32)
             zero = ir.Constant(i32, 0)
@@ -3197,7 +3197,7 @@ class CodeGenerator:
         elif func_name == 'queue_size':
             # queue_size(q) - return number of elements currently in the queue
             if len(node['arguments']) != 1:
-                raise Exception(f"queue_size() requires exactly 1 argument (queue), got {len(node['arguments'])}")
+                raise AleError(f"queue_size() requires exactly 1 argument (queue), got {len(node['arguments'])}", node)
             queue_ptr = self._get_queue_ptr(node['arguments'][0])
             i32 = ir.IntType(32)
             cnt_ptr = self.builder.gep(queue_ptr, [ir.Constant(i32, 1)], inbounds=False)
@@ -3206,7 +3206,7 @@ class CodeGenerator:
         elif func_name == 'queue_capacity':
             # queue_capacity(q) - return capacity of the queue
             if len(node['arguments']) != 1:
-                raise Exception(f"queue_capacity() requires exactly 1 argument (queue), got {len(node['arguments'])}")
+                raise AleError(f"queue_capacity() requires exactly 1 argument (queue), got {len(node['arguments'])}", node)
             queue_ptr = self._get_queue_ptr(node['arguments'][0])
             i32 = ir.IntType(32)
             cap_ptr = self.builder.gep(queue_ptr, [ir.Constant(i32, 0)], inbounds=False)
@@ -3242,7 +3242,7 @@ class CodeGenerator:
             # Try to get from module.globals (for external functions like sem_post/sem_wait)
             func = self.module.globals.get(func_name)
         if func is None:
-            raise Exception(f"Function '{func_name}' not found in user functions or module.globals.")
+            raise AleError(f"call to undefined procedure '{func_name}'", node)
 
         # Coerce arguments to match declared parameter types (e.g. char literal i32 → i8 char param)
         ftype = func.type.pointee if isinstance(func.type, ir.PointerType) else func.type
@@ -3354,7 +3354,7 @@ class CodeGenerator:
         # Get array variable
         array_info = self.get_variable(array_name)
         if array_info is None:
-            raise Exception(f"Undefined array: {array_name}")
+            raise AleError(f"undefined array '{array_name}'", node)
         
         if isinstance(array_info, tuple):
             array_ptr, element_type, is_constant = array_info
@@ -3466,10 +3466,10 @@ class CodeGenerator:
             var_name = arg_node['value']
             entry = self.locals.get(var_name) or self.globals.get(var_name)
             if entry is None:
-                raise Exception(f"Undefined queue variable '{var_name}'")
+                raise AleError(f"undefined queue variable '{var_name}'")
             ptr, dtype, _ = entry
             if dtype != 'queue':
-                raise Exception(f"Variable '{var_name}' is not a queue (got type '{dtype}')")
+                raise AleError(f"'{var_name}' is not a queue (got type '{dtype}')")
             # For shared queues stored as GlobalVariable, bitcast to i32*
             if isinstance(ptr, ir.GlobalVariable):
                 return self.builder.bitcast(ptr, i32.as_pointer())

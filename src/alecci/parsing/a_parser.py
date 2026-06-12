@@ -379,9 +379,9 @@ def p_func_call(p):
     '''
     #print(f"funcCall: {p[1]}") 
     if len(p) == 5:
-        p[0] = {'type': 'function_call', 'name': p[1], 'arguments': p[3]}
+        p[0] = {'type': 'function_call', 'name': p[1], 'arguments': p[3], 'lineno': p.lineno(2)}
     else:
-        p[0] = {'type': 'function_call', 'name': p[1], 'arguments': []}
+        p[0] = {'type': 'function_call', 'name': p[1], 'arguments': [], 'lineno': p.lineno(2)}
 
 
 # TODO: Move function-style operators to library functions. Remove from grammar

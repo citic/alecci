@@ -29,7 +29,7 @@ def read_requirements():
 setup(
     # Basic package information
     name="alecci",
-    version="1.4.2",
+    version="1.5.1",
     author="Bryan Ulate",
     author_email="bryan.ulate@ucr.ac.cr",
     description="A compiler for the Alecci programming language",
@@ -44,7 +44,7 @@ setup(
     # Include non-Python files
     package_data={
         "": ["*.txt", "*.md"],
-        "runtime": ["*.c", "*.h"],
+        "alecci": ["runtime/*.c", "runtime/*.h"],
     },
     include_package_data=True,
     
