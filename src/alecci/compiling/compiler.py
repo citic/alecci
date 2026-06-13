@@ -2103,13 +2103,16 @@ class CodeGenerator:
                          isinstance(expression.get('value'), str))
         
         # Create format string
+        is_float = hasattr(val, 'type') and isinstance(val.type, ir.DoubleType)
         if is_string:
             fmt = "%s\n\0".replace('\\n', '\n')
+        elif is_float:
+            fmt = "%g\n\0".replace('\\n', '\n')
         else:
             fmt = "%d\n\0".replace('\\n', '\n')
         fmt_bytes = bytearray(fmt.encode("utf8"))
         fmt_type = ir.ArrayType(ir.IntType(8), len(fmt_bytes))
-        fmt_name = f"fmt_{'str' if is_string else 'int'}"
+        fmt_name = 'fmt_str' if is_string else ('fmt_float' if is_float else 'fmt_int')
         if fmt_name in self.module.globals:
             fmt_global = self.module.get_global(fmt_name)
         else:
