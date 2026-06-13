@@ -2102,8 +2102,30 @@ class CodeGenerator:
                          expression.get('type') == 'literal' and
                          isinstance(expression.get('value'), str))
         
+        # Unwrap variant values using tracked type information
+        from .base_types import get_variant_type
+        variant_ty = get_variant_type()
+        is_float = False
+        is_variant = (hasattr(val, 'type') and (
+            str(val.type) == str(variant_ty) or
+            (isinstance(val.type, ir.PointerType) and
+             str(val.type.pointee) == str(variant_ty))))
+        if is_variant:
+            prefer = 'int'
+            if isinstance(expression, dict) and expression.get('type') == 'ID':
+                prefer = self.var_types.get(expression['value'], 'int')
+            if prefer == 'float':
+                val = self._auto_extract_value(val, 'float')
+                is_float = True
+            elif prefer == 'string':
+                val = self._auto_extract_value(val, 'string')
+                is_string = True
+            else:
+                val = self._auto_extract_value(val, 'int')
+        else:
+            is_float = hasattr(val, 'type') and isinstance(val.type, ir.DoubleType)
+
         # Create format string
-        is_float = hasattr(val, 'type') and isinstance(val.type, ir.DoubleType)
         if is_string:
             fmt = "%s\n\0".replace('\\n', '\n')
         elif is_float:

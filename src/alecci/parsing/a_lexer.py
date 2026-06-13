@@ -173,8 +173,11 @@ def t_FLOAT( t:lex.LexToken):
     return t
 
 def t_INTEGER( t:lex.LexToken):
-    r'\d+'
-    t.value = int(t.value)
+    r'0[bB][01]+|0[oO][0-7]+|0[xX][0-9a-fA-F]+|\d+'
+    if t.value.startswith(('0b', '0B', '0o', '0O', '0x', '0X')):
+        t.value = int(t.value, 0)
+    else:
+        t.value = int(t.value)
     return t
 
 def t_ID( t):
