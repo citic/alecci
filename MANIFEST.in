@@ -1,5 +1,4 @@
-include src/runtime/*.c
-include src/runtime/*.h
+recursive-include src/alecci/runtime *.c *.h
 include examples/**/*.ale
 include examples/**/*.alecci
 include tests/**/*.py

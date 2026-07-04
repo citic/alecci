@@ -288,6 +288,131 @@ def _check_depletion(
 
 
 # ---------------------------------------------------------------------------
+# Phase D: Sequential lock-set tracking — collect wait/signal sites
+# ---------------------------------------------------------------------------
+
+def _collect_sites(
+    body: list,
+    semaphores: Dict[str, int],
+    procedures: Dict[str, list],
+    visited: Set[str],
+    depth: int,
+    held: set,
+    ever_held: set,
+):
+    """
+    Walk *body* sequentially, maintaining two lock sets (both mutated in place):
+      held      — mutexes currently held (lock increments, unlock decrements)
+      ever_held — mutexes ever acquired on any path from procedure start to here
+
+    Yields:
+      ('wait',   sem_name, frozenset(held))       — lock-set at the wait call
+      ('signal', sem_name, frozenset(ever_held))  — locks acquired anywhere before
+                                                    the signal (even if released)
+
+    Using ever_held for signal sites catches the classic pattern where the
+    signaler acquires a mutex to enqueue/prepare, then releases it before
+    calling signal — yet the waiter might hold that mutex, preventing the
+    signaler from ever reaching signal.
+    """
+    for node in body:
+        if not isinstance(node, dict):
+            continue
+        ntype = node.get('type')
+
+        if ntype == 'function_call':
+            call = node.get('name')
+            arg  = _arg0_name(node)
+            if call == 'lock' and arg:
+                held.add(arg)
+                ever_held.add(arg)
+            elif call == 'unlock' and arg:
+                held.discard(arg)
+            elif call == 'wait' and arg in semaphores:
+                yield ('wait', arg, frozenset(held))
+            elif call == 'signal' and arg in semaphores:
+                yield ('signal', arg, frozenset(ever_held))
+            elif call in procedures and call not in visited and depth < MAX_INLINE_DEPTH:
+                yield from _collect_sites(
+                    procedures[call], semaphores, procedures,
+                    visited | {call}, depth + 1, held, ever_held,
+                )
+
+        elif ntype == 'if':
+            then_held = set(held);  then_ever = set(ever_held)
+            else_held = set(held);  else_ever = set(ever_held)
+            yield from _collect_sites(node.get('then_body', []), semaphores, procedures, visited, depth, then_held, then_ever)
+            yield from _collect_sites(node.get('else_body', []), semaphores, procedures, visited, depth, else_held, else_ever)
+            held.clear();      held.update(then_held | else_held)
+            ever_held.update(then_ever | else_ever)
+
+        elif ntype in ('while', 'for'):
+            loop_held = set(held);  loop_ever = set(ever_held)
+            yield from _collect_sites(node.get('body', []), semaphores, procedures, visited, depth, loop_held, loop_ever)
+            held.update(loop_held)
+            ever_held.update(loop_ever)
+
+        elif ntype == 'case':
+            arm_helds, arm_evers = [], []
+            for arm in node.get('arms', []):
+                ah = set(held);  ae = set(ever_held)
+                yield from _collect_sites(arm.get('body', []), semaphores, procedures, visited, depth, ah, ae)
+                arm_helds.append(ah);  arm_evers.append(ae)
+            default_body = node.get('default_body') or []
+            if default_body:
+                dh = set(held);  de = set(ever_held)
+                yield from _collect_sites(default_body, semaphores, procedures, visited, depth, dh, de)
+                arm_helds.append(dh);  arm_evers.append(de)
+            for h in arm_helds:  held.update(h)
+            for e in arm_evers:  ever_held.update(e)
+
+        elif ntype == 'block':
+            yield from _collect_sites(node.get('body', []), semaphores, procedures, visited, depth, held, ever_held)
+
+
+# ---------------------------------------------------------------------------
+# Phase E: Cross-thread lock-order deadlock
+# ---------------------------------------------------------------------------
+
+def _check_lock_order_deadlock(
+    all_wait_sites:   Dict[str, List[Tuple[str, frozenset]]],
+    all_signal_sites: Dict[str, List[Tuple[str, frozenset]]],
+    source_filename: str,
+) -> None:
+    """
+    For every wait-under-lock site (sem S, held locks L) in thread entry A,
+    check whether any *other* thread entry B signals S while also holding a
+    lock in L.  If so, B can never reach signal(S) because A holds that lock
+    while sleeping, and A can never wake up — confirmed deadlock.
+    """
+    signal_index: Dict[str, List[Tuple[str, frozenset]]] = {}
+    for proc, sites in all_signal_sites.items():
+        for sem, sig_locks in sites:
+            signal_index.setdefault(sem, []).append((proc, sig_locks))
+
+    reported: Set[tuple] = set()
+    for waiter_proc, sites in all_wait_sites.items():
+        for sem, wait_locks in sites:
+            if not wait_locks:
+                continue
+            for sig_proc, sig_locks in signal_index.get(sem, []):
+                if sig_proc == waiter_proc:
+                    continue   # same thread, not a cross-thread deadlock
+                conflict = wait_locks & sig_locks
+                if conflict:
+                    key = (sem, frozenset(wait_locks), sig_proc)
+                    if key not in reported:
+                        reported.add(key)
+                        lock_list = ', '.join(f"'{m}'" for m in sorted(conflict))
+                        _warn(
+                            source_filename,
+                            f"deadlock: '{waiter_proc}' calls wait({sem}) while holding {lock_list}\n"
+                            f"  '{sig_proc}' must acquire {lock_list} before it can signal '{sem}'\n"
+                            f"  these threads will block each other indefinitely",
+                        )
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -300,7 +425,7 @@ def analyze(ast: dict, source_filename: str) -> None:
         ast             : program AST dict as produced by parser.toAst()
         source_filename : source file path, used in diagnostic messages
     """
-    semaphores, procedures, thread_entries = _collect_symbols(ast)
+    semaphores, procedures, _ = _collect_symbols(ast)
 
     if not semaphores:
         return  # Nothing to analyze
@@ -317,3 +442,26 @@ def analyze(ast: dict, source_filename: str) -> None:
 
     # Companion: infinite recursion
     _find_recursive_cycles(procedures, source_filename)
+
+    # Phase D+E: lock-order (wait-under-lock) deadlock
+    # Iterate over all procedures — thread_entries detection misses entries
+    # passed via create_thread(proc) inside declaration initialisers.
+    all_wait_sites:   Dict[str, List[Tuple[str, frozenset]]] = {}
+    all_signal_sites: Dict[str, List[Tuple[str, frozenset]]] = {}
+    for proc_name in procedures:
+        wait_s: List[Tuple[str, frozenset]] = []
+        sig_s:  List[Tuple[str, frozenset]] = []
+        for event, sem, held in _collect_sites(
+            procedures[proc_name], semaphores, procedures, {proc_name}, 0, set(), set()
+        ):
+            if event == 'wait':
+                wait_s.append((sem, held))
+            else:
+                sig_s.append((sem, held))
+        if wait_s:
+            all_wait_sites[proc_name] = wait_s
+        if sig_s:
+            all_signal_sites[proc_name] = sig_s
+
+    if all_wait_sites and all_signal_sites:
+        _check_lock_order_deadlock(all_wait_sites, all_signal_sites, source_filename)
