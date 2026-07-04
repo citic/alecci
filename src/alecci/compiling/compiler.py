@@ -2572,18 +2572,29 @@ class CodeGenerator:
 
         # Resolve thread array pointer and name first
         threads_name = None
+        dtype = None
         if isinstance(threads_arg, dict) and threads_arg.get('type') in ('literal', 'ID'):
             threads_name = threads_arg['value']
             if threads_name in self.locals:
                 threads_ptr, dtype, _ = self.locals[threads_name]
                 debug_print(f"DEBUG: join_threads - local '{threads_name}', dtype={dtype}")
             elif threads_name in self.globals:
-                threads_ptr, *_ = self.globals[threads_name]
+                threads_ptr, dtype, _ = self.globals[threads_name]
                 debug_print(f"DEBUG: join_threads - global '{threads_name}'")
             else:
                 raise AleError(f"undefined thread array '{threads_name}'", node)
         else:
             threads_ptr = self.visit(threads_arg)
+
+        if dtype == 'thread':
+            raise AleError(
+                f"join_threads() called on '{threads_name}', which was created with "
+                f"create_thread() (singular) and holds a single thread handle, not an "
+                f"array; use join_thread('{threads_name}') instead", node)
+        if dtype is not None and dtype != 'thread_array':
+            raise AleError(
+                f"join_threads() expects a thread array created with create_threads(); "
+                f"'{threads_name}' has type '{dtype}'", node)
 
         # Resolve thread count: explicit arg > stored count from create_threads > legacy global > default
         if len(node['arguments']) > 1:
@@ -2749,7 +2760,15 @@ class CodeGenerator:
         elif func_name == 'join_thread':
             if len(node['arguments']) != 1:
                 raise AleError(f"join_thread() requires exactly 1 argument (thread handle), got {len(node['arguments'])}", node)
-            thread_arg = self.visit(node['arguments'][0])
+            thread_arg_node = node['arguments'][0]
+            arg_dtype = self._get_arg_var_type(thread_arg_node)
+            if arg_dtype == 'thread_array':
+                arg_name = thread_arg_node.get('value') if isinstance(thread_arg_node, dict) else thread_arg_node
+                raise AleError(
+                    f"join_thread() called on '{arg_name}', which was created with "
+                    f"create_threads() (plural) and holds an array of threads, not a single "
+                    f"handle; use join_threads('{arg_name}') instead", node)
+            thread_arg = self.visit(thread_arg_node)
             if hasattr(thread_arg, 'type'):
                 from .base_types import get_variant_type
                 variant_ty = get_variant_type()
