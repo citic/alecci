@@ -3,6 +3,12 @@
   "displayName": "Alecci Language Syntax Highlighting",
   "description": "Syntax highlighting for Alecci .ale, .pseudo, and .alecci files",
   "version": "1.0.1",
+  "publisher": "bryan-ulate",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/citic/alecci.git"
+  },
   "engines": {
     "vscode": "^1.0.0"
   },

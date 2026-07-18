@@ -130,8 +130,10 @@ class CodeGenerator:
             return False
         ptr, dtype, is_constant = self.globals[name]
         # Shared mutable variables are globals that are not constant
-        # Exclude sync primitives (mutex, semaphore, barrier) as they have their own synchronization
-        return not is_constant and dtype not in ['mutex', 'semaphore', 'barrier', 'queue', 'thread', 'thread_array']
+        # Exclude sync primitives (mutex, semaphore, barrier) as they have their own synchronization.
+        # 'queue' is NOT excluded: enqueue()/dequeue() do raw unsynchronized loads/stores on the
+        # queue's internal buffer, so it needs the same race instrumentation as a plain shared variable.
+        return not is_constant and dtype not in ['mutex', 'semaphore', 'barrier', 'thread', 'thread_array']
 
     def insert_yield(self):
         """Insert a sched_yield() call to force thread interleaving for race detection."""
@@ -3174,9 +3176,13 @@ class CodeGenerator:
             return ir.Constant(ir.IntType(32), 0)
 
         elif func_name == 'enqueue':
-            # enqueue(q, value) - push value onto back of circular buffer (NOT thread-safe)
+            # enqueue(q, value) - push value onto back of circular buffer (NOT thread-safe:
+            # head/count/buffer-slot are instrumented below so concurrent enqueue/dequeue
+            # calls on a shared queue are visible to TSan and the forced-yield interleaver)
             if len(node['arguments']) != 2:
                 raise AleError(f"enqueue() requires exactly 2 arguments (queue, value), got {len(node['arguments'])}", node)
+            queue_name = self._queue_arg_name(node['arguments'][0])
+            is_shared_q = queue_name is not None and self.is_shared_mutable_variable(queue_name)
             queue_ptr = self._get_queue_ptr(node['arguments'][0])
             i32 = ir.IntType(32)
             zero = ir.Constant(i32, 0)
@@ -3185,7 +3191,12 @@ class CodeGenerator:
             cnt_ptr  = self.builder.gep(queue_ptr, [ir.Constant(i32, 1)], inbounds=False)
             head_ptr = self.builder.gep(queue_ptr, [ir.Constant(i32, 2)], inbounds=False)
             capacity = self.builder.load(cap_ptr)
+            if is_shared_q:
+                self.insert_yield()
+                self.insert_tsan_call(head_ptr, 4, is_write=False)
             head     = self.builder.load(head_ptr)
+            if is_shared_q:
+                self.insert_yield()
             # Write value at buffer[head] = queue_ptr + 4 + head
             buf_idx  = self.builder.add(ir.Constant(i32, 4), head)
             slot_ptr = self.builder.gep(queue_ptr, [buf_idx], inbounds=False)
@@ -3204,19 +3215,41 @@ class CodeGenerator:
                     val = self.builder.trunc(val, i32)
                 else:
                     val = self.builder.zext(val, i32)
+            if is_shared_q:
+                self.insert_yield()
+                self.insert_tsan_call(slot_ptr, 4, is_write=True)
             self.builder.store(val, slot_ptr)
+            if is_shared_q:
+                self.insert_yield()
             # head = (head + 1) % capacity
             new_head = self.builder.srem(self.builder.add(head, ir.Constant(i32, 1)), capacity)
+            if is_shared_q:
+                self.insert_yield()
+                self.insert_tsan_call(head_ptr, 4, is_write=True)
             self.builder.store(new_head, head_ptr)
+            if is_shared_q:
+                self.insert_yield()
             # count += 1
+            if is_shared_q:
+                self.insert_yield()
+                self.insert_tsan_call(cnt_ptr, 4, is_write=False)
             cnt = self.builder.load(cnt_ptr)
+            if is_shared_q:
+                self.insert_tsan_call(cnt_ptr, 4, is_write=True)
             self.builder.store(self.builder.add(cnt, ir.Constant(i32, 1)), cnt_ptr)
+            if is_shared_q:
+                self.insert_yield()
             return ir.Constant(i32, 0)
 
         elif func_name == 'dequeue':
-            # dequeue(q) - pop value from front of circular buffer (NOT thread-safe)
+            # dequeue(q) - pop value from front of circular buffer (NOT thread-safe:
+            # tail/count/buffer-slot are instrumented below so concurrent enqueue/dequeue
+            # calls on a shared queue are visible to TSan and the forced-yield interleaver).
+            # Dequeuing from an empty queue is a runtime error (aborts, like assert failures).
             if len(node['arguments']) != 1:
                 raise AleError(f"dequeue() requires exactly 1 argument (queue), got {len(node['arguments'])}", node)
+            queue_name = self._queue_arg_name(node['arguments'][0])
+            is_shared_q = queue_name is not None and self.is_shared_mutable_variable(queue_name)
             queue_ptr = self._get_queue_ptr(node['arguments'][0])
             i32 = ir.IntType(32)
             zero = ir.Constant(i32, 0)
@@ -3225,17 +3258,71 @@ class CodeGenerator:
             cnt_ptr  = self.builder.gep(queue_ptr, [ir.Constant(i32, 1)], inbounds=False)
             tail_ptr = self.builder.gep(queue_ptr, [ir.Constant(i32, 3)], inbounds=False)
             capacity = self.builder.load(cap_ptr)
+            if is_shared_q:
+                self.insert_yield()
+                self.insert_tsan_call(cnt_ptr, 4, is_write=False)
+            cnt = self.builder.load(cnt_ptr)
+            if is_shared_q:
+                self.insert_yield()
+
+            # Empty-queue check: branch to an aborting error path rather than reading
+            # stale/garbage data from an unpopulated slot.
+            is_empty = self.builder.icmp_signed('==', cnt, zero)
+            empty_bb = self.builder.append_basic_block('dequeue_empty')
+            ok_bb    = self.builder.append_basic_block('dequeue_ok')
+            self.builder.cbranch(is_empty, empty_bb, ok_bb)
+
+            self.builder.position_at_start(empty_bb)
+            err_msg = 'Runtime error: dequeue() called on an empty queue'
+            err_bytes = bytearray(err_msg.encode('utf8')) + b'\0'
+            err_name = f'dequeue_empty_msg_{abs(hash(err_msg))}'
+            if err_name in self.module.globals:
+                err_gv = self.module.get_global(err_name)
+            else:
+                err_ty = ir.ArrayType(ir.IntType(8), len(err_bytes))
+                err_gv = ir.GlobalVariable(self.module, err_ty, name=err_name)
+                err_gv.linkage = 'internal'
+                err_gv.global_constant = True
+                err_gv.initializer = ir.Constant(err_ty, err_bytes)
+            err_ptr = self.builder.bitcast(err_gv, ir.IntType(8).as_pointer())
+            puts_fn = self._declare_external_fn('puts', ir.IntType(32), [ir.IntType(8).as_pointer()])
+            self.builder.call(puts_fn, [err_ptr])
+            abort_fn = self._declare_external_fn('abort', ir.VoidType(), [])
+            self.builder.call(abort_fn, [])
+            self.builder.unreachable()
+
+            self.builder.position_at_start(ok_bb)
+            if is_shared_q:
+                self.insert_yield()
+                self.insert_tsan_call(tail_ptr, 4, is_write=False)
             tail     = self.builder.load(tail_ptr)
+            if is_shared_q:
+                self.insert_yield()
             # Read value from buffer[tail]
             buf_idx  = self.builder.add(ir.Constant(i32, 4), tail)
             slot_ptr = self.builder.gep(queue_ptr, [buf_idx], inbounds=False)
+            if is_shared_q:
+                self.insert_yield()
+                self.insert_tsan_call(slot_ptr, 4, is_write=False)
             val      = self.builder.load(slot_ptr)
+            if is_shared_q:
+                self.insert_yield()
             # tail = (tail + 1) % capacity
             new_tail = self.builder.srem(self.builder.add(tail, ir.Constant(i32, 1)), capacity)
+            if is_shared_q:
+                self.insert_yield()
+                self.insert_tsan_call(tail_ptr, 4, is_write=True)
             self.builder.store(new_tail, tail_ptr)
+            if is_shared_q:
+                self.insert_yield()
             # count -= 1
-            cnt = self.builder.load(cnt_ptr)
-            self.builder.store(self.builder.sub(cnt, ir.Constant(i32, 1)), cnt_ptr)
+            new_cnt = self.builder.sub(cnt, ir.Constant(i32, 1))
+            if is_shared_q:
+                self.insert_yield()
+                self.insert_tsan_call(cnt_ptr, 4, is_write=True)
+            self.builder.store(new_cnt, cnt_ptr)
+            if is_shared_q:
+                self.insert_yield()
             return val
 
         elif func_name == 'queue_size':
@@ -3502,6 +3589,12 @@ class CodeGenerator:
     def _store_null_variant(self, variant_ptr):
         """Store a null variant. Delegates to variant_utils."""
         variant_utils.store_null_variant(self.builder, variant_ptr)
+
+    def _queue_arg_name(self, arg_node) -> Optional[str]:
+        """Return the variable name of a queue argument node, or None if it's not a simple ID."""
+        if isinstance(arg_node, dict) and arg_node.get('type') == 'ID':
+            return arg_node['value']
+        return None
 
     def _get_queue_ptr(self, arg_node) -> ir.Value:
         """Resolve a queue argument node to an i32* pointer into the queue's storage array."""
