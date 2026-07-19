@@ -37,6 +37,7 @@ reserved = {
     'for' : 'FOR',
     'break' : 'BREAK',
     'case' : 'CASE',
+    'when' : 'WHEN',
     # Variable declarations
     'shared' : 'SHARED',
     'mutable' : 'MUTABLE',

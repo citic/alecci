@@ -1,0 +1,68 @@
+// Complex test: enum members with explicit values, auto-increment resuming
+// from an explicit value, array indexing by an enum constant, enum constants
+// used as function call arguments and case-arm labels, and a compile-time
+// constant expression combining members from two different enums.
+enum Color of
+    RED,
+    GREEN,
+    BLUE
+end enum
+
+enum Status of
+    PENDING = 10,
+    ACTIVE,
+    DONE = 20,
+    ARCHIVED
+end enum
+
+function status_index(mutable s)
+    case s of
+        when PENDING:
+            return 0
+        when ACTIVE:
+            return 1
+        when DONE:
+            return 2
+        when ARCHIVED:
+            return 3
+    else:
+        return -1
+    end case
+end function
+
+procedure main()
+    print "Enum complex test start"
+
+    print `PENDING={PENDING}`
+    print `ACTIVE={ACTIVE}`
+    print `DONE={DONE}`
+    print `ARCHIVED={ARCHIVED}`
+
+    shared mutable counts := array(3, 0)
+    counts[RED] := counts[RED] + 5
+    counts[GREEN] := counts[GREEN] + 7
+    counts[BLUE] := counts[BLUE] + 9
+    print `counts[RED]={counts[RED]}`
+    print `counts[GREEN]={counts[GREEN]}`
+    print `counts[BLUE]={counts[BLUE]}`
+
+    mutable current as int := ACTIVE
+    case current of
+        when PENDING:
+            print "state is pending"
+        when ACTIVE:
+            print "state is active"
+        when DONE:
+            print "state is done"
+    else:
+        print "state is unknown"
+    end case
+
+    const idx = status_index(DONE)
+    print `status_index(DONE)={idx}`
+
+    const total = RED + GREEN + BLUE + PENDING
+    print `total={total}`
+
+    print "Enum complex test end"
+end procedure

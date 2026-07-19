@@ -1,0 +1,22 @@
+// Basic test: enum declarations register their members as compile-time
+// int constants with C-style auto-increment (starting at 0).
+enum Color of
+    RED,
+    GREEN,
+    BLUE
+end enum
+
+procedure main()
+    print "Enum basic test start"
+
+    print `RED={RED}`
+    print `GREEN={GREEN}`
+    print `BLUE={BLUE}`
+
+    mutable current as int := GREEN
+    if current = GREEN then
+        print "current is green"
+    end if
+
+    print "Enum basic test end"
+end procedure

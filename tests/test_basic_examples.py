@@ -229,6 +229,17 @@ EXAMPLES = {
         "file": "atomic.ale",
         "expect": ["counter=4"],
     },
+    "enum_basic": {
+        "file": "enum_basic.ale",
+        "expect": [
+            "Enum basic test start",
+            "RED=0",
+            "GREEN=1",
+            "BLUE=2",
+            "current is green",
+            "Enum basic test end",
+        ],
+    },
 }
 
 
@@ -400,3 +411,9 @@ def test_example_assert(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_e
 def test_example_atomic(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
     out = _compile_and_run("atomic", EXAMPLES["atomic"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] atomic")
+
+
+def test_example_enum_basic(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    """Enum members are registered as compile-time int constants with C-style auto-increment."""
+    out = _compile_and_run("enum_basic", EXAMPLES["enum_basic"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] enum_basic")

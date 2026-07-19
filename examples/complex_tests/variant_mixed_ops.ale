@@ -34,11 +34,11 @@ procedure main()
     // Phase 3 — reassign back to int and use in case
     v := 2
     case v of
-        1:
+        when 1:
             print "one"
-        2:
+        when 2:
             print "two"
-        3:
+        when 3:
             print "three"
     else:
         print "other"

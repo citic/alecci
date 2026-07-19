@@ -4,11 +4,11 @@ procedure main()
     // Integer case with default arm
     const code = 2
     case code of
-        1:
+        when 1:
             print "code is one"
-        2:
+        when 2:
             print "code is two"
-        3:
+        when 3:
             print "code is three"
     else:
         print "code is unknown"
@@ -18,11 +18,11 @@ procedure main()
     mutable atom as char
     while scan `{atom}` do
         case atom of
-            'H':
+            when 'H':
                 print "hydrogen"
-            'O':
+            when 'O':
                 print "oxygen"
-            'N':
+            when 'N':
                 print "nitrogen"
         else:
             print "other"

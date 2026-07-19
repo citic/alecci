@@ -232,9 +232,9 @@ def p_case_arms(p):
 
 
 def p_case_arm(p):
-    ''' case_arm : expression COLON body
+    ''' case_arm : WHEN expression COLON body
     '''
-    p[0] = {'value': p[1], 'body': p[3]}
+    p[0] = {'value': p[2], 'body': p[4]}
 
 
 def p_init(p):

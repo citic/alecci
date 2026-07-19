@@ -11,10 +11,10 @@ procedure main()
   mutable atom as char
   while scan `{atom}` do
     case atom of
-      'H':
+      when 'H':
         create_thread(hydrogen, hydrogen_count)
         hydrogen_count := hydrogen_count + 1
-      'O':
+      when 'O':
         create_thread(oxygen, oxygen_count)
         oxygen_count := oxygen_count + 1
     end case

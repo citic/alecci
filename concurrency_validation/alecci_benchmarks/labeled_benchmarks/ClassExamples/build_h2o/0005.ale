@@ -6,8 +6,8 @@ procedure main()
   mutable atom as char
   while scan `{atom}` do
     case atom of
-      'H': create_thread(hydrogen)
-      'O': create_thread(oxygen)
+      when 'H': create_thread(hydrogen)
+      when 'O': create_thread(oxygen)
     end case
   end while
 end procedure

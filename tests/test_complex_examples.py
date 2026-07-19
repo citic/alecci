@@ -152,6 +152,23 @@ EXAMPLES = {
             "Prod-cons queue test end",
         ],
     },
+    "enum_complex": {
+        "file": "enum_complex.ale",
+        "expect": [
+            "Enum complex test start",
+            "PENDING=10",
+            "ACTIVE=11",
+            "DONE=20",
+            "ARCHIVED=21",
+            "counts[RED]=5",
+            "counts[GREEN]=7",
+            "counts[BLUE]=9",
+            "state is active",
+            "status_index(DONE)=2",
+            "total=13",
+            "Enum complex test end",
+        ],
+    },
 }
 
 
@@ -297,3 +314,13 @@ def test_complex_debug_parser_output(repo_root: Path, bin_dir: Path, compile_pse
         "debug_parser_output", EXAMPLES["debug_parser_output"], repo_root, bin_dir, compile_pseudo_fn
     )
     print("[PASS] debug_parser_output")
+
+
+def test_complex_enum_complex(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    """Exercises explicit enum values, auto-increment resuming after an explicit
+    value, array indexing/case-arm labels/function args using enum constants,
+    and a constant expression mixing members from two different enums."""
+    _compile_and_run_complex(
+        "enum_complex", EXAMPLES["enum_complex"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn
+    )
+    print("[PASS] enum_complex")
