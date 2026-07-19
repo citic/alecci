@@ -7,14 +7,16 @@ by concurrency issue type.
 
 Each bar represents one (dataset, issue_type) combination.
 Three stacked segments (left → right):
-  Dark grey   : correct_detection  – expected and detected
-  Mid grey    : unexpected         – detected but not expected (false positive)
-  Light/hatch : false_negative     – expected but not detected (missed)
+  Correct   : correct_detection  – expected and detected
+  Unexpected: detected but not expected (false positive)
+  Missed    : expected but not detected (false negative, hatched)
 
 Usage:
   python3 concurrency_validation/plot_labeled_results.py
+  python3 concurrency_validation/plot_labeled_results.py --color
+  python3 concurrency_validation/plot_labeled_results.py --color --lang es
   python3 concurrency_validation/plot_labeled_results.py \\
-      --csv path/to/issue_breakdown_labeled_results.csv   \\
+      --csv path/to/issue_breakdown_labeled_results.csv \\
       --output path/to/chart.png
 """
 
@@ -25,34 +27,81 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import pandas as pd
 
-
-# ── colours (grayscale) ───────────────────────────────────────────────────────
-# ── LaTeX-like font ───────────────────────────────────────────────────────────
 plt.rcParams.update({
     'font.family':      'STIXGeneral',
     'mathtext.fontset': 'stix',
 })
 
-COLOUR_CORRECT    = "#575353"
-COLOUR_UNEXPECTED = '#999999'
-COLOUR_MISSED     = '#bbbbbb'
+# ── colour palettes ───────────────────────────────────────────────────────────
+PALETTE_GS = dict(
+    correct     = '#575353',
+    unexpected  = '#999999',
+    missed      = '#bbbbbb',
+    missed_edge = '#777777',
+    text_dark   = '#333333',
+)
+# Soft/desaturated variants of the Alecci syntax-highlighting colours:
+#   correct    ← SteelBlue  (control-flow keywords, class 1)
+#   unexpected ← MediumOrchid (concurrency-primitive keywords, class 3)
+#   missed     ← Peru        (built-in function keywords, class 4)
+PALETTE_C = dict(
+    correct     = '#5B8FB8',
+    unexpected  = '#A870BA',
+    missed      = '#CB9050',
+    missed_edge = '#8A5C20',
+    text_dark   = '#4A2800',
+)
 
-BAR_HEIGHT  = 0.38
-INTRA_GAP   = 0.12   # gap between bars within a cluster
-INTER_GAP   = 0.65   # extra gap between dataset clusters
+BAR_HEIGHT = 0.38
+INTRA_GAP  = 0.12
+INTER_GAP  = 0.65
 
 DATASET_ORDER = ['ClassExamples', 'DataRaceBench', 'DeepRace']
 
 ISSUE_LABELS = {
-    'data_race':           'Data Race',
-    'deadlock':            'Deadlock',
-    'thread_leak':         'Thread Leak',
-    'mutex_destruction':   'Mutex Destr.',
-    'atomicity_violation': 'Atomicity Viol.',
+    'en': {
+        'data_race':           'Data Race',
+        'deadlock':            'Deadlock',
+        'thread_leak':         'Thread Leak',
+        'mutex_destruction':   'Mutex Destr.',
+        'atomicity_violation': 'Atomicity Viol.',
+    },
+    'es': {
+        'data_race':           'Condición de carrera',
+        'deadlock':            'Bloqueo mutuo',
+        'thread_leak':         'Fuga de hilos',
+        'mutex_destruction':   'Destrucción mutex',
+        'atomicity_violation': 'Viol. atomicidad',
+    },
+}
+
+STRINGS = {
+    'en': dict(
+        title        = 'Labeled Benchmarks — Detections by Issue Type',
+        xlabel       = 'Number of (test, issue type) instances',
+        lbl_correct  = 'Expected',
+        lbl_unexp    = 'Unexpected',
+        lbl_missed   = 'Missed',
+        ft_instances = 'Instances',
+        ft_detected  = 'Detected',
+        ft_unexp     = 'Unexpected',
+        ft_missed    = 'Missed',
+    ),
+    'es': dict(
+        title        = 'Bancos de prueba etiquetados — Detecciones por Tipo de Problema',
+        xlabel       = 'Número de instancias (prueba, tipo de problema)',
+        lbl_correct  = 'Esperados',
+        lbl_unexp    = 'Inesperados',
+        lbl_missed   = 'No detectados',
+        ft_instances = 'Instancias',
+        ft_detected  = 'Detectados',
+        ft_unexp     = 'Inesperados',
+        ft_missed    = 'No detectados',
+    ),
 }
 
 
-# ── data loading ─────────────────────────────────────────────────────────────
+# ── data loading ──────────────────────────────────────────────────────────────
 
 def load(csv_path: Path) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
@@ -69,12 +118,8 @@ def load(csv_path: Path) -> pd.DataFrame:
 
 # ── layout builder ────────────────────────────────────────────────────────────
 
-def build_layout(counts: pd.DataFrame):
-    """Return a list of bar specs and cluster metadata.
-
-    bar_specs  : list of dicts with keys y, label, c, u, m, dataset
-    clusters   : list of dicts with keys y_lo, y_hi, name
-    """
+def build_layout(counts: pd.DataFrame, lang: str):
+    issue_map = ISSUE_LABELS[lang]
     bar_specs = []
     clusters  = []
     y = 0.0
@@ -85,13 +130,13 @@ def build_layout(counts: pd.DataFrame):
 
         ds_data = counts.loc[ds].copy()
         ds_data['_total'] = ds_data.sum(axis=1)
-        ds_data = ds_data.sort_values('_total', ascending=True)  # lowest at bottom of cluster
+        ds_data = ds_data.sort_values('_total', ascending=True)
 
         y_lo = y
         for issue_type, row in ds_data.iterrows():
             bar_specs.append(dict(
                 y       = y,
-                label   = ISSUE_LABELS.get(issue_type, issue_type),
+                label   = issue_map.get(issue_type, issue_type),
                 c       = int(row['correct_detection']),
                 u       = int(row['unexpected']),
                 m       = int(row['false_negative']),
@@ -108,8 +153,10 @@ def build_layout(counts: pd.DataFrame):
 
 # ── plot ──────────────────────────────────────────────────────────────────────
 
-def plot(counts: pd.DataFrame, output: Path) -> None:
-    bar_specs, clusters = build_layout(counts)
+def plot(counts: pd.DataFrame, output: Path, *, color: bool = False, lang: str = 'en') -> None:
+    pal = PALETTE_C if color else PALETTE_GS
+    s   = STRINGS[lang]
+    bar_specs, clusters = build_layout(counts, lang)
 
     x_max = max(b['c'] + b['u'] + b['m'] for b in bar_specs)
     fig_h = max(4.0, len(bar_specs) * (BAR_HEIGHT + INTRA_GAP) + len(clusters) * INTER_GAP + 0.5)
@@ -122,33 +169,33 @@ def plot(counts: pd.DataFrame, output: Path) -> None:
         y, c, u, m = b['y'], b['c'], b['u'], b['m']
 
         if c > 0:
-            lbl = 'Expected' if not seen_correct else ''
+            lbl = s['lbl_correct'] if not seen_correct else ''
             seen_correct = True
             ax.barh(y, c, height=BAR_HEIGHT, left=left,
-                    color=COLOUR_CORRECT, label=lbl)
+                    color=pal['correct'], label=lbl)
             if c >= 4:
                 ax.text(left + c / 2, y, str(c), va='center', ha='center',
                         fontsize=8.5, color='white', fontweight='bold')
             left += c
 
         if u > 0:
-            lbl = 'Unexpected' if not seen_unexp else ''
+            lbl = s['lbl_unexp'] if not seen_unexp else ''
             seen_unexp = True
             ax.barh(y, u, height=BAR_HEIGHT, left=left,
-                    color=COLOUR_UNEXPECTED, label=lbl)
+                    color=pal['unexpected'], label=lbl)
             if u >= 2:
                 ax.text(left + u / 2, y, str(u), va='center', ha='center',
                         fontsize=8.5, color='white', fontweight='bold')
             left += u
 
         if m > 0:
-            lbl = 'Missed' if not seen_missed else ''
+            lbl = s['lbl_missed'] if not seen_missed else ''
             seen_missed = True
             ax.barh(y, m, height=BAR_HEIGHT, left=left,
-                    color=COLOUR_MISSED, hatch='///', edgecolor='#777777', label=lbl)
+                    color=pal['missed'], hatch='///', edgecolor=pal['missed_edge'], label=lbl)
             if m >= 2:
                 ax.text(left + m / 2, y, str(m), va='center', ha='center',
-                        fontsize=8.5, color='#333333', fontweight='bold')
+                        fontsize=8.5, color=pal['text_dark'], fontweight='bold')
             left += m
 
         total = c + u + m
@@ -164,22 +211,16 @@ def plot(counts: pd.DataFrame, output: Path) -> None:
     # ── cluster labels and separators ────────────────────────────────────────
     for cl in clusters:
         y_mid = (cl['y_lo'] + cl['y_hi']) / 2
-
-        # Bold dataset name to the right of the issue-type tick labels,
-        # drawn in the axes coordinate using a text box for clarity
         ax.text(-0.18, y_mid, cl['name'],
                 va='center', ha='center', fontsize=11, fontweight='bold',
                 rotation=90, transform=ax.get_yaxis_transform())
-
-        # Faint separator between clusters (skip after the last one)
         if cl is not clusters[-1]:
             sep_y = cl['y_hi'] + INTER_GAP / 2 + INTRA_GAP / 2
             ax.axhline(sep_y, color='#cccccc', linewidth=0.8, linestyle='--')
 
     # ── axes decoration ───────────────────────────────────────────────────────
-    ax.set_title('Labeled Benchmarks — Detections by Issue Type',
-                 fontsize=13, fontweight='bold', pad=10)
-    ax.set_xlabel('Number of (test, issue type) instances', fontsize=11)
+    ax.set_title(s['title'], fontsize=13, fontweight='bold', pad=10)
+    ax.set_xlabel(s['xlabel'], fontsize=11)
     ax.set_xlim(-0.3, x_max + 5)
     ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     ax.spines['top'].set_visible(False)
@@ -195,10 +236,10 @@ def plot(counts: pd.DataFrame, output: Path) -> None:
     total_u = int(counts['unexpected'].sum())
     total_m = int(counts['false_negative'].sum())
     footer = (
-        f"Instances: {total_c + total_u + total_m}   ·   "
-        f"Detected: {total_c}   ·   "
-        f"Unexpected: {total_u}   ·   "
-        f"Missed: {total_m}"
+        f"{s['ft_instances']}: {total_c + total_u + total_m}   ·   "
+        f"{s['ft_detected']}: {total_c}   ·   "
+        f"{s['ft_unexp']}: {total_u}   ·   "
+        f"{s['ft_missed']}: {total_m}"
     )
     fig.text(0.5, 0.01, footer, ha='center', va='bottom', fontsize=11,
              style='italic', color='#555555')
@@ -217,22 +258,30 @@ def main():
     parser = argparse.ArgumentParser(
         description='Plot labeled-benchmark detection results by dataset and issue type.'
     )
-    parser.add_argument(
-        '--csv', type=Path,
-        default=here / 'results' / 'issue_breakdown_labeled_results.csv',
-    )
-    parser.add_argument(
-        '--output', type=Path,
-        default=here / 'results' / 'labeled_detection_chart.png',
-    )
+    parser.add_argument('--csv', type=Path,
+        default=here / 'results' / 'issue_breakdown_labeled_results.csv')
+    parser.add_argument('--output', type=Path, default=None,
+        help='Output image path (auto-named from --color/--lang if omitted)')
+    parser.add_argument('--color', action='store_true',
+        help='Use Alecci syntax-highlighting color palette instead of grayscale')
+    parser.add_argument('--lang', choices=['en', 'es'], default='en',
+        help='Label language (default: en)')
     args = parser.parse_args()
+
+    if args.output is None:
+        stem = 'labeled_detection_chart'
+        if args.color:
+            stem += '_color'
+        if args.lang == 'es':
+            stem += '_es'
+        args.output = here / 'results' / f'{stem}.png'
 
     if not args.csv.exists():
         print(f"Error: CSV not found: {args.csv}")
         raise SystemExit(1)
 
     counts = load(args.csv)
-    plot(counts, args.output)
+    plot(counts, args.output, color=args.color, lang=args.lang)
 
 
 if __name__ == '__main__':

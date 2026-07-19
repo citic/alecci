@@ -95,19 +95,26 @@
   % adding  literate+={{:=}{{\ensuremath{\coloneqq}}}2}  after \input-ing this
   % file. The entries below keep := <= >= != << >> as single tokens.
   % -------------------------------------------------------------------------
+  % NOTE: no self-referential rules for < > operators (<< >> <= >=): in a
+  % babel `spanish` document < and > are active (guillemet shorthand), so
+  % re-emitting them via literate triggers a TeX capacity overflow. The raw
+  % characters render fine straight from listings.
   literate=%
     {:=}{{:=}}2%
     {!=}{{!=}}2%
-    {<=}{{<=}}2%
-    {>=}{{>=}}2%
-    {<<}{{<<}}2%
-    {>>}{{>>}}2,%
+    {á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1%
+    {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1 {Ó}{{\'O}}1 {Ú}{{\'U}}1%
+    {ñ}{{\~n}}1 {Ñ}{{\~N}}1 {ü}{{\"u}}1 {Ü}{{\"U}}1,%
   %
   % -------------------------------------------------------------------------
   % Miscellaneous
   % -------------------------------------------------------------------------
+  extendedchars=true,%    % allow bytes > 127 (UTF-8 accented characters)
   sensitive=true,%        % Alecci is case-sensitive
   morecomment=[l]{//},%   % ensure // is always a line comment
+  breaklines=true,%       % wrap long lines instead of overflowing the cell/page
+  breakatwhitespace=true,%% prefer breaking at spaces
+  breakindent=0pt,%
   columns=flexible,%
   keepspaces=true%
 }

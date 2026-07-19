@@ -287,6 +287,7 @@ def p_declaration(p):
             declaration['const'] = True
         elif p[1] == 'atomic':  # ATOMIC
             declaration['const'] = False  # Atomic variables are mutable
+            declaration['atomic'] = True
         declaration['name'] = p[2]
         declaration['init'] = p[3]
     
@@ -362,7 +363,7 @@ def p_assignment(p):
         p[0] = {'type': 'assignment', 'target': p[1], 'value': p[3], 'lineno': lineno}
     elif len(p) == 5 and p[3] == '@':
         p[0] = {'type': 'assignment', 'target': p[1], 'value': {'type': 'reference', 'expr': p[4]}, 'lineno': lineno}
-    elif len(p) == 5 and p[1] == 'pointed_by_sequence':
+    elif len(p) == 5 and p.slice[1].type == 'pointed_by_sequence':
         p[0] = {'type': 'assignment', 'target': {'type': 'dereference', 'depth': p[1], 'id': p[2]}, 'value': p[4], 'lineno': lineno}
     elif len(p) == 6:  # Field assignment: ID DOT ID ASSIGN expression
         p[0] = {'type': 'assignment',
@@ -441,9 +442,9 @@ def p_expression(p):
     elif len(p) == 3 and p[1] in ['-', 'not', '~']:
         # Unary operators: unary minus, logical NOT, bitwise NOT
         p[0] = {'type': 'unary_op', 'op': p[1], 'operand': p[2]}
-    elif len(p) == 3 and p[1] == 'pointed_by_sequence' :
+    elif len(p) == 3 and p.slice[1].type == 'pointed_by_sequence':
         p[0] = {'type': 'dereference', 'depth': p[1], 'id': p[2]}
-    elif len(p) == 3 and p[1] == 'pointer_to_sequence':
+    elif len(p) == 3 and p.slice[1].type == 'pointer_to_sequence':
         p[0] = {'type': 'pointer_type', 'depth': p[1], 'target': p[2]}
     elif len(p) == 4 and p[1] == '(':
         p[0] = p[2]
@@ -478,13 +479,14 @@ def p_argument(p):
     
     idx = 1
     
-    # Modifiers
-    while idx < len(p) and p[idx] in ['CONST', 'MUTABLE', 'REFERENCE']:
-        if p[idx] == 'const':
+    # Modifiers — compare against token *types*, not values (values are
+    # lowercase keywords / '@', never equal to the uppercase type names).
+    while idx < len(p) and p.slice[idx].type in ('CONST', 'MUTABLE', 'REFERENCE'):
+        if p.slice[idx].type == 'CONST':
             arg['const'] = True
-        elif p[idx] == 'mutable':
+        elif p.slice[idx].type == 'MUTABLE':
             arg['const'] = False
-        elif p[idx] == '@':
+        elif p.slice[idx].type == 'REFERENCE':
             arg['reference'] = True
         idx += 1
     

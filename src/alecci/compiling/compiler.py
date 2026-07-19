@@ -1,9 +1,8 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 from llvmlite import ir
-import sys
 
 from .base_types import get_type
-from .threading_utils import create_threads, create_thread, join_threads, join_thread, _get_pthread_create
+from .threading_utils import create_threads, create_thread, join_threads, join_thread, _get_pthread_create, MAX_THREADS
 from ..parsing.globals import debug_print
 from . import variant_utils
 
@@ -93,16 +92,21 @@ class CodeGenerator:
         self.var_types = {}  # name -> 'int'|'float'|'string'|etc. for type tracking
         self.current_function_name = None  # Track current function for context
         self.shared_runtime_inits = []  # List of (name, expression) for shared vars that need runtime evaluation
+        self.enum_constants: Dict[str, int] = {}  # enum member name -> int value
         # timespec type for nanosleep: struct { i64 tv_sec; i64 tv_nsec; }
         self.timespec_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(64)])
-        # Track if the current function/procedure had an explicit return in its body
         # Debug metadata for source location info
         self.source_filename = source_filename
         self.di_file = None
         self.di_compile_unit = None
         self.current_di_location = None
-        self.has_explicit_return: bool = False
-        self.loop_exit_stack: List[ir.Block] = []  # stack of loop-exit blocks for break
+        # Unified stack of enclosing control scopes, innermost last. Each entry is
+        # {'kind': 'loop', 'exit_bb': ir.Block} or
+        # {'kind': 'atomic', 'unlock_fn': ir.Function, 'mutex_ptr': ir.Value}.
+        # break() unlocks atomic scopes down to the nearest loop before branching out;
+        # return() unlocks every atomic scope currently held. This prevents a
+        # return/break inside `atomic do ... end atomic` from leaking the mutex.
+        self.control_stack: List[Dict[str, Any]] = []
         self.thread_array_counts = {}  # var_name -> LLVM value for thread count
         self._pfor_counter = 0  # unique suffix for generated parallel-for helpers
         # Performance mode: insert sched_yield() and TSan instrumentation for race detection
@@ -110,19 +114,18 @@ class CodeGenerator:
         self.sched_yield_fn = None  # Will be initialized in compile()
 
     def semantic_error(self, message: str, node: Optional[Dict[str, Any]] = None) -> None:
-        """Report a semantic error and exit.
-        
+        """Raise a clean, catchable semantic error.
+
         Args:
             message: The error message to display
             node: Optional AST node containing location information
+
+        Raises AleError instead of calling sys.exit(1) directly so library
+        callers (and the CLI's existing `except compiler.AleError` handler)
+        get a normal Python exception instead of the process being killed
+        out from under them.
         """
-        # Format: filename:line:column: semantic error: message (matching syntax error format)
-        if node and 'lineno' in node:
-            # Use 1 for column since we don't track column numbers in semantic analysis
-            print(f"\n{self.source_filename}:{node['lineno']}:1: semantic error: {message}", file=sys.stderr)
-        else:
-            print(f"\n{self.source_filename}: semantic error: {message}", file=sys.stderr)
-        sys.exit(1)
+        raise AleError(message, node)
 
     def is_shared_mutable_variable(self, name: str) -> bool:
         """Check if a variable is a shared mutable global variable."""
@@ -148,14 +151,6 @@ class CodeGenerator:
         import os
         self.source_file = os.path.basename(self.source_filename) if self.source_filename else "program.ale"
         self.di_enabled = True
-    
-    def set_debug_location(self, line: int = 1, column: int = 1):
-        """Set debug location for subsequent instructions."""
-        if self.builder:
-            # Create a simple debug location
-            # This helps TSan show line numbers in reports
-            loc = self.builder.debug_metadata
-            # Note: llvmlite has limited debug support, but setting any location helps
     
     def insert_tsan_call(self, ptr, size_bytes, is_write=False):
         """Insert a TSan instrumentation call to track memory access.
@@ -489,53 +484,6 @@ class CodeGenerator:
                     self.builder.call(cond_destroy,
                                       [self.builder.bitcast(var_ptr, opaque_ty)])
     
-    def _make_shared_accesses_atomic(self, ir_string: str) -> str:
-        """
-        Post-process LLVM IR to make loads/stores of shared globals atomic.
-        This enables ThreadSanitizer to properly instrument and detect data races.
-        """
-        import re
-        
-        # Get list of shared mutable global variable names
-        shared_vars = [name for name in self.globals.keys() 
-                      if self.is_shared_mutable_variable(name)]
-        
-        if not shared_vars:
-            return ir_string
-        
-        # Convert loads of shared globals to atomic loads
-        for var_name in shared_vars:
-            # Pattern: load TYPE, TYPE* @"var_name" [, align N]
-            # Replace with: load atomic TYPE, TYPE* @"var_name" monotonic, align N
-            # Note: atomic operations require explicit alignment
-            pattern = rf'(load )(i32|double)(, \2\* @"{re.escape(var_name)}")(?:, align (\d+))?'
-            
-            def add_alignment(match):
-                load_kw = match.group(1)
-                type_name = match.group(2)
-                ptr_part = match.group(3)
-                align = match.group(4) if match.group(4) else ('4' if type_name == 'i32' else '8')
-                return f'{load_kw}atomic {type_name}{ptr_part} monotonic, align {align}'
-            
-            ir_string = re.sub(pattern, add_alignment, ir_string)
-        
-        # Convert stores to shared globals to atomic stores  
-        for var_name in shared_vars:
-            # Pattern: store TYPE %val, TYPE* @"var_name" [, align N]
-            # Replace with: store atomic TYPE %val, TYPE* @"var_name" monotonic, align N
-            pattern = rf'(store )(i32|double)( %[^,]+, \2\* @"{re.escape(var_name)}")(?:, align (\d+))?'
-            
-            def add_alignment(match):
-                store_kw = match.group(1)
-                type_name = match.group(2)
-                val_ptr_part = match.group(3)
-                align = match.group(4) if match.group(4) else ('4' if type_name == 'i32' else '8')
-                return f'{store_kw}atomic {type_name}{val_ptr_part} monotonic, align {align}'
-            
-            ir_string = re.sub(pattern, add_alignment, ir_string)
-        
-        return ir_string
-
     def _debug_verify_module(self) -> None:
         """Walk every function/block/instruction looking for IR errors.
 
@@ -577,6 +525,8 @@ class CodeGenerator:
 
     def compile(self, ast: Dict[str, Any]) -> str:
         try:
+            from .base_types import reset_record_registry
+            reset_record_registry()
             if self.performance_mode:
                 self._init_performance_intrinsics()
             self._init_debug_info()
@@ -635,6 +585,20 @@ class CodeGenerator:
         for decl in declarations:
             if decl.get('type') == 'record':
                 register_record(decl['name'], decl['members'])
+
+        # Register enum members as compile-time i32 constants (C-style
+        # auto-increment: unlabelled members continue from the previous
+        # value + 1, starting at 0). visit_ID falls back to this table for
+        # any bare identifier that isn't a variable.
+        for decl in declarations:
+            if decl.get('type') == 'enum':
+                next_value = 0
+                for member in decl.get('members', []):
+                    value = member.get('value')
+                    if value is None:
+                        value = next_value
+                    self.enum_constants[member['name']] = value
+                    next_value = value + 1
 
         for decl in declarations:
             if decl.get('type') == 'procedure' or decl.get('type') == 'function':
@@ -704,8 +668,8 @@ class CodeGenerator:
                 self.builder = ir.IRBuilder(block)
                 self.locals = {}  # Reset locals for this procedure/function
                 self.current_function_name = decl['name']
-                # Reset explicit return tracker for this body
-                self.has_explicit_return = False
+                # Reset control-scope stack (loops/atomic blocks) for this procedure
+                self.control_stack = []
                 # Reset local concurrency primitives tracking for this procedure
                 self.local_mutexes = []
                 self.local_semaphores = []
@@ -781,7 +745,8 @@ class CodeGenerator:
                 
                 # Append default return if none was explicitly emitted
                 if decl['name'] == 'main':
-                    self.builder.ret(ir.Constant(ir.IntType(32), 0))  # main returns 0
+                    if not self.builder.block.is_terminated:
+                        self.builder.ret(ir.Constant(ir.IntType(32), 0))  # main returns 0
                 elif decl.get('type') == 'function' or decl.get('type') == 'procedure':
                     # Functions and procedures both return variant by default
                     # If we reach here, it means no explicit return - return null variant as default
@@ -1064,15 +1029,14 @@ class CodeGenerator:
 
         if shared:
             sem_storage, _, _ = self.globals[name]
-            if self.current_function_name == 'main':
-                sem_ptr = self.builder.bitcast(sem_storage, opaque_ty)
-                init_int = (raw_value if isinstance(raw_value, int)
-                            else evaluated_value if isinstance(evaluated_value, int)
-                            else 0)
-                debug_print(f"DEBUG: sem_init '{name}' with value {init_int}")
-                self.builder.call(sem_init_fn, [sem_ptr,
-                                                ir.Constant(ir.IntType(32), 0),
-                                                ir.Constant(ir.IntType(32), init_int)])
+            sem_ptr = self.builder.bitcast(sem_storage, opaque_ty)
+            init_int = (raw_value if isinstance(raw_value, int)
+                        else evaluated_value if isinstance(evaluated_value, int)
+                        else 0)
+            debug_print(f"DEBUG: sem_init '{name}' with value {init_int}")
+            self.builder.call(sem_init_fn, [sem_ptr,
+                                            ir.Constant(ir.IntType(32), 0),
+                                            ir.Constant(ir.IntType(32), init_int)])
         else:
             storage = self.builder.alloca(ir.ArrayType(ir.IntType(8), 32),
                                            name=f"{name}_storage")
@@ -1093,9 +1057,8 @@ class CodeGenerator:
 
         if shared:
             mutex_storage, _, _ = self.globals[name]
-            if self.current_function_name == 'main':
-                mutex_ptr = self.builder.bitcast(mutex_storage, opaque_ty)
-                self.builder.call(mutex_init_fn, [mutex_ptr, null_attr])
+            mutex_ptr = self.builder.bitcast(mutex_storage, opaque_ty)
+            self.builder.call(mutex_init_fn, [mutex_ptr, null_attr])
         else:
             storage = self.builder.alloca(ir.ArrayType(ir.IntType(8), 40),
                                            name=f"{name}_storage")
@@ -1114,9 +1077,8 @@ class CodeGenerator:
 
         if shared:
             cond_storage, _, _ = self.globals[name]
-            if self.current_function_name == 'main':
-                cond_ptr = self.builder.bitcast(cond_storage, opaque_ty)
-                self.builder.call(cond_init_fn, [cond_ptr, null_attr])
+            cond_ptr = self.builder.bitcast(cond_storage, opaque_ty)
+            self.builder.call(cond_init_fn, [cond_ptr, null_attr])
         else:
             storage = self.builder.alloca(ir.ArrayType(ir.IntType(8), 48),
                                            name=f"{name}_storage")
@@ -1153,9 +1115,8 @@ class CodeGenerator:
 
         if shared:
             barrier_storage, _, _ = self.globals[name]
-            if self.current_function_name == 'main':
-                barrier_ptr = self.builder.bitcast(barrier_storage, opaque_ty)
-                self.builder.call(barrier_init_fn, [barrier_ptr, null_attr, barrier_count])
+            barrier_ptr = self.builder.bitcast(barrier_storage, opaque_ty)
+            self.builder.call(barrier_init_fn, [barrier_ptr, null_attr, barrier_count])
         else:
             storage = self.builder.alloca(ir.ArrayType(ir.IntType(8), 128),
                                            name=f"{name}_storage")
@@ -1263,16 +1224,29 @@ class CodeGenerator:
         # --- Shared declarations: mostly already handled in pass 1 ---
         if shared and name in self.globals:
             _, var_type, _ = self.globals[name]
-            if var_type in ('semaphore', 'mutex', 'barrier', 'condvar') and self.current_function_name == 'main':
-                pass  # fall through for runtime init below
+            if var_type in ('semaphore', 'mutex', 'barrier', 'condvar'):
+                # Fall through for runtime init below. Init runs wherever the
+                # declaration statement is lexically compiled (not just main) —
+                # pass 2 visits it exactly once, in whichever procedure body
+                # contains it.
+                pass
             elif var_type == 'thread_array':
                 init = node['init']
                 val = init.get('value', {})
                 if isinstance(val, dict) and val.get('type') == 'function_call' and val.get('name') == 'create_threads':
-                    self.visit(val)
+                    # Replace the pass-1 i32 placeholder global with the real
+                    # thread-handle array pointer, and record the thread count
+                    # so join_threads() can find both by variable name.
+                    threads_ptr = self.visit(val)
+                    self.globals[name] = (threads_ptr, 'thread_array', False)
+                    count_arg = val['arguments'][0]
+                    from .threading_utils import clamp_thread_count
+                    self.thread_array_counts[name] = clamp_thread_count(
+                        self.builder, self._auto_extract_value(self.visit(count_arg), 'int'))
                 return
-            elif var_type == 'array_semaphore' and self.current_function_name == 'main':
-                # Emit a sem_init loop for every element in the array.
+            elif var_type == 'array_semaphore':
+                # Emit a sem_init loop for every element in the array. Runs
+                # wherever this declaration is lexically compiled, not just main.
                 init = node['init']
                 init_value_expr = init.get('value')
                 args = init_value_expr.get('arguments', []) if isinstance(init_value_expr, dict) else []
@@ -1418,7 +1392,9 @@ class CodeGenerator:
             # Store the thread count so join_threads can find it by variable name
             if isinstance(init_value_expr, dict) and init_value_expr.get('name') == 'create_threads':
                 count_arg = init_value_expr['arguments'][0]
-                self.thread_array_counts[name] = self.visit(count_arg)
+                from .threading_utils import clamp_thread_count
+                self.thread_array_counts[name] = clamp_thread_count(
+                    self.builder, self._auto_extract_value(self.visit(count_arg), 'int'))
             return
 
         if var_type == 'thread':
@@ -1828,10 +1804,31 @@ class CodeGenerator:
 
         self.builder.position_at_start(end_bb)
 
+    def _unlock_held_atomic_scopes(self, down_to: int = 0) -> None:
+        """Emit unlock calls for every 'atomic' entry on self.control_stack from
+        the top down to (but not including) index *down_to*, in LIFO order.
+
+        Called by visit_return (down_to=0, unlock everything) and visit_break
+        (down_to=loop_idx+1, unlock only what was entered since the loop
+        started) so an early exit from `atomic do ... end atomic` can't leak
+        the mutex.
+        """
+        for entry in reversed(self.control_stack[down_to:]):
+            if entry['kind'] == 'atomic':
+                self.builder.call(entry['unlock_fn'], [entry['mutex_ptr']])
+
     def visit_break(self, node: Dict[str, Any]) -> None:
-        if not self.loop_exit_stack:
+        loop_idx = None
+        for i in range(len(self.control_stack) - 1, -1, -1):
+            if self.control_stack[i]['kind'] == 'loop':
+                loop_idx = i
+                break
+        if loop_idx is None:
             raise AleError("'break' used outside of a loop", node)
-        self.builder.branch(self.loop_exit_stack[-1])
+        # Release any atomic-block mutexes entered since the loop started, so
+        # breaking out of a loop nested inside `atomic do` doesn't leak the lock.
+        self._unlock_held_atomic_scopes(down_to=loop_idx + 1)
+        self.builder.branch(self.control_stack[loop_idx]['exit_bb'])
         # Append an unreachable block so the builder has somewhere to emit
         # any subsequent instructions without corrupting the IR
         dead_bb = self.builder.append_basic_block('break.dead')
@@ -1845,15 +1842,15 @@ class CodeGenerator:
         self.builder.position_at_start(cond_bb)
         cond_val = self._auto_extract_value(self.visit(node['condition']), 'int')
 
-        # Convert condition to i1 if it's i32 (from comparison operators)
+        # Convert condition to i1 if it's a wider int (from comparison operators)
         if hasattr(cond_val, 'type') and isinstance(cond_val.type, ir.IntType) and cond_val.type.width != 1:
-            cond_val = self.builder.icmp_signed('!=', cond_val, ir.Constant(ir.IntType(32), 0))
-        
+            cond_val = self.builder.icmp_signed('!=', cond_val, ir.Constant(cond_val.type, 0))
+
         self.builder.cbranch(cond_val, body_bb, end_bb)
         self.builder.position_at_start(body_bb)
-        self.loop_exit_stack.append(end_bb)
+        self.control_stack.append({'kind': 'loop', 'exit_bb': end_bb})
         self.visit(node['body'])
-        self.loop_exit_stack.pop()
+        self.control_stack.pop()
         if not self.builder.block.is_terminated:
             self.builder.branch(cond_bb)
         self.builder.position_at_start(end_bb)
@@ -1873,7 +1870,11 @@ class CodeGenerator:
         lock_fn   = self._declare_external_fn('pthread_mutex_lock',   ir.IntType(32), [opaque_ty])
         unlock_fn = self._declare_external_fn('pthread_mutex_unlock', ir.IntType(32), [opaque_ty])
         self.builder.call(lock_fn, [mutex_ptr])
+        # Track ownership so an early `return` or `break` inside the body can
+        # release the mutex instead of leaking it (see visit_return/visit_break).
+        self.control_stack.append({'kind': 'atomic', 'unlock_fn': unlock_fn, 'mutex_ptr': mutex_ptr})
         self.visit(node['body'])
+        self.control_stack.pop()
         if not self.builder.block.is_terminated:
             self.builder.call(unlock_fn, [mutex_ptr])
 
@@ -1894,9 +1895,9 @@ class CodeGenerator:
         cond = self.builder.icmp_signed('<', idx, end)
         self.builder.cbranch(cond, body_bb, end_bb)
         self.builder.position_at_start(body_bb)
-        self.loop_exit_stack.append(end_bb)
+        self.control_stack.append({'kind': 'loop', 'exit_bb': end_bb})
         self.visit(node['body'])
-        self.loop_exit_stack.pop()
+        self.control_stack.pop()
         if not self.builder.block.is_terminated:
             idx = self.builder.load(ptr)
             next_idx = self.builder.add(idx, ir.Constant(ir.IntType(32), 1))
@@ -1912,6 +1913,11 @@ class CodeGenerator:
         num_threads_val = self._auto_extract_value(self.visit(node['num_threads']), 'int')
         range_start_val = self._auto_extract_value(self.visit(node['start']), 'int')
         range_end_val   = self._auto_extract_value(self.visit(node['end']), 'int')
+
+        # Clamp to MAX_THREADS so the spawn/join loops below never index past
+        # the end of the fixed-size threads/args arrays.
+        over_cap = self.builder.icmp_signed('>', num_threads_val, ir.Constant(i32, MAX_THREADS))
+        num_threads_val = self.builder.select(over_cap, ir.Constant(i32, MAX_THREADS), num_threads_val)
 
         counter = self._pfor_counter
         self._pfor_counter += 1
@@ -1932,8 +1938,7 @@ class CodeGenerator:
         old_builder    = self.builder
         old_locals     = self.locals.copy()
         old_func_name  = self.current_function_name
-        old_ret        = self.has_explicit_return
-        old_loop_stack = self.loop_exit_stack[:]
+        old_control_stack = self.control_stack[:]
         old_mutexes    = self.local_mutexes[:]
         old_semaphores = self.local_semaphores[:]
         old_barriers   = self.local_barriers[:]
@@ -1942,8 +1947,7 @@ class CodeGenerator:
         self.builder               = ir.IRBuilder(worker_block)
         self.locals                = {}
         self.current_function_name = worker_name
-        self.has_explicit_return   = False
-        self.loop_exit_stack       = []
+        self.control_stack         = []
         self.local_mutexes         = []
         self.local_semaphores      = []
         self.local_barriers        = []
@@ -1983,9 +1987,9 @@ class CodeGenerator:
         self.builder.cbranch(cond, body_bb, end_bb)
 
         self.builder.position_at_start(body_bb)
-        self.loop_exit_stack.append(end_bb)
+        self.control_stack.append({'kind': 'loop', 'exit_bb': end_bb})
         self.visit(node['body'])
-        self.loop_exit_stack.pop()
+        self.control_stack.pop()
         if not self.builder.block.is_terminated:
             idx = self.builder.load(iter_ptr)
             self.builder.store(self.builder.add(idx, one), iter_ptr)
@@ -2003,8 +2007,7 @@ class CodeGenerator:
         self.builder               = old_builder
         self.locals                = old_locals
         self.current_function_name = old_func_name
-        self.has_explicit_return   = old_ret
-        self.loop_exit_stack       = old_loop_stack
+        self.control_stack         = old_control_stack
         self.local_mutexes         = old_mutexes
         self.local_semaphores      = old_semaphores
         self.local_barriers        = old_barriers
@@ -2033,9 +2036,9 @@ class CodeGenerator:
             'pthread_join', i32, [thread_type, voidptr_ty.as_pointer()])
 
         threads_arr = self.builder.alloca(
-            ir.ArrayType(thread_type, 1024), name=f'_pfor_threads_{counter}')
+            ir.ArrayType(thread_type, MAX_THREADS), name=f'_pfor_threads_{counter}')
         args_arr = self.builder.alloca(
-            ir.ArrayType(arg_struct_type, 1024), name=f'_pfor_args_{counter}')
+            ir.ArrayType(arg_struct_type, MAX_THREADS), name=f'_pfor_args_{counter}')
 
         cur_func = self.builder.function
 
@@ -2337,6 +2340,8 @@ class CodeGenerator:
         debug_print(f"DEBUG: visit_ID searching for '{name}', prefer_globals={prefer_globals}")
         entry = self.get_variable(name, prefer_globals)
         if entry is None:
+            if name in self.enum_constants:
+                return ir.Constant(ir.IntType(32), self.enum_constants[name])
             self.semantic_error(f"undefined variable '{name}'", node)
 
         ptr, dtype, is_constant = entry
@@ -2433,6 +2438,10 @@ class CodeGenerator:
 
     def visit_record(self, node: Dict[str, Any]) -> None:
         """Record type definitions are processed in the first pass; nothing to emit."""
+        pass
+
+    def visit_enum(self, node: Dict[str, Any]) -> None:
+        """Enum member values are registered in the first pass; nothing to emit."""
         pass
 
     def visit_record_init(self, node: Dict[str, Any]) -> Dict[str, Any]:
@@ -2900,19 +2909,29 @@ class CodeGenerator:
             
             arg = self.visit(node['arguments'][0])
             debug_print(f"DEBUG: int() conversion - arg type: {getattr(arg, 'type', type(arg))}, value: {arg}")
-            
+
+            # Variant-wrapped value: let the runtime conversion (variant_to_int)
+            # handle int/float/string coercion correctly.
+            from .base_types import get_variant_type
+            variant_ty = get_variant_type()
+            if hasattr(arg, 'type') and (arg.type == variant_ty or
+                    (isinstance(arg.type, ir.PointerType) and arg.type.pointee == variant_ty)):
+                return self._auto_extract_value(arg, 'int')
+
             # If argument is already an integer, return as-is
             if hasattr(arg, 'type') and isinstance(arg.type, ir.IntType):
                 return arg
-            
+
+            # If argument is a float, truncate towards zero (C semantics)
+            if hasattr(arg, 'type') and isinstance(arg.type, ir.DoubleType):
+                return self.builder.fptosi(arg, ir.IntType(32))
+
             # If argument is a string pointer, use atoi to convert
             if hasattr(arg, 'type') and isinstance(arg.type, ir.PointerType) and arg.type.pointee == ir.IntType(8):
                 atoi = self._declare_external_fn('atoi', ir.IntType(32), [ir.IntType(8).as_pointer()])
                 return self.builder.call(atoi, [arg])
-            
-            # For other types, create a placeholder (compile-time conversion not supported)
-            debug_print(f"DEBUG: int() conversion - unsupported type, creating placeholder")
-            return ir.Constant(ir.IntType(32), 0)  # Placeholder value
+
+            raise AleError(f"int() does not support this argument type ({getattr(arg, 'type', type(arg))})", node)
         # Variant creation functions
         elif func_name.startswith('variant_create_'):
             # Handle variant_create_* functions
@@ -3197,9 +3216,8 @@ class CodeGenerator:
             head     = self.builder.load(head_ptr)
             if is_shared_q:
                 self.insert_yield()
-            # Write value at buffer[head] = queue_ptr + 4 + head
-            buf_idx  = self.builder.add(ir.Constant(i32, 4), head)
-            slot_ptr = self.builder.gep(queue_ptr, [buf_idx], inbounds=False)
+                self.insert_tsan_call(cnt_ptr, 4, is_write=False)
+            count    = self.builder.load(cnt_ptr)
             val = self.visit(node['arguments'][1])
             # Coerce val to i32 — handle variant pointers, plain int pointers, wider/narrower ints
             if isinstance(val.type, ir.PointerType):
@@ -3215,6 +3233,19 @@ class CodeGenerator:
                     val = self.builder.trunc(val, i32)
                 else:
                     val = self.builder.zext(val, i32)
+            # Skip the write when the queue is already full: without this, a
+            # full queue would silently overwrite an unread slot and let
+            # count grow past capacity, corrupting queue_size()/queue_capacity().
+            is_full = self.builder.icmp_signed('>=', count, capacity)
+            full_bb = self.builder.append_basic_block('enqueue_full')
+            ok_bb    = self.builder.append_basic_block('enqueue_ok')
+            end_bb   = self.builder.append_basic_block('enqueue_end')
+            self.builder.cbranch(is_full, full_bb, ok_bb)
+
+            self.builder.position_at_start(ok_bb)
+            # Write value at buffer[head] = queue_ptr + 4 + head
+            buf_idx  = self.builder.add(ir.Constant(i32, 4), head)
+            slot_ptr = self.builder.gep(queue_ptr, [buf_idx], inbounds=False)
             if is_shared_q:
                 self.insert_yield()
                 self.insert_tsan_call(slot_ptr, 4, is_write=True)
@@ -3231,14 +3262,16 @@ class CodeGenerator:
                 self.insert_yield()
             # count += 1
             if is_shared_q:
-                self.insert_yield()
-                self.insert_tsan_call(cnt_ptr, 4, is_write=False)
-            cnt = self.builder.load(cnt_ptr)
-            if is_shared_q:
                 self.insert_tsan_call(cnt_ptr, 4, is_write=True)
-            self.builder.store(self.builder.add(cnt, ir.Constant(i32, 1)), cnt_ptr)
+            self.builder.store(self.builder.add(count, ir.Constant(i32, 1)), cnt_ptr)
             if is_shared_q:
                 self.insert_yield()
+            self.builder.branch(end_bb)
+
+            self.builder.position_at_start(full_bb)
+            self.builder.branch(end_bb)
+
+            self.builder.position_at_start(end_bb)
             return ir.Constant(i32, 0)
 
         elif func_name == 'dequeue':
@@ -3261,43 +3294,27 @@ class CodeGenerator:
             if is_shared_q:
                 self.insert_yield()
                 self.insert_tsan_call(cnt_ptr, 4, is_write=False)
-            cnt = self.builder.load(cnt_ptr)
-            if is_shared_q:
-                self.insert_yield()
-
-            # Empty-queue check: branch to an aborting error path rather than reading
-            # stale/garbage data from an unpopulated slot.
-            is_empty = self.builder.icmp_signed('==', cnt, zero)
-            empty_bb = self.builder.append_basic_block('dequeue_empty')
-            ok_bb    = self.builder.append_basic_block('dequeue_ok')
-            self.builder.cbranch(is_empty, empty_bb, ok_bb)
-
-            self.builder.position_at_start(empty_bb)
-            err_msg = 'Runtime error: dequeue() called on an empty queue'
-            err_bytes = bytearray(err_msg.encode('utf8')) + b'\0'
-            err_name = f'dequeue_empty_msg_{abs(hash(err_msg))}'
-            if err_name in self.module.globals:
-                err_gv = self.module.get_global(err_name)
-            else:
-                err_ty = ir.ArrayType(ir.IntType(8), len(err_bytes))
-                err_gv = ir.GlobalVariable(self.module, err_ty, name=err_name)
-                err_gv.linkage = 'internal'
-                err_gv.global_constant = True
-                err_gv.initializer = ir.Constant(err_ty, err_bytes)
-            err_ptr = self.builder.bitcast(err_gv, ir.IntType(8).as_pointer())
-            puts_fn = self._declare_external_fn('puts', ir.IntType(32), [ir.IntType(8).as_pointer()])
-            self.builder.call(puts_fn, [err_ptr])
-            abort_fn = self._declare_external_fn('abort', ir.VoidType(), [])
-            self.builder.call(abort_fn, [])
-            self.builder.unreachable()
-
-            self.builder.position_at_start(ok_bb)
+            count    = self.builder.load(cnt_ptr)
             if is_shared_q:
                 self.insert_yield()
                 self.insert_tsan_call(tail_ptr, 4, is_write=False)
             tail     = self.builder.load(tail_ptr)
             if is_shared_q:
                 self.insert_yield()
+
+            result_ptr = self.builder.alloca(i32, name='dequeue_result')
+            self.builder.store(zero, result_ptr)
+
+            # Skip the pop when the queue is empty: without this, dequeue would
+            # read a stale/unwritten slot and drive count negative, corrupting
+            # queue_size()/queue_capacity() for later calls.
+            is_empty = self.builder.icmp_signed('<=', count, zero)
+            empty_bb = self.builder.append_basic_block('dequeue_empty')
+            ok_bb    = self.builder.append_basic_block('dequeue_ok')
+            end_bb   = self.builder.append_basic_block('dequeue_end')
+            self.builder.cbranch(is_empty, empty_bb, ok_bb)
+
+            self.builder.position_at_start(ok_bb)
             # Read value from buffer[tail]
             buf_idx  = self.builder.add(ir.Constant(i32, 4), tail)
             slot_ptr = self.builder.gep(queue_ptr, [buf_idx], inbounds=False)
@@ -3307,6 +3324,7 @@ class CodeGenerator:
             val      = self.builder.load(slot_ptr)
             if is_shared_q:
                 self.insert_yield()
+            self.builder.store(val, result_ptr)
             # tail = (tail + 1) % capacity
             new_tail = self.builder.srem(self.builder.add(tail, ir.Constant(i32, 1)), capacity)
             if is_shared_q:
@@ -3316,14 +3334,18 @@ class CodeGenerator:
             if is_shared_q:
                 self.insert_yield()
             # count -= 1
-            new_cnt = self.builder.sub(cnt, ir.Constant(i32, 1))
             if is_shared_q:
-                self.insert_yield()
                 self.insert_tsan_call(cnt_ptr, 4, is_write=True)
-            self.builder.store(new_cnt, cnt_ptr)
+            self.builder.store(self.builder.sub(count, ir.Constant(i32, 1)), cnt_ptr)
             if is_shared_q:
                 self.insert_yield()
-            return val
+            self.builder.branch(end_bb)
+
+            self.builder.position_at_start(empty_bb)
+            self.builder.branch(end_bb)
+
+            self.builder.position_at_start(end_bb)
+            return self.builder.load(result_ptr)
 
         elif func_name == 'queue_size':
             # queue_size(q) - return number of elements currently in the queue
@@ -3533,8 +3555,6 @@ class CodeGenerator:
         return self.builder.load(element_ptr)
 
     def visit_return(self, node: Dict[str, Any]) -> None:
-        # Mark that we've seen an explicit return in this body
-        self.has_explicit_return = True
         if 'value' in node and node['value'] is not None:
             val = self.visit(node['value'])
             from .base_types import get_variant_type
@@ -3557,8 +3577,10 @@ class CodeGenerator:
                 # val is a pointer to the expected type — load it
                 val = self.builder.load(val)
 
+            self._unlock_held_atomic_scopes()
             self.builder.ret(val)
         else:
+            self._unlock_held_atomic_scopes()
             self.builder.ret_void()
 
     # visit_record_init is defined in the Record support section above

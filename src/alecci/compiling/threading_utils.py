@@ -2,6 +2,25 @@ from llvmlite import ir
 
 from parsing.globals import debug_print
 
+# Maximum number of threads create_threads()/parallel for can spawn in one
+# call. The thread-handle and argument-struct arrays are fixed-size stack
+# allocations of this length; a requested count above this is clamped at
+# runtime (see the spawn loops below) to avoid writing out of bounds.
+MAX_THREADS = 1024
+
+
+def clamp_thread_count(builder, count):
+    """Clamp an i32 thread-count value to MAX_THREADS.
+
+    Used both by create_threads() (for its own spawn loop) and by callers
+    that separately cache the count for a later join_threads() call, so the
+    two never disagree about how many threads were actually spawned.
+    """
+    i32 = ir.IntType(32)
+    over_cap = builder.icmp_signed('>', count, ir.Constant(i32, MAX_THREADS))
+    return builder.select(over_cap, ir.Constant(i32, MAX_THREADS), count)
+
+
 def _get_pthread_create(module):
     # pthread_t is typically a pointer type (void* or equivalent)
     thread_type = ir.IntType(8).as_pointer()  # pthread_t as void*
@@ -79,10 +98,7 @@ def create_thread(builder, module, target_func, thread_args=None):
             field_value = wrapper_builder.load(field_ptr)
             call_args.append(field_value)
             debug_print(f"[DEBUG] create_thread wrapper: added arg {i}: {field_value}")
-        
-        # Fix: Reverse the argument order to match expected parameter order
-        # This addresses an issue where arguments were being passed in reverse order
-        call_args.reverse()
+
         debug_print(f"[DEBUG] create_thread wrapper: final call_args length: {len(call_args)}")
         
         # Call the original function with the provided arguments
@@ -182,8 +198,12 @@ def create_threads(builder, module, thread_count, target_func, thread_args=None)
         threads_ptr: Pointer to the array of thread handles.
     """
     pthread_create, thread_type, voidptr_ty = _get_pthread_create(module)
-    threads_array_type = ir.ArrayType(thread_type, 1024)  # Max 1024 threads for now
+    threads_array_type = ir.ArrayType(thread_type, MAX_THREADS)
     threads_ptr = builder.alloca(threads_array_type, name="threads")
+
+    # Clamp thread_count to MAX_THREADS so the spawn loop below never indexes
+    # past the end of the fixed-size threads/args arrays.
+    thread_count = clamp_thread_count(builder, thread_count)
     
     # Create a structure to hold thread arguments including thread_number
     # The structure will contain: thread_number (i32) + additional args
@@ -224,11 +244,7 @@ def create_threads(builder, module, thread_count, target_func, thread_args=None)
             field_ptr = wrapper_builder.gep(arg_struct_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), i)])
             field_value = wrapper_builder.load(field_ptr)
             call_args.append(field_value)
-        
-        # Fix: Reverse the argument order to match expected parameter order
-        # This addresses an issue where arguments were being passed in reverse order
-        call_args.reverse()
-        
+
         # Call the original function with the extracted arguments
         result = wrapper_builder.call(target_func, call_args)
         
@@ -287,8 +303,8 @@ def create_threads(builder, module, thread_count, target_func, thread_args=None)
     
     start_routine = wrapper_func
     
-    # Allocate an array of argument structures for all threads (max 1024)
-    arg_structs_array_type = ir.ArrayType(thread_arg_struct_type, 1024)
+    # Allocate an array of argument structures for all threads
+    arg_structs_array_type = ir.ArrayType(thread_arg_struct_type, MAX_THREADS)
     arg_structs_array = builder.alloca(arg_structs_array_type, name="all_thread_args")
     
     # Manual loop implementation to create threads

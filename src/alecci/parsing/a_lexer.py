@@ -153,7 +153,7 @@ t_STRING   = r'"[^\n"]*"'
 t_FORMATTED_STRING   = r'\`[^\n\`]*\`'
 
 def t_CHAR_LITERAL(t):
-    r"'[^'\\n]'"
+    r"'[^'\n]'"
     t.value = ord(t.value[1])
     return t
 
@@ -215,6 +215,7 @@ def t_error( p:lex.LexToken):
 
     else:
         print("Syntax error at EOF")
+        return
     p.lexer.skip(1)
 
 

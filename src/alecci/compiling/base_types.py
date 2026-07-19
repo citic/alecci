@@ -162,6 +162,17 @@ def _normalise_field_type(type_str: str) -> str:
     return 'string' if type_str == 'text' else type_str
 
 
+def reset_record_registry() -> None:
+    """Clear all registered record types.
+
+    _record_registry is process-global, so without this a second CodeGenerator
+    instance compiling a different program in the same process would still see
+    record types registered by the first compilation. Call at the start of
+    CodeGenerator.compile().
+    """
+    _record_registry.clear()
+
+
 def register_record(name: str, fields: list) -> ir.LiteralStructType:
     """Register a record type and cache its LLVM struct type.
 

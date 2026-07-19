@@ -372,12 +372,15 @@ def test_example_undefined_variable_scan(repo_root: Path, bin_dir: Path, compile
     rc, build_out = compile_pseudo_fn(src, out, debug=False, tsan=False)
     assert rc != 0, f"[BUILD FAIL] undefined_variable_scan should have failed compilation but succeeded\n{build_out}"
     
-    # Check that the error message contains the expected semantic error with line number
-    assert "semantic error: undefined variable 'a' in scan statement" in build_out, \
+    # Check that the error message contains the expected semantic error.
+    # semantic_error() now raises AleError (like every other compiler-level
+    # error) instead of calling sys.exit(1) directly, so the message uses
+    # AleError's unified "file: error: msg (line N)" format.
+    assert "undefined variable 'a' in scan statement" in build_out, \
         f"[ASSERT FAIL] undefined_variable_scan missing expected error message\nFull output:\n{build_out}"
-    
+
     # Verify it includes a line number
-    assert ":2:1:" in build_out or ":2:" in build_out, \
+    assert "(line 2)" in build_out, \
         f"[ASSERT FAIL] undefined_variable_scan missing line number in error\nFull output:\n{build_out}"
     
     print("[PASS] undefined_variable_scan")

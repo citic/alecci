@@ -169,15 +169,19 @@ def main():
         # Link math library for pow() and other math functions
         clang_cmd.append('-lm')
     
+    keep_ir_file = False
     try:
         result = subprocess.run(clang_cmd, capture_output=True, text=True)
-        
+
         if result.returncode == 0:
             print(f"Compilation successful! Executable created: {executable}")
         else:
             print("Compilation failed:")
             print(result.stderr)
     except FileNotFoundError:
+        # Clang isn't installed — keep the IR file around since the message
+        # below tells the user to run clang on it themselves.
+        keep_ir_file = True
         print(f"LLVM IR generated successfully: {ir_file_path}")
         print("Note: Clang not found. To create executable, install Clang and run:")
         print(f"  clang {ir_file_path} -o {executable}")
@@ -186,7 +190,7 @@ def main():
         elif not args.no_tsan:
             print(f"  (with thread sanitizer: clang -fsanitize=thread {ir_file_path} -o {executable})")
     finally:
-        if tmp_ir is not None:
+        if tmp_ir is not None and not keep_ir_file:
             os.unlink(ir_file_path)
 
 
