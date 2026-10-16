@@ -89,6 +89,8 @@ class CodeGenerator:
         self.funcs: Dict[str, ir.Function] = {}
         self.locals = {}  # name -> (pointer, datatype, is_constant)
         self.globals = {}  # name -> (pointer, datatype, is_constant)
+        self.const_ints = {}        # shared const name -> compile-time int value
+        self.local_const_ints = {}  # const name -> int value, reset per procedure/function
         self.var_types = {}  # name -> 'int'|'float'|'string'|etc. for type tracking
         self.current_function_name = None  # Track current function for context
         self.shared_runtime_inits = []  # List of (name, expression) for shared vars that need runtime evaluation
@@ -663,10 +665,12 @@ class CodeGenerator:
                 # Save current builder state
                 old_builder = self.builder
                 old_locals = self.locals.copy()
+                old_local_consts = self.local_const_ints
                 old_func_name = self.current_function_name
 
                 self.builder = ir.IRBuilder(block)
                 self.locals = {}  # Reset locals for this procedure/function
+                self.local_const_ints = {}
                 self.current_function_name = decl['name']
                 # Reset control-scope stack (loops/atomic blocks) for this procedure
                 self.control_stack = []
@@ -762,21 +766,71 @@ class CodeGenerator:
                 # Restore builder state
                 self.builder = old_builder
                 self.locals = old_locals
+                self.local_const_ints = old_local_consts
                 self.current_function_name = old_func_name
 
     # ------------------------------------------------------------------
     # process_shared_declaration helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _resolve_shared_array_size(size_arg) -> int:
-        """Parse an array-size argument node to a plain Python int (default 10)."""
-        if isinstance(size_arg, dict) and size_arg.get('type') == 'literal':
-            try:
-                return int(size_arg['value'])
-            except (ValueError, TypeError):
-                pass
-        return 10
+    def _const_int_value(self, node):
+        """Evaluate an AST node to a compile-time int, or return None.
+
+        Supports integer literals, previously declared ``const`` names and
+        + - * # mod % ^ applied to them, so ``array(n * n + 1, 0)`` works when
+        ``n`` is a constant.
+        """
+        if not isinstance(node, dict):
+            return None
+        kind = node.get('type')
+        if kind == 'literal':
+            v = node.get('value')
+            return v if isinstance(v, int) and not isinstance(v, bool) else None
+        if kind == 'ID':
+            name = node.get('value')
+            if name in self.local_const_ints:
+                return self.local_const_ints[name]
+            return self.const_ints.get(name)
+        if kind == 'unary_op' and node.get('op') == '-':
+            v = self._const_int_value(node.get('operand'))
+            return -v if v is not None else None
+        if kind == 'binary_op':
+            l = self._const_int_value(node.get('left'))
+            r = self._const_int_value(node.get('right'))
+            if l is None or r is None:
+                return None
+            op = node.get('op')
+            if op == '+': return l + r
+            if op == '-': return l - r
+            if op == '*': return l * r
+            if op == '#' and r != 0: return l // r
+            if op in ('%', 'mod') and r != 0: return l % r
+            if op == '^' and r >= 0: return l ** r
+        return None
+
+    def _resolve_shared_array_size(self, size_arg, node=None) -> int:
+        """Resolve an array-size argument to a positive Python int.
+
+        The size must be a compile-time constant (integer literal, ``const`` name
+        or an expression over them); anything else is an error rather than a
+        silent default.
+        """
+        size = self._const_int_value(size_arg)
+        if size is None:
+            raise AleError(
+                "array size must be a constant integer (an integer literal, "
+                "a 'const' name, or an expression over them); queue capacities follow the same rule",
+                node if node is not None else size_arg)
+        if size <= 0:
+            raise AleError(f"array size must be positive, got {size}",
+                           node if node is not None else size_arg)
+        return size
+
+    def _record_const_int(self, name: str, value_node, shared: bool) -> None:
+        """Remember the value of a constant integer declaration for array sizes."""
+        v = self._const_int_value(value_node)
+        if v is not None:
+            (self.const_ints if shared else self.local_const_ints)[name] = v
 
     def _shared_decl_array(self, name: str, value_node: dict) -> None:
         """Declare a shared array global (all element types)."""
@@ -784,7 +838,7 @@ class CodeGenerator:
         if len(args) < 2:
             raise AleError("'array()' requires at least 2 arguments: size and initial value", value_node)
 
-        array_size = self._resolve_shared_array_size(args[0])
+        array_size = self._resolve_shared_array_size(args[0], value_node)
 
         _ELEM_TYPES = {
             'semaphore': (ir.ArrayType(ir.IntType(8), 32),  32),
@@ -859,8 +913,8 @@ class CodeGenerator:
                 value_node.get('type') == 'function_call' and
                 value_node.get('name') == 'queue'):
             qargs = value_node.get('arguments', [])
-            if qargs and qargs[0].get('type') == 'literal':
-                capacity = int(qargs[0]['value'])
+            if qargs:
+                capacity = self._resolve_shared_array_size(qargs[0], value_node)
         total = 4 + capacity
         ty = ir.ArrayType(ir.IntType(32), total)
         g = ir.GlobalVariable(self.module, ty, name=f"{name}_storage")
@@ -942,6 +996,8 @@ class CodeGenerator:
         value    = init.get('value')
         is_constant = node.get('const', False)
         debug_print(f"DEBUG: Shared declaration name={name}, type={var_type}, value={value}")
+        if is_constant:
+            self._record_const_int(name, value, shared=True)
 
         # Shared arrays
         if (isinstance(value, dict) and
@@ -1133,8 +1189,8 @@ class CodeGenerator:
                 init_value_expr.get('type') == 'function_call' and
                 init_value_expr.get('name') == 'queue'):
             qargs = init_value_expr.get('arguments', [])
-            if qargs and isinstance(qargs[0], dict) and qargs[0].get('type') == 'literal':
-                queue_capacity = int(qargs[0]['value'])
+            if qargs:
+                queue_capacity = self._resolve_shared_array_size(qargs[0], init_value_expr)
 
         total_words = 4 + queue_capacity
         if shared:
@@ -1220,6 +1276,8 @@ class CodeGenerator:
         name = node['name']
         shared = node['shared']
         is_constant = node.get('const', False)
+        if is_constant and not shared:
+            self._record_const_int(name, node.get('init', {}).get('value'), shared=False)
 
         # --- Shared declarations: mostly already handled in pass 1 ---
         if shared and name in self.globals:
@@ -1250,7 +1308,7 @@ class CodeGenerator:
                 init = node['init']
                 init_value_expr = init.get('value')
                 args = init_value_expr.get('arguments', []) if isinstance(init_value_expr, dict) else []
-                array_size = self._resolve_shared_array_size(args[0]) if args else 1
+                array_size = self._resolve_shared_array_size(args[0], init_value_expr) if args else 1
                 # Extract initial semaphore value from the element constructor: array(N, semaphore(V))
                 sem_val = 0
                 if len(args) >= 2:
@@ -2861,14 +2919,7 @@ class CodeGenerator:
                 raise AleError("'array()' requires at least 2 arguments: size and element type", node)
             
             # Get array size
-            size_arg = args[0]
-            if isinstance(size_arg, dict) and size_arg.get('type') == 'literal':
-                array_size = size_arg['value']
-            else:
-                array_size = self.visit(size_arg)
-                if not isinstance(array_size, ir.Constant):
-                    raise AleError("array size must be a constant integer", node)
-                array_size = array_size.constant
+            array_size = self._resolve_shared_array_size(args[0], node)
             
             # Get element type/initialization
             element_init = args[1]

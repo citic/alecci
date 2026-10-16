@@ -187,6 +187,33 @@ def test_error_array_non_constant_size(tmp_path, compile_pseudo_fn):
     )
 
 
+def test_error_shared_array_non_constant_size(tmp_path, compile_pseudo_fn):
+    # Used to be silently replaced by a 10-element array.
+    _expect_error(
+        """
+        procedure main()
+            shared mutable len := 100
+            shared mutable a := array(len, 0)
+        end procedure
+        """,
+        "array size must be a constant integer",
+        tmp_path, compile_pseudo_fn,
+    )
+
+
+def test_error_queue_non_constant_capacity(tmp_path, compile_pseudo_fn):
+    _expect_error(
+        """
+        procedure main()
+            shared mutable cap := 4
+            shared mutable q as queue := queue(cap)
+        end procedure
+        """,
+        "array size must be a constant integer",
+        tmp_path, compile_pseudo_fn,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Thread operations
 # ---------------------------------------------------------------------------

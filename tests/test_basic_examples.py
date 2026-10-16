@@ -229,6 +229,16 @@ EXAMPLES = {
         "file": "atomic.ale",
         "expect": ["counter=4"],
     },
+    "const_array_size": {
+        "file": "const_array_size.ale",
+        "expect": [
+            "const size test start",
+            "shared array sum = 325",
+            "local array last = 22",
+            "queue size = 3",
+            "const size test end",
+        ],
+    },
     "enum_basic": {
         "file": "enum_basic.ale",
         "expect": [
@@ -417,3 +427,9 @@ def test_example_enum_basic(repo_root: Path, bin_dir: Path, compile_pseudo_fn, r
     """Enum members are registered as compile-time int constants with C-style auto-increment."""
     out = _compile_and_run("enum_basic", EXAMPLES["enum_basic"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] enum_basic")
+
+
+def test_example_const_array_size(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    """Constant-expression sizes are honoured (n * n + 1 elements, queue(n - 2)), not defaulted to 10."""
+    out = _compile_and_run("const_array_size", EXAMPLES["const_array_size"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] const_array_size")
