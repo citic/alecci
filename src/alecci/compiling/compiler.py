@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from llvmlite import ir
 
 from .base_types import get_type
+from .builder_utils import EntryAllocaBuilder
 from .threading_utils import create_threads, create_thread, join_threads, join_thread, _get_pthread_create, MAX_THREADS
 from ..parsing.globals import debug_print
 from . import variant_utils
@@ -687,7 +688,7 @@ class CodeGenerator:
                 old_local_consts = self.local_const_ints
                 old_func_name = self.current_function_name
 
-                self.builder = ir.IRBuilder(block)
+                self.builder = EntryAllocaBuilder(block)
                 self.locals = {}  # Reset locals for this procedure/function
                 self.local_const_ints = {}
                 self.current_function_name = decl['name']
@@ -2045,7 +2046,7 @@ class CodeGenerator:
         old_barriers   = self.local_barriers[:]
         old_condvars   = self.local_condvars[:]
 
-        self.builder               = ir.IRBuilder(worker_block)
+        self.builder               = EntryAllocaBuilder(worker_block)
         self.locals                = {}
         self.current_function_name = worker_name
         self.control_stack         = []

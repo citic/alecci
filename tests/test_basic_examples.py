@@ -252,6 +252,16 @@ EXAMPLES = {
             "array init test end",
         ],
     },
+    "loop_stack_usage": {
+        "file": "loop_stack_usage.ale",
+        "expect": [
+            "loop stack test start",
+            "iterations = 2000000",
+            "thread rounds total = 60000",
+            "parallel for rounds cell = 3000",
+            "loop stack test end",
+        ],
+    },
     "enum_basic": {
         "file": "enum_basic.ale",
         "expect": [
@@ -452,3 +462,9 @@ def test_example_array_init_value(repo_root: Path, bin_dir: Path, compile_pseudo
     """array(n, v) fills every element with v (shared/local, int/float)."""
     out = _compile_and_run("array_init_value", EXAMPLES["array_init_value"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] array_init_value")
+
+
+def test_example_loop_stack_usage(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    """Long loops / thread-creating loops must not grow the stack (used to SIGSEGV)."""
+    out = _compile_and_run("loop_stack_usage", EXAMPLES["loop_stack_usage"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] loop_stack_usage")

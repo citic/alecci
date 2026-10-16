@@ -1,4 +1,5 @@
 from llvmlite import ir
+from .builder_utils import alloca_here
 
 from parsing.globals import debug_print
 
@@ -52,7 +53,7 @@ def create_thread(builder, module, target_func, thread_args=None):
     debug_print("[DEBUG] Entering create_thread")
     pthread_create, thread_type, voidptr_ty = _get_pthread_create(module)
     debug_print(f"[DEBUG] pthread_create: {pthread_create}, thread_type: {thread_type}, voidptr_ty: {voidptr_ty}")
-    thread_ptr = builder.alloca(thread_type, name="thread")
+    thread_ptr = alloca_here(builder, thread_type, name="thread")
     debug_print(f"[DEBUG] Allocated thread_ptr: {thread_ptr}")
     
     # Create a structure to hold all thread arguments
@@ -162,7 +163,7 @@ def create_thread(builder, module, target_func, thread_args=None):
     debug_print(f"[DEBUG] start_routine wrapper: {start_routine}")
     
     # Create argument structure for this thread
-    arg_struct = builder.alloca(thread_arg_struct_type, name="thread_args")
+    arg_struct = alloca_here(builder, thread_arg_struct_type, name="thread_args")
     
     # Set all arguments in the structure
     if thread_args:
@@ -199,11 +200,16 @@ def create_threads(builder, module, thread_count, target_func, thread_args=None)
     """
     pthread_create, thread_type, voidptr_ty = _get_pthread_create(module)
     threads_array_type = ir.ArrayType(thread_type, MAX_THREADS)
-    threads_ptr = builder.alloca(threads_array_type, name="threads")
 
     # Clamp thread_count to MAX_THREADS so the spawn loop below never indexes
-    # past the end of the fixed-size threads/args arrays.
+    # past the end of the threads/args arrays.
     thread_count = clamp_thread_count(builder, thread_count)
+
+    # Allocate exactly thread_count handles (not MAX_THREADS): the block must stay
+    # unique per call because the threads outlive this statement, so it cannot be
+    # hoisted, and a fixed 8 KB block per call exhausts the stack in loops.
+    threads_slots = alloca_here(builder, thread_type, thread_count, name="threads")
+    threads_ptr = builder.bitcast(threads_slots, threads_array_type.as_pointer())
     
     # Create a structure to hold thread arguments including thread_number
     # The structure will contain: thread_number (i32) + additional args
@@ -305,7 +311,8 @@ def create_threads(builder, module, thread_count, target_func, thread_args=None)
     
     # Allocate an array of argument structures for all threads
     arg_structs_array_type = ir.ArrayType(thread_arg_struct_type, MAX_THREADS)
-    arg_structs_array = builder.alloca(arg_structs_array_type, name="all_thread_args")
+    arg_structs_slots = alloca_here(builder, thread_arg_struct_type, thread_count, name="all_thread_args")
+    arg_structs_array = builder.bitcast(arg_structs_slots, arg_structs_array_type.as_pointer())
     
     # Manual loop implementation to create threads
     current_func = builder.function

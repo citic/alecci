@@ -1,0 +1,45 @@
+// Stack slots must not be allocated per loop iteration: long loops, and loops that
+// create threads or run parallel for many times, used to overflow the 8 MB stack.
+
+procedure main()
+    print "loop stack test start"
+
+    // ~2M iterations with float temporaries in a single thread
+    mutable i := 0
+    mutable x as float := 0.0
+    mutable acc as float := 0.0
+    while i < 2000000 do
+        x := (i + 0.5) * 0.000001
+        acc := acc + 4.0 / (1.0 + x * x)
+        i := i + 1
+    end while
+    print `iterations = {i}`
+
+    // create_threads / join_threads inside a loop
+    shared mutable total := 0
+    shared mutable total_lock as mutex := mutex()
+    for r := 0 to 3000 do
+        mutable ts := create_threads(2, worker)
+        join_threads(ts, 2)
+    end for
+    print `thread rounds total = {total}`
+
+    // parallel for inside a loop
+    shared mutable cells := array(8, 0)
+    for r := 0 to 3000 do
+        parallel for k := 0 to 8 with 2 thread do
+            cells[k] := cells[k] + 1
+        end parallel for
+    end for
+    mutable c0 := cells[0]
+    print `parallel for rounds cell = {c0}`
+    print "loop stack test end"
+end procedure
+
+procedure worker(thread_number as int)
+    for j := 0 to 10 do
+        lock(total_lock)
+        total := total + 1
+        unlock(total_lock)
+    end for
+end procedure
