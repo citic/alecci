@@ -271,6 +271,25 @@ class CodeGenerator:
         self.builder.position_at_end(end_bb)
         return ir.Constant(ir.IntType(32), 0)
 
+    def _emit_array_fill(self, array_ptr: ir.Value, size: int, value: ir.Constant) -> None:
+        """Store *value* in every element of a local array with a simple counted loop."""
+        i32 = ir.IntType(32)
+        i_ptr = self.builder.alloca(i32, name="array_fill_i")
+        self.builder.store(ir.Constant(i32, 0), i_ptr)
+        cond_bb = self.builder.append_basic_block("array_fill_cond")
+        body_bb = self.builder.append_basic_block("array_fill_body")
+        end_bb = self.builder.append_basic_block("array_fill_end")
+        self.builder.branch(cond_bb)
+        self.builder.position_at_end(cond_bb)
+        i_val = self.builder.load(i_ptr)
+        self.builder.cbranch(self.builder.icmp_signed('<', i_val, ir.Constant(i32, size)), body_bb, end_bb)
+        self.builder.position_at_end(body_bb)
+        elem_ptr = self.builder.gep(array_ptr, [ir.Constant(i32, 0), i_val])
+        self.builder.store(value, elem_ptr)
+        self.builder.store(self.builder.add(i_val, ir.Constant(i32, 1)), i_ptr)
+        self.builder.branch(cond_bb)
+        self.builder.position_at_end(end_bb)
+
     def _emit_template_sprintf(self, template: str):
         """Format a backtick template string using sprintf and return (ptr, is_string).
 
@@ -808,6 +827,28 @@ class CodeGenerator:
             if op == '^' and r >= 0: return l ** r
         return None
 
+    def _array_init_constant(self, node):
+        """Return ('int', v) / ('float', v) for a numeric constant array initial value, else None.
+
+        Accepts int/float literals, ``const`` names and a unary minus on either.
+        """
+        if not isinstance(node, dict):
+            return None
+        if node.get('type') == 'literal':
+            v = node.get('value')
+            if isinstance(v, bool):
+                return None
+            if isinstance(v, float):
+                return ('float', v)
+            if isinstance(v, int):
+                return ('int', v)
+            return None
+        if node.get('type') == 'unary_op' and node.get('op') == '-':
+            inner = self._array_init_constant(node.get('operand'))
+            return (inner[0], -inner[1]) if inner else None
+        iv = self._const_int_value(node)
+        return ('int', iv) if iv is not None else None
+
     def _resolve_shared_array_size(self, size_arg, node=None) -> int:
         """Resolve an array-size argument to a positive Python int.
 
@@ -852,15 +893,17 @@ class CodeGenerator:
             element_type = fname
             element_llvm_type, nbytes = _ELEM_TYPES[fname]
             zero_elem = ir.Constant(element_llvm_type, [ir.Constant(ir.IntType(8), 0)] * nbytes)
-        elif (isinstance(elem_node, dict) and elem_node.get('type') == 'literal' and
-              isinstance(elem_node.get('value'), float)):
-            element_type = 'float'
-            element_llvm_type = ir.DoubleType()
-            zero_elem = ir.Constant(element_llvm_type, 0.0)
         else:
-            element_type = 'int'
-            element_llvm_type = ir.IntType(32)
-            zero_elem = ir.Constant(element_llvm_type, 0)
+            # Numeric initial value: every element starts as that value.
+            init_const = self._array_init_constant(elem_node)
+            if init_const is not None and init_const[0] == 'float':
+                element_type = 'float'
+                element_llvm_type = ir.DoubleType()
+                zero_elem = ir.Constant(element_llvm_type, init_const[1])
+            else:
+                element_type = 'int'
+                element_llvm_type = ir.IntType(32)
+                zero_elem = ir.Constant(element_llvm_type, init_const[1] if init_const else 0)
 
         array_llvm_type = ir.ArrayType(element_llvm_type, array_size)
         g = ir.GlobalVariable(self.module, array_llvm_type, name=name)
@@ -2931,16 +2974,14 @@ class CodeGenerator:
                 'thread':    ('thread',    ir.IntType(8).as_pointer()),
             }
             init_name = None
-            is_float_init = False
-            if isinstance(element_init, dict):
+            init_const = self._array_init_constant(element_init)
+            is_float_init = init_const is not None and init_const[0] == 'float'
+            if isinstance(element_init, dict) and init_const is None:
                 if element_init.get('type') == 'function_call':
                     init_name = element_init.get('name')
                 elif element_init.get('type') == 'literal':
                     v = element_init.get('value', '')
-                    if isinstance(v, float):
-                        is_float_init = True
-                    else:
-                        init_name = v.strip('"') if isinstance(v, str) else None
+                    init_name = v.strip('"') if isinstance(v, str) else None
             if is_float_init:
                 element_type, element_llvm_type = 'float', ir.DoubleType()
             else:
@@ -2949,7 +2990,13 @@ class CodeGenerator:
             # Create local array
             array_llvm_type = ir.ArrayType(element_llvm_type, array_size)
             array_ptr = self.builder.alloca(array_llvm_type)
-            
+
+            # Every element starts as the initial value (numeric constant), or zero
+            # for the plain int()/float()-style element specifiers.
+            if element_type in ('int', 'float'):
+                init_value = init_const[1] if init_const is not None else 0
+                self._emit_array_fill(array_ptr, array_size, ir.Constant(element_llvm_type, init_value))
+
             # Store in locals with array metadata
             # Note: this returns the alloca pointer, but stores metadata for array access
             return array_ptr

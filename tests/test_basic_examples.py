@@ -239,6 +239,19 @@ EXAMPLES = {
             "const size test end",
         ],
     },
+    "array_init_value": {
+        "file": "array_init_value.ale",
+        "expect": [
+            "array init test start",
+            "shared int sum = 28",
+            "shared float f[2] = 1.500000",
+            "shared zero z[1] = 0",
+            "local int sum = 36",
+            "local float lf[1] = -2.500000",
+            "local zero lz[2] = 0",
+            "array init test end",
+        ],
+    },
     "enum_basic": {
         "file": "enum_basic.ale",
         "expect": [
@@ -433,3 +446,9 @@ def test_example_const_array_size(repo_root: Path, bin_dir: Path, compile_pseudo
     """Constant-expression sizes are honoured (n * n + 1 elements, queue(n - 2)), not defaulted to 10."""
     out = _compile_and_run("const_array_size", EXAMPLES["const_array_size"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
     print("[PASS] const_array_size")
+
+
+def test_example_array_init_value(repo_root: Path, bin_dir: Path, compile_pseudo_fn, run_exe_fn, capsys):
+    """array(n, v) fills every element with v (shared/local, int/float)."""
+    out = _compile_and_run("array_init_value", EXAMPLES["array_init_value"], repo_root, bin_dir, compile_pseudo_fn, run_exe_fn)
+    print("[PASS] array_init_value")
