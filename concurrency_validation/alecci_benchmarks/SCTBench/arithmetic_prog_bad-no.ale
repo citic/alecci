@@ -1,4 +1,5 @@
 // SCTBench benchmark: concurrent-software-benchmarks/arithmetic_prog_bad.c
+// Full translation of arithmetic_prog_bad.c (the produce/total/consume printf calls included).
 // Producer-consumer with accumulation, N=3 iterations.
 // BUG: the original C code asserts total != N*(N+1)/2 after the run, which is
 // always false — consumer always accumulates total=6=N*(N+1)/2, so the
@@ -13,6 +14,7 @@ procedure producer(thread_number as int)
             cond_wait(empty, m)
         end while
         num := num + 1
+        print `produce ....{i}`
         unlock(m)
         cond_signal(full)
         i := i + 1
@@ -27,13 +29,16 @@ procedure consumer(thread_number as int)
             cond_wait(full, m)
         end while
         total := total + j
+        print `total ....{total}`
         num := num - 1
+        print `consume ....{j}`
         unlock(m)
         cond_signal(empty)
         j := j + 1
     end while
     // post-loop: outside the lock, thread2-only accesses — no race
     total := total + j
+    print `total ....{total}`
     flag := 1
 end procedure
 

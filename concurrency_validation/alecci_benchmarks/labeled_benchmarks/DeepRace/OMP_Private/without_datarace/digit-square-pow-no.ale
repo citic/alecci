@@ -1,32 +1,45 @@
-// Computes N² via digit decomposition: each of the n digit-positions contributes
-// one term using pow(10, n-j).  All n terms are accumulated into tsum under a mutex.
-// Race-free: each parallel iteration uses only local variables; tsum is mutex-guarded.
-// Source: OMP_Private/without_datarace/9.ved_-_main.c
-// Ground truth: none (original dataset).
-
+// Full translation of 9.ved_-_main.c
+// Computes N^2 via digit decomposition: one thread per digit position, each
+// contributing the term t3 * (t1 + t2) built from powers of ten.
+// No race: nj, nj1, t1, t2, t3 and sum are private to each iteration, and
+// "tsum += sum" is an atomic update, as in the C source.
+// N is read from stdin (digit-square-pow-no.txt); d[] holds the digits.
 procedure main()
     shared mutable N as int := 0
     shared mutable n as int := 0
     shared mutable tsum as int := 0
-    shared mutable mtx as mutex := mutex()
     shared mutable d := array(10, 0)
-    scan `enter N: {N}`
+
+    print "enter the n digit number to be squared"
+    scan `{N}`
     mutable a := N
+    mutable i := 0
     while a != 0 do
-        d[n] := a mod 10
-        a := a / 10
-        n := n + 1
+        d[i] := a mod 10
+        a := a # 10
+        i := i + 1
     end while
-    parallel for j := 1 to n+1 with n thread do
+
+    n := i
+    print `The Number is {N}`
+    print `Total digits are {n}`
+
+    // #pragma omp parallel num_threads(n) private(sum,nj,nj1,t1,t2,t3) + omp for
+    parallel for j := 1 to n + 1 with n thread do
+        mutable id := thread_number
         mutable nj as int := n - j
-        mutable nj1 as int := nj + 1
-        mutable t1 as int := N mod pow(10, nj)
-        mutable t2 as int := N mod pow(10, nj1)
-        mutable t3 as int := d[nj] * pow(10, nj)
-        mutable s as int := t3 * (t1 + t2)
-        lock(mtx)
-        tsum := tsum + s
-        unlock(mtx)
+        mutable nj1 as int := (n - j) + 1
+        mutable t1 as int := N mod int(pow(10, nj))
+        mutable t2 as int := N mod int(pow(10, nj1))
+        mutable t3 as int := d[nj] * int(pow(10, nj))
+        print `Thread-{id} printing N= {N}	 n= {n}	 j= {j}	 nj= {nj} 	 nj1= {nj1}	 t1= {t1}	 t2= {t2}	 t3= {t3}`
+        mutable sum as int := t3 * (t1 + t2)
+        print `Summation thread-{id} is  {sum}`
+        // #pragma omp atomic
+        atomic do
+            tsum := tsum + sum
+        end atomic
     end parallel for
-    print `square of {N} is {tsum}`
+
+    print `the suqare of {N} is {tsum}`
 end procedure

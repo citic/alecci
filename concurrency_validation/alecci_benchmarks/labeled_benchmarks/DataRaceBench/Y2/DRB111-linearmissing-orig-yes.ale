@@ -1,19 +1,25 @@
-// DRB111 – Missing linear: shared j counter incremented by all threads without protection
-// Race: j (write) vs j (read/write) across threads; c[j] also racy
+// DRB111 – Missing linear clause: the shared counter j is incremented by all threads
+// Full translation of DRB111-linearmissing-orig-yes.c
+// Race: j (read) vs j (write), j (write) vs j (write) and c[j] (write) vs c[j] (write)
 // label: Y2
 procedure main()
-    shared mutable a := array(100, 0)
-    shared mutable b := array(100, 0)
-    shared mutable c := array(100, 0)
+    shared const len = 100
+    shared mutable a := array(100, 0.0)
+    shared mutable b := array(100, 0.0)
+    shared mutable c := array(100, 0.0)
     shared mutable j := 0
-    for i := 0 to 100 do
-        a[i] := i
-        b[i] := i
-        c[i] := 0
+
+    for i := 0 to len do
+        a[i] := i / 2.0
+        b[i] := i / 3.0
+        c[i] := i / 7.0
     end for
 
-    parallel for i := 0 to 100 with 4 thread do
+    // #pragma omp parallel for
+    parallel for i := 0 to len with 4 thread do
         c[j] := c[j] + a[i] * b[i]
         j := j + 1
     end parallel for
+
+    print `c[50]={c[50]}`
 end procedure

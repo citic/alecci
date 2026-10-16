@@ -1,9 +1,13 @@
-// Race: parallel for accumulates p += i without any mutex (missing critical)
-// Inspired by OMP_Critical/with_datarace/for_-_main.c
-// Race: p (write) vs p (read/write) across threads
+// Full translation of for_-_main.c
+// Race: parallel for accumulates "p += i" into a shared p without a critical
+// section. omp_get_wtime timing is dropped, so only the sum is printed.
 procedure main()
     shared mutable p := 0
+
+    // #pragma omp parallel for
     parallel for i := 1 to 10001 with 4 thread do
         p := p + i
     end parallel for
+
+    print `The sum is {p}.`
 end procedure

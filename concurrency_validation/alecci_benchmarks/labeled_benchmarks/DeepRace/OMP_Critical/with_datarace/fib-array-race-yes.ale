@@ -1,10 +1,33 @@
-// Race: parallel for computes fib[i] = fib[i-1] + fib[i-2], loop-carried dependency
-// Inspired by OMP_Critical/with_datarace/fibomp_-_main.c (parallel fib generation, no barrier)
+// Full translation of fibomp_-_main.c
+// Race: "#pragma omp parallel num_threads(2)" has no work-sharing "for", so BOTH
+// threads run the whole loop fib[i] = fib[i-1] + fib[i-2] over the same array.
+// n comes from stdin (see fib-array-race-yes.txt); fib is 100 ints as in C.
 procedure main()
-    shared mutable fib := array(50, 0)
+    shared mutable n as int := 0
+    shared mutable fib := array(100, 0)
+
+    print "enter the range(<100)"
+    scan `{n}`
     fib[0] := 0
     fib[1] := 1
-    parallel for i := 2 to 50 with 4 thread do
+    if n <= 2 then
+        print `{fib[0]}`
+        print `{fib[1]}`
+    else
+        print "thread 1 generating fibonacci series"
+        // #pragma omp parallel num_threads(2)
+        mutable threads := create_threads(2, worker)
+        join_threads(threads, 2)
+    end if
+
+    print "thread 2 printing the fibonacci series"
+    for i := 0 to n do
+        print `{fib[i]}`
+    end for
+end procedure
+
+procedure worker(thread_number as int)
+    for i := 2 to n do
         fib[i] := fib[i - 1] + fib[i - 2]
-    end parallel for
+    end for
 end procedure

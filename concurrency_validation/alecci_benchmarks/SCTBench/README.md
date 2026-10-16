@@ -88,7 +88,7 @@ TSan is silent on these benchmarks.
 | `sync01_inspect-no.ale` | `inspect_examples/sync01.c` | Correct condvar (1-thread variant) | 1 |
 | `sync02-no.ale` | `concurrent-software-benchmarks/sync02_ok.c` | Correct condvar producer-consumer (N=20) | 2 |
 | `arithmetic_prog-no.ale` | `concurrent-software-benchmarks/arithmetic_prog_ok.c` | Correct condvar accumulation (N=4) | 2 |
-| `arithmetic_prog_bad-no.ale` | `concurrent-software-benchmarks/arithmetic_prog_bad.c` | Wrong assertion (dropped); no race (N=3) | 2 |
+| `arithmetic_prog_bad-no.ale` | `concurrent-software-benchmarks/arithmetic_prog_bad.c` | Wrong assertion (`assert total != 6`, always fires); no race (N=3) | 2 |
 | `sync01_bad-no.ale` | `concurrent-software-benchmarks/sync01_bad.c` | Condvar deadlock (num never decremented); TSan miss | 2 |
 | `sync02_bad-no.ale` | `concurrent-software-benchmarks/sync02_bad.c` | Condvar deadlock (num starts at 2); TSan miss | 2 |
 | `carter01_bad-no.ale` | `concurrent-software-benchmarks/carter01_bad.c` | Potential mutex deadlock; TSan silent | 4 |
@@ -102,15 +102,15 @@ TSan is silent on these benchmarks.
 
 **Atomicity violations**: The six atomicity-violation benchmarks (`lazy01`, `stack`, `twostage`, `twostage_100`, `circular-buffer-flag`, `queue-flag`) contain bugs that arise from atomicity violations between separately mutex-protected regions; all are labeled `expected_issues: [atomicity_violation]` per the source ground truth. All memory accesses are under some mutex so TSan cannot detect them — these are MISS results. `circular-buffer-flag-ok` is the correct counterpart (no bug) and retains `expected_issues: [none]`.
 
-**Flag-based buffers**: `circular-buffer-flag-no.ale` and `queue-flag-no.ale` use flag-based alternation (no condvars): each thread checks a `send`/`enqueue_flag` boolean under the single mutex and advances its loop counter regardless of whether it acted. Since Alecci has no `assert`, both programs complete without error — the atomicity bug is silent. `queue-flag-no.ale` uses an Alecci `record` type (`QType`) to model the queue's `head`/`tail`/`amount` fields; the element array is a separate shared variable because Alecci does not yet support `record.field[index]` indexing.
+**Flag-based buffers**: `circular-buffer-flag-no.ale` and `queue-flag-no.ale` use flag-based alternation (no condvars): each thread checks a `send`/`enqueue_flag` boolean under the single mutex and advances its loop counter regardless of whether it acted. Both translations keep the C `assert` calls, so the atomicity bug shows up as an assertion failure under the unlucky schedules (TSan itself stays silent). `queue-flag-no.ale` uses an Alecci `record` type (`QType`) to model the queue's `head`/`tail`/`amount` fields; the element array is a separate shared variable because Alecci does not yet support `record.field[index]` indexing.
 
-**Dining philosophers**: The `_unsat` variants acquire forks in different orders across threads while serialised by a shared `esbmc_m` mutex (translating `__ESBMC_atomic_begin/end` from `common.inc`). Despite the serialisation, TSan tracks the global lock-order graph and reports an inversion. The `_sat` variants additionally have an unprotected `phil` increment after the serialised section, producing both a data race and a lock-order-inversion warning.
+**Dining philosophers**: The `_unsat` variants acquire forks in different orders across threads while serialised by a shared `esbmc_m` mutex (translating `__ESBMC_atomic_begin/end` from `common.inc`). Despite the serialisation, TSan tracks the global lock-order graph and reports an inversion. In the `_sat` variants `din_phil{2,3,4}_sat` increment `phil` and test `phil == N` after the serialised section (unprotected, so a data race plus the lock-order-inversion warning); in `din_phil{5,6,7}_sat` the C source performs `++phil` and the check inside a second `__ESBMC_atomic_begin()/end()` pair, so `phil` is protected there and only the lock-order inversion (and the failing assertion) remain. All `_sat` translations keep `if (phil == N) assert(0)`.
 
 **Condvar deadlocks**: The `_bad` condvar variants (`sync01_bad`, `sync02_bad`) deadlock at runtime; TSan cannot detect this class of bug and the program simply times out. They are classified as `expected_issues: [deadlock]` but TSan will miss them.
 
 **SCTBench naming**: SCTBench uses `_ok` to mean "no assertion violation under tested schedules", not "no data race". `micro_2_ok.c`, `micro_3_ok.c`, and `micro_10_ok.c` are in fact racy programs.
 
-**Logic bug**: `account_bad-no.ale` (from `account_bad.c`) contains a wrong assertion formula — a logic error rather than a concurrency error. Since Alecci has no `assert`, the formula cannot be expressed, but the program still serves to document that TSan is silent on logic bugs.
+**Logic bug**: `account_bad-no.ale` (from `account_bad.c`) contains a wrong assertion formula — a logic error rather than a concurrency error. The translation keeps the wrong assertion, which aborts the program, and documents that TSan is silent on logic bugs.
 
 ---
 
@@ -128,7 +128,8 @@ Results are labelled against the **source ground truth** from `buggy.txt` / `map
 All 12 unexpected/MISS+UNEXPECTED results arise from TSan flagging lock-order-inversion on the dining philosopher fork mutexes. Because `esbmc_m` serialises the entire fork-acquire/release block, no actual deadlock can occur — but TSan still observes the two orderings (right→left vs left→right across threads) and fires.
 
 - `din_phil{2..7}_unsat`: ground truth is *no bug*; TSan's lock-order-inversion is a false positive
-- `din_phil{3..7}_sat`: ground truth is *data race on `phil`*; TSan detects both that and the spurious fork inversion (UNEXPECTED deadlock)
+- `din_phil{3,4}_sat`: ground truth is *data race on `phil`*; TSan detects both that and the spurious fork inversion (UNEXPECTED deadlock)
+- `din_phil{5,6,7}_sat`: in the C source `++phil` is inside the ESBMC atomic section, so there is no race on `phil`; TSan reports only the fork lock-order inversion, and the program aborts on the `assert(0)` (counted as a bug)
 - `din_phil2_sat`: ground truth is *data race on `phil`*; with only 2 threads TSan misses the race but reports the spurious fork inversion (MISS+UNEXPECTED)
 
 ---

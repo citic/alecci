@@ -1,30 +1,42 @@
-// Two threads wait on cv while flag=0; one signaler sets flag=1 and signals once.
-// Only one waiter is released; the other stays blocked when main exits.
-// Source: x.c (DeepRace POSIX/without_datarace). Ground truth: none.
-// TSan may report unexpected thread_leak.
-
-procedure waiter1()
+// Full translation of x.c
+// Two threads (threadfn1, threadfn3) wait on cv while flag = 0; threadfn2 sets
+// flag = 1 and signals once, so only one waiter is released and the other is
+// still blocked when main exits (TSan may report a thread leak).
+// Ground truth: none.
+// Deviations: sleep(1) and sleep(10) are scaled to 100 ms and 1000 ms; the
+// pthread_mutex_init call and the commented-out lines have no effect.
+procedure threadfn1()
+    print "thread1 start"
     lock(mx)
+    print "thread1 after lock"
     while flag = 0 do
         cond_wait(cv, mx)
     end while
     flag := 0
+    print "thread 1 after wait"
     unlock(mx)
 end procedure
 
-procedure waiter2()
+procedure threadfn3()
+    print "thread3 start"
     lock(mx)
+    print "thread3 after lock"
     while flag = 0 do
         cond_wait(cv, mx)
     end while
     flag := 0
+    print "thread 3 after wait"
     unlock(mx)
 end procedure
 
-procedure signaler()
+procedure threadfn2()
+    print "thread2 before lock"
     lock(mx)
+    print "thread2 after lock"
     flag := 1
     cond_signal(cv)
+    print "thread2 after signal"
+
     unlock(mx)
 end procedure
 
@@ -32,9 +44,10 @@ procedure main()
     shared mutable mx   as mutex   := mutex()
     shared mutable cv   as condvar := condvar()
     shared mutable flag := 0
-    create_thread(waiter1)
-    create_thread(waiter2)
-    sleep(500, "ms")
-    create_thread(signaler)
+    create_thread(threadfn1)
+    create_thread(threadfn3)
+    sleep(100, "ms")
+    create_thread(threadfn2)
     sleep(1000, "ms")
+    print "end test"
 end procedure

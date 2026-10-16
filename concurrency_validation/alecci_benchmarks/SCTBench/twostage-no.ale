@@ -1,34 +1,59 @@
 // SCTBench benchmark: concurrent-software-benchmarks/twostage_bad.c
-// Atomicity violation: funcA sets data1Value then data2Value under separate locks.
-// funcB reads data1Value then data2Value under separate locks and expects consistency.
-// Bug: atomicity violation between the two lock regions; no data race.
-// TSan cannot detect this class of bug.
+// Full translation of twostage_bad.c: iTThreads = 1 funcA thread(s) and iRThreads = 1 funcB thread.
+// Atomicity violation: funcA sets data1Value and then data2Value under separate locks (and
+// reads data1Value under data2Lock, the wrong lock); funcB reads them under the two locks
+// and asserts data2Value == data1Value + 1, which can fail between funcA's two regions.
+// The optional command line parameters (iTThreads, iRThreads) are read as in C; the usage
+// message, the pthread error checks and the lock()/unlock() wrappers are not modelled.
+// Bug: atomicity violation between the two lock regions; TSan can still report the
+// unprotected read of data1Value in funcA.
 
 procedure funcA(thread_number as int)
-    lock(data1_lock)
-    data1_value := 1
-    unlock(data1_lock)
-    lock(data2_lock)
-    data2_value := data1_value + 1
-    unlock(data2_lock)
+    lock(data1Lock)
+    data1Value := 1
+    unlock(data1Lock)
+    lock(data2Lock)
+    data2Value := data1Value + 1
+    unlock(data2Lock)
 end procedure
 
 procedure funcB(thread_number as int)
-    lock(data1_lock)
-    mutable t1 := data1_value
-    unlock(data1_lock)
-    lock(data2_lock)
-    mutable t2 := data2_value
-    unlock(data2_lock)
+    mutable t1 := -1
+    mutable t2 := -1
+    mutable done := 0
+    lock(data1Lock)
+    if data1Value = 0 then
+        unlock(data1Lock)
+        done := 1
+    end if
+    if done = 0 then
+        t1 := data1Value
+        unlock(data1Lock)
+        lock(data2Lock)
+        t2 := data2Value
+        unlock(data2Lock)
+        if t2 != (t1 + 1) then
+            print "Bug found!"
+            assert 0 = 1, "Bug found!"
+        end if
+    end if
 end procedure
 
-procedure main()
-    shared mutable data1_lock as mutex := mutex()
-    shared mutable data2_lock as mutex := mutex()
-    shared mutable data1_value := 0
-    shared mutable data2_value := 0
-    mutable t_a := create_threads(1, funcA)
-    mutable t_b := create_threads(2, funcB)
-    join_threads(t_a, 1)
-    join_threads(t_b, 2)
+procedure main(argc, argv as array)
+    shared mutable iTThreads := 1
+    shared mutable iRThreads := 1
+    shared mutable data1Lock as mutex := mutex()
+    shared mutable data2Lock as mutex := mutex()
+    shared mutable data1Value := 0
+    shared mutable data2Value := 0
+
+    if argc = 3 then
+        iTThreads := int(argv[1])
+        iRThreads := int(argv[2])
+    end if
+
+    mutable tPool := create_threads(iTThreads, funcA)
+    mutable rPool := create_threads(iRThreads, funcB)
+    join_threads(tPool, iTThreads)
+    join_threads(rPool, iRThreads)
 end procedure

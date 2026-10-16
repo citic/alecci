@@ -1,19 +1,31 @@
-// No race: 4 threads increment shared counter with mutex protection
-// Inspired by POSIX_Lock_Primitives/without_datarace/withmutex.c
-// No race: mutex serializes all counter accesses
+// Full translation of withmutex.c
+// 1000 rounds: each round resets counter and starts 4 threads that each add 100
+// to it, one lock/unlock per increment.
+// No race: every access to counter inside the threads is under mutex1; main only
+// touches counter while no thread is running.
+// The get_time() timing and the final elapsed-time printf are dropped (Alecci has
+// no clock); the amountN variables are the constant 100 given to each thread.
 procedure main()
     shared mutable counter := 0
-    shared mutable mtx as mutex := mutex()
-    mutable threads := create_threads(4, worker)
-    join_threads(threads, 4)
+    shared mutable mutex1 as mutex := mutex()
+
+    for x := 0 to 1000 do
+        counter := 0
+        mutable threads := create_threads(4, increment_counter)
+        join_threads(threads, 4)
+
+        if counter != 400 then
+            // printf("%d\n", counter) is commented out in the C source
+            counter := counter
+        end if
+    end for
 end procedure
 
-procedure worker(thread_number as int)
-    mutable i := 0
-    while i < 1000 do
-        lock(mtx)
+procedure increment_counter(thread_number as int)
+    mutable amount := 100
+    for i := 0 to amount do
+        lock(mutex1)
         counter := counter + 1
-        unlock(mtx)
-        i := i + 1
-    end while
+        unlock(mutex1)
+    end for
 end procedure

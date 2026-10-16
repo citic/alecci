@@ -1,12 +1,14 @@
-// DRB093 – DOALL2 collapse: each element a[i*100+j] independently incremented
-// No race: outer i parallel, inner j sequential; disjoint writes per thread
+// DRB093 – DOALL2 with collapse(2): every element a[i][j] is incremented independently
+// Full translation of DRB093-doall2-collapse-orig-no.c: int a[100][100] (global, zero)
+// flattened to a[i * 100 + j]; collapse(2) over (i, j) is one parallel for over the
+// 10000 flattened iterations.
+// No race: each iteration writes a distinct element
 // label: N2
 procedure main()
     shared mutable a := array(10000, 0)
 
-    parallel for i := 0 to 100 with 4 thread do
-        for j := 0 to 100 do
-            a[i * 100 + j] := a[i * 100 + j] + 1
-        end for
+    // #pragma omp parallel for collapse(2)
+    parallel for ij := 0 to 10000 with 4 thread do
+        a[ij] := a[ij] + 1
     end parallel for
 end procedure

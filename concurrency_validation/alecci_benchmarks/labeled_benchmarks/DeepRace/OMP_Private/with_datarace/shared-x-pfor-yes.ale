@@ -1,14 +1,49 @@
-// Race: parallel for writes c[i] * 10 to shared x without mutex across all iterations
-// Inspired by OMP_Private/with_datarace/array_sum_-_main.c (x = c[i]*10 in omp parallel for, x shared)
+// Full translation of array_sum_-_main.c
+// Race: x is declared outside the parallel for loops, so it is shared; loops 1
+// and 2 write it from every thread, and loops 3, 4 and 5 read it from every
+// thread while the other loops of the same run write it.
+// Deviations: arrays scaled from 10000000 to 2000 doubles (TSan cost);
+// omp_get_wtime timings are dropped, so only the thread count is printed.
 procedure main()
-    shared mutable c := array(100, 0)
-    shared mutable x := 0
-    mutable i := 0
-    while i < 100 do
-        c[i] := i + 1
-        i := i + 1
-    end while
-    parallel for i := 0 to 100 with 4 thread do
-        x := c[i] * 10
-    end parallel for
+    shared const size = 2000
+    shared mutable a := array(2000, 0.0)
+    shared mutable c := array(2000, 0.0)
+    shared mutable x as float := 0.0
+
+    print "nthreads"
+    for j := 1 to 11 do
+        // omp_set_num_threads(j)
+        x := 12.0
+        for i := 0 to size do
+            c[i] := 2.0
+            a[i] := 10.0
+        end for
+
+        // #pragma omp parallel for  (x = 10 * i)
+        parallel for i := 0 to size with j thread do
+            x := 10.0 * i
+        end parallel for
+
+        // #pragma omp parallel for  (x = c[i] * 10)
+        parallel for i := 0 to size with j thread do
+            x := c[i] * 10
+        end parallel for
+
+        // #pragma omp parallel for  (c[i] = c[i] * x)
+        parallel for i := 0 to size with j thread do
+            c[i] := c[i] * x
+        end parallel for
+
+        // #pragma omp parallel for  (c[i] = a[i] * x)
+        parallel for i := 0 to size with j thread do
+            c[i] := a[i] * x
+        end parallel for
+
+        // #pragma omp parallel for  (c[i] = x)
+        parallel for i := 0 to size with j thread do
+            c[i] := x
+        end parallel for
+
+        print `{j}`
+    end for
 end procedure

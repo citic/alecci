@@ -1,27 +1,33 @@
 // SCTBench benchmark: concurrent-software-benchmarks/din_phil3_sat.c
-// 3 dining philosophers with a shared counter 'phil' (unprotected).
-// Each philosopher increments 'phil' after releasing the forks — no lock held.
-// BUG: concurrent unprotected increments of 'phil' are a data race.
-// Also: TSan detects lock-order inversion on fork mutexes (deadlock warning).
-// Expected: data race on 'phil' + deadlock warning from TSan.
+// Full translation of din_phil3_sat.c: 3 dining philosophers with a shared counter 'phil'.
+// Each thread takes the right fork and then the left fork (x[right], x[left]) between
+// __ESBMC_atomic_begin()/end() (lock/unlock of esbmc_m), then ++phil and
+// "if (phil == N) assert(0)".
+// BUG: ++phil (and the phil == N check) run after __ESBMC_atomic_end(), so they are not
+// protected: concurrent increments of 'phil' are a data race.
+// TSan also reports a lock-order inversion on the fork mutexes (deadlock warning).
+// Expected: bug per the SCTBench ground truth.
 
-procedure philosopher(thread_number as int)
-    mutable left  := thread_number
-    mutable right := (thread_number + 1) % 3
+procedure thread1(thread_number as int)
+    mutable id := thread_number
+    mutable left := id
+    mutable right := (id + 1) % 3
     lock(esbmc_m)
-    lock(forks[right])
-    lock(forks[left])
-    unlock(forks[left])
-    unlock(forks[right])
+    lock(x[right])
+    lock(x[left])
+    unlock(x[left])
+    unlock(x[right])
     unlock(esbmc_m)
     phil := phil + 1
-    // original: if (phil == N) assert(0); — omitted (Alecci has no assert)
+    if phil = 3 then
+        assert 0 = 1, "assert(0): all 3 philosophers have eaten"
+    end if
 end procedure
 
 procedure main()
     shared mutable esbmc_m as mutex := mutex()
-    shared mutable forks := array(3, mutex())
+    shared mutable x := array(3, mutex())
     shared mutable phil := 0
-    mutable threads := create_threads(3, philosopher)
-    join_threads(threads, 3)
+    mutable trd_id := create_threads(3, thread1)
+    join_threads(trd_id, 3)
 end procedure

@@ -1,22 +1,36 @@
-// No race: 4 threads compute cyclic PI sums locally, then merge with mutex
-// Inspired by OMP_Critical/without_datarace/5_pi_smp_critical_-_main.c (local s, omp critical sum += s)
+// Full translation of 5_pi_smp_critical_-_main.c
+// No race: each thread keeps a private partial sum s over a cyclic slice of the
+// steps and merges it with "sum += s" inside the critical section (mutex).
+// omp_set_num_threads(1) in the C source means a team of one thread.
+// omp_get_wtime timing is dropped, so only pi is printed.
 procedure main()
+    shared const num_steps = 100000
+    shared const nthrds = 1
+    shared mutable step as float := 0.0
     shared mutable sum as float := 0.0
-    shared mutable mtx as mutex := mutex()
-    mutable threads := create_threads(4, worker)
-    join_threads(threads, 4)
+    shared mutable sum_mutex as mutex := mutex()
+
+    step := 1.0 / num_steps
+    // omp_set_num_threads(1); #pragma omp parallel
+    mutable threads := create_threads(nthrds, worker)
+    join_threads(threads, 1)
+
+    mutable pi as float := sum * step
+    print `pi: {pi} `
 end procedure
 
 procedure worker(thread_number as int)
-    mutable step as float := 0.00001
     mutable s as float := 0.0
+    mutable x as float := 0.0
     mutable i := thread_number
-    while i < 100000 do
-        mutable x as float := i * step + step * 0.5
-        s := s + 4.0 / (1.0 + (x * x))
-        i := i + 4
+    while i < num_steps do
+        x := (i + 0.5) * step
+        s := s + (4.0 / (1.0 + (x * x)))
+        i := i + nthrds
     end while
-    lock(mtx)
+
+    // #pragma omp critical
+    lock(sum_mutex)
     sum := sum + s
-    unlock(mtx)
+    unlock(sum_mutex)
 end procedure

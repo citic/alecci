@@ -1,16 +1,21 @@
-// DRB018 – Missing critical: unprotected increment of shared output index
-// Race: outLen (write) vs outLen (write/read) across threads
+// DRB018 – Missing critical: unprotected "output[outLen++] = input[i]"
+// Full translation of DRB018-plusplus-orig-yes.c
+// Race: outLen (write) vs outLen (write/read) and output[] (write) vs output[] (write)
 // label: Y1
 procedure main()
+    shared const in_len = 1000
     shared mutable input := array(1000, 0)
     shared mutable output := array(1000, 0)
     shared mutable outLen := 0
-    for i := 0 to 1000 do
+    for i := 0 to in_len do
         input[i] := i
     end for
 
-    parallel for i := 0 to 1000 with 4 thread do
+    // #pragma omp parallel for
+    parallel for i := 0 to in_len with 4 thread do
         output[outLen] := input[i]
         outLen := outLen + 1
     end parallel for
+
+    print `output[500]={output[500]}`
 end procedure

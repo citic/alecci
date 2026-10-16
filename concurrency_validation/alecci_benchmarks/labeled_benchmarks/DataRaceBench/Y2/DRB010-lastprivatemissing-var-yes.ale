@@ -1,10 +1,19 @@
-// DRB010 – Missing lastprivate (variant): x written without protection
-// Race: x (write) vs x (write) across threads — no synchronization
+// DRB010 – Missing lastprivate (argv version): all threads write the shared x
+// Full translation of DRB010-lastprivatemissing-var-yes.c; len is 10000 unless
+// argv[1] is given.
+// Race: x (write) vs x (write) across threads
 // label: Y2
-procedure main()
+procedure main(argc, argv as array)
+    shared mutable len := 10000
     shared mutable x := 0
+    if argc > 1 then
+        len := int(argv[1])
+    end if
 
-    parallel for i := 0 to 10000 with 4 thread do
+    // #pragma omp parallel for private(i)
+    parallel for i := 0 to len with 4 thread do
         x := i
     end parallel for
+
+    print `x={x}`
 end procedure

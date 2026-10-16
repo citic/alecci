@@ -1,15 +1,45 @@
-// Race: parallel for computes local private_sum from array, adds to shared total without lock
-// Inspired by OMP_Critical/with_datarace/mapexpCritical_-_main.c (sum += private_sum, no critical)
+// Full translation of mapexpCritical_-_main.c
+// Race: each thread sums its share of z into a private_sum and then does
+// "sum += private_sum" on the shared sum without a critical section.
+// Deviations: N scaled from 1000000 to 10000 (TSan cost); exp(v) is
+// pow(2.718281828459045, v); _OPENMP is printed as the usual 201511.
 procedure main()
-    shared mutable x := array(1000, 0)
-    shared mutable total := 0
-    mutable i := 0
-    while i < 1000 do
-        x[i] := i + 1
-        i := i + 1
-    end while
-    parallel for i := 0 to 1000 with 4 thread do
-        mutable private_sum := x[i]
-        total := total + private_sum
+    shared const n = 10000
+    shared const num_threads = 4
+    shared mutable x := array(10000, 0.0)
+    shared mutable z := array(10000, 0.0)
+    shared mutable sum := 0.0
+
+    print "open mp version: 201511"
+    // #pragma omp parallel for
+    parallel for i := 0 to n with 4 thread do
+        x[i] := (i + 1) * 0.000001
     end parallel for
+
+    // #pragma omp parallel for
+    parallel for i := 0 to n with 4 thread do
+        z[i] := pow(2.718281828459045, x[i] * x[i])
+    end parallel for
+
+    // #pragma omp parallel
+    mutable threads := create_threads(num_threads, worker)
+    join_threads(threads, 4)
+
+    print `{sum}`
+end procedure
+
+procedure worker(thread_number as int)
+    mutable private_sum := 0.0
+    // #pragma omp for: static block distribution of the iterations
+    const chunk = n # num_threads
+    const first = thread_number * chunk
+    mutable last := first + chunk
+    if thread_number = num_threads - 1 then
+        last := n
+    end if
+    for i := first to last do
+        private_sum := private_sum + z[i]
+    end for
+
+    sum := sum + private_sum
 end procedure

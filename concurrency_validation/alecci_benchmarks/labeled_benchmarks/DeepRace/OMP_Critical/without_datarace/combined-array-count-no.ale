@@ -1,14 +1,23 @@
-// No race: parallel for fills array (independent writes) and increments count (mutex-protected)
-// Inspired by OMP_Critical/without_datarace/simple_combined_pfor_-_main.c
-// No race: a[i] writes are to distinct indices; count is serialized by mutex
+// Full translation of simple_combined_pfor_-_main.c
+// No race: a[i] writes go to distinct indices; count++ is inside the critical
+// section (mutex).
 procedure main()
     shared mutable a := array(100, 0)
     shared mutable count := 0
-    shared mutable mtx as mutex := mutex()
+    shared mutable count_mutex as mutex := mutex()
+
+    // #pragma omp parallel for
     parallel for i := 0 to 100 with 4 thread do
         a[i] := i
-        lock(mtx)
+        // #pragma omp critical
+        lock(count_mutex)
         count := count + 1
-        unlock(mtx)
+        unlock(count_mutex)
     end parallel for
+
+    for i := 0 to 100 do
+        print `a[{i}]={a[i]}`
+    end for
+
+    print `count: {count}`
 end procedure

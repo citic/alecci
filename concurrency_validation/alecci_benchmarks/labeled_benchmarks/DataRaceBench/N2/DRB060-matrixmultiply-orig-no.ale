@@ -1,22 +1,22 @@
-// DRB060 – Matrix multiply: C[i*20+k] += A[i*20+j] * B[j*20+k], outer i parallel
-// No race: each thread owns its range of rows in C; A and B are read-only
+// DRB060 – Classic i-k-j matrix multiplication (including the C source's c[i][j] index)
+// Full translation of DRB060-matrixmultiply-orig-no.c: N = M = K = 100, double
+// a[N][M], b[M][K], c[N][K] (global, so zero-initialised) flattened to x[i * 100 + j].
+// No race: each iteration i writes only row c[i][*]; a and b are read-only
 // label: N2
 procedure main()
-    shared mutable a := array(400, 0)
-    shared mutable b := array(400, 0)
-    shared mutable c := array(400, 0)
-    for i := 0 to 20 do
-        for j := 0 to 20 do
-            a[i * 20 + j] := i + j
-            b[i * 20 + j] := i - j
-            c[i * 20 + j] := 0
-        end for
-    end for
+    shared const n = 100
+    shared const m = 100
+    shared const kk = 100
+    shared mutable a := array(10000, 0.0)
+    shared mutable b := array(10000, 0.0)
+    shared mutable c := array(10000, 0.0)
 
-    parallel for i := 0 to 20 with 4 thread do
-        for k := 0 to 20 do
-            for j := 0 to 20 do
-                c[i * 20 + k] := c[i * 20 + k] + a[i * 20 + j] * b[j * 20 + k]
+    // mmm()
+    // #pragma omp parallel for private(j,k)
+    parallel for i := 0 to n with 4 thread do
+        for k := 0 to kk do
+            for j := 0 to m do
+                c[i * 100 + j] := c[i * 100 + j] + a[i * 100 + k] * b[k * 100 + j]
             end for
         end for
     end parallel for

@@ -1,69 +1,76 @@
 // SCTBench benchmark: concurrent-software-benchmarks/circular_buffer_bad.c
-// Atomicity violation: producer inserts i into a 10-slot buffer when send=1 and
-// advances its counter regardless; consumer removes when receive=1 and advances
-// its counter regardless. Bug: consumer's loop counter i diverges from the
-// values actually inserted, so the assertion (removed==i) can fail.
-// All shared accesses are under a single mutex — no data race.
-// TSan cannot detect this class of atomicity-violation bug.
+// Full translation of circular_buffer_bad.c.
+// Atomicity violation: the producer t1 inserts i into a 10-slot buffer when send is set
+// and advances its loop counter regardless; the consumer t2 removes when receive is set
+// and advances its loop counter regardless. The consumer's i therefore diverges from
+// the values actually inserted, so assert(removeLogElement() == i) can fail.
+// All shared accesses are under a single mutex: no data race, TSan cannot detect this
+// class of bug.
+// The char buffer is an int array; first/next are unsigned in C.
 
-procedure insert_element(b as int)
-    if buf_next < buf_size then
-        buffer[buf_next] := b
-        buf_next := (buf_next + 1) mod buf_size
+function removeLogElement()
+    assert first >= 0, "first >= 0"
+    if next > 0 and first < buffer_size then
+        first := first + 1
+        return buffer[first - 1]
+    else
+        return -1
     end if
-end procedure
-
-function remove_element()
-    if buf_next > 0 and buf_first < buf_size then
-        buf_first := buf_first + 1
-        return buffer[buf_first - 1]
-    end if
-    return -1
 end function
 
-procedure producer(thread_number as int)
-    mutable i as int := 0
-    while i < 7 do
+function insertLogElement(b as int)
+    if next < buffer_size and buffer_size > 0 then
+        buffer[next] := b
+        next := (next + 1) mod buffer_size
+        assert next < buffer_size, "next < buffer_size"
+    else
+        return -1
+    end if
+    return b
+end function
+
+procedure t1(thread_number as int)
+    for i := 0 to 7 do
         lock(m)
         if send = 1 then
-            insert_element(i)
+            insertLogElement(i)
             send := 0
             receive := 1
         end if
         unlock(m)
-        i := i + 1
-    end while
+    end for
 end procedure
 
-procedure consumer(thread_number as int)
-    mutable i as int := 0
-    while i < 7 do
+procedure t2(thread_number as int)
+    for i := 0 to 7 do
         lock(m)
         if receive = 1 then
-            last_removed := remove_element()
-            assert last_removed = i, "consumer: removed element should equal loop counter i"
+            assert removeLogElement() = i, "removeLogElement() == i"
             receive := 0
             send := 1
         end if
         unlock(m)
-        i := i + 1
-    end while
+    end for
 end procedure
 
 procedure main()
-    shared mutable m            as mutex         := mutex()
-    shared mutable buffer       as array        := array(10, 0)
-    shared mutable buf_first    as int           := 0
-    shared mutable buf_next     as int           := 0
-    shared mutable buf_size     as int           := 10
-    shared mutable send         as int           := 1
-    shared mutable receive      as int           := 0
-    shared mutable last_removed                  := -1
-    mutable t1 := create_threads(1, producer)
-    mutable t2 := create_threads(1, consumer)
-    join_threads(t1, 1)
-    join_threads(t2, 1)
-    print `buf_first = {buf_first}`
-    print `last_removed = {last_removed}`
-    print `circular buffer flag no end`
+    shared mutable m as mutex := mutex()
+    shared mutable buffer as array := array(10, 0)
+    shared mutable first := 0
+    shared mutable next := 0
+    shared mutable buffer_size := 0
+    shared mutable send := 0
+    shared mutable receive := 0
+
+    // initLog(10)
+    buffer_size := 10
+    first := 0
+    next := 0
+
+    send := 1
+    receive := 0
+    mutable id1 := create_threads(1, t1)
+    mutable id2 := create_threads(1, t2)
+    join_threads(id1, 1)
+    join_threads(id2, 1)
 end procedure

@@ -1,11 +1,19 @@
-// Race: 3 threads each write their thread ID to shared x without mutex
-// Inspired by OMP_Private/with_datarace/lec4_-_main.c (shared x = omp_get_thread_num())
+// Full translation of lec4_-_main.c
+// Race: x is shared (only y and z are listed in shared(), but x is declared
+// outside the region so it is shared by default) and every thread writes its
+// thread number to it without synchronisation.
+// The default team size of "#pragma omp parallel" is modelled as 4 threads.
 procedure main()
-    shared mutable x := 0
-    mutable threads := create_threads(3, worker)
-    join_threads(threads, 3)
+    shared mutable x := 12345
+    shared mutable y := 11111
+    shared mutable z := 22222
+
+    // #pragma omp parallel shared(y, z)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
 end procedure
 
 procedure worker(thread_number as int)
     x := thread_number
+    print "Hello"
 end procedure

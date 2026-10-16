@@ -1,13 +1,21 @@
-// DRB108 – Atomic update: mutex-protected increment (simulates omp atomic)
-// No race: mutex ensures only one thread increments a at a time
+// DRB108 – Atomic update: a += 1 from every thread of the parallel region
+// Full translation of DRB108-atomic-orig-no.c; the default team of "#pragma omp
+// parallel" is modelled as 4 threads and "#pragma omp atomic" as an atomic block.
+// No race: the update of a is atomic
 // label: N3
 procedure main()
     shared mutable a := 0
-    shared mutable mtx as mutex := mutex()
 
-    parallel for i := 0 to 4 with 4 thread do
-        lock(mtx)
+    // #pragma omp parallel
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+
+    print `a={a}`
+end procedure
+
+procedure worker(thread_number as int)
+    // #pragma omp atomic
+    atomic do
         a := a + 1
-        unlock(mtx)
-    end parallel for
+    end atomic
 end procedure

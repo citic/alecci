@@ -1,19 +1,29 @@
-// Race: 2 threads compute cyclic PI partial sums, add to shared pi without lock
-// Inspired by OMP_Critical/with_datarace/intepar2_-_main.c (same pattern, different source)
+// Full translation of intepar2_-_main.c
+// Race: 2 threads compute a cyclic partial sum of the pi integral, then both do
+// "pi += sum * step" without a critical section.
 procedure main()
+    shared const num_steps = 100000
+    shared const nthrds = 2
+    shared mutable step as float := 0.0
     shared mutable pi as float := 0.0
-    mutable threads := create_threads(2, worker)
+
+    step := 1.0 / num_steps
+    // omp_set_num_threads(2); #pragma omp parallel
+    mutable threads := create_threads(nthrds, worker)
     join_threads(threads, 2)
+
+    print `{pi}`
 end procedure
 
 procedure worker(thread_number as int)
-    mutable step as float := 0.00001
-    mutable s as float := 0.0
+    mutable sum as float := 0.0
+    mutable x as float := 0.0
     mutable i := thread_number
-    while i < 100000 do
-        mutable x as float := i * step + step * 0.5
-        s := s + 4.0 / (1.0 + (x * x))
-        i := i + 2
+    while i < num_steps do
+        x := (i + 0.5) * step
+        sum := sum + 4.0 / (1.0 + (x * x))
+        i := i + nthrds
     end while
-    pi := pi + s * step
+
+    pi := pi + sum * step
 end procedure

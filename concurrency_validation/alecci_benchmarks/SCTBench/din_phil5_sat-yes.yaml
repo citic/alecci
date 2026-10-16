@@ -1,9 +1,10 @@
 # SCTBench benchmark: concurrent-software-benchmarks/din_phil5_sat.c
-# 5 dining philosophers with unprotected shared counter 'phil'.
-# Ground truth (buggy.txt): listed as buggy — data race on 'phil'.
+# 5 dining philosophers; ++phil and the phil == N assertion run inside the ESBMC atomic
+# section (esbmc_m), so 'phil' itself is protected in the C source.
+# Ground truth (buggy.txt): listed as buggy — the assert(0) reached when all philosophers ran.
 # Note: TSan also reports lock-order-inversion on fork mutexes; this is extra
 # detection beyond the ground-truth bug (TSan false positive on fork ordering).
-# Expected: data race on 'phil' (source ground truth).
+# Expected: bug (source ground truth); TSan only sees the fork lock-order inversion here.
 expected_issues:
   - bug
 timeout: 10

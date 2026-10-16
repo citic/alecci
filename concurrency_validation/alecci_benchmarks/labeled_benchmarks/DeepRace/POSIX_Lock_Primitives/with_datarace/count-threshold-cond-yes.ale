@@ -1,36 +1,50 @@
-// 2 incrementer threads count to 15; watcher waits for signal and boosts count.
-// Race: watch_count checks 'count < 15' in outer while without the mutex.
-// Source: threads_cond_mutex.c (DeepRace POSIX/with_datarace)
-
+// Full translation of threads_cond_mutex.c
+// Two incrementer threads count to 15 each; the watcher waits for the condition
+// and adds 1200.
+// Race: watch_count reads "count < 15" in its while condition without holding
+// count_mutex, while the incrementers write count under the mutex.
+// Deviations: sleep(1) is scaled to 100 ms; the "\n" that starts every printf
+// is dropped because print always ends the line; pthread_exit and the *_destroy
+// calls have no Alecci equivalent.
 procedure increament_count(thread_number as int)
-    mutable i := 0
-    while i < 15 do
+    mutable thread_id := thread_number + 2
+    print ` In increament thread {thread_id} `
+    for i := 0 to 15 do
         lock(count_mutex)
         count := count + 1
         if count = 15 then
+            print ` Increament Thread : {thread_id} , Condition Reached , Signalling!!!!`
             cond_signal(count_cond)
         end if
+        print ` Increament Thread : {thread_id} , Count = {count} `
         unlock(count_mutex)
         sleep(100, "ms")
-        i := i + 1
-    end while
+    end for
 end procedure
 
 procedure watch_count(thread_number as int)
+    mutable thread_id := 1
+    print ` In watch thread : {thread_id}`
     while count < 15 do
         lock(count_mutex)
         cond_wait(count_cond, count_mutex)
+        print ` Watch Thread : {thread_id} , Condition Signal Received!!!`
         count := count + 1200
-        unlock(count_mutex)
+        print ` Watch Thread : {thread_id} , Count = {count}`
     end while
+    unlock(count_mutex)
 end procedure
 
 procedure main()
     shared mutable count_mutex as mutex   := mutex()
     shared mutable count_cond  as condvar := condvar()
     shared mutable count := 0
+
+    print `Creating three threads!!!`
     mutable t1 := create_threads(1, watch_count)
     mutable t2 := create_threads(2, increament_count)
+    print ` All three threads created`
     join_threads(t1)
     join_threads(t2)
+    print `Main Thread : Done`
 end procedure

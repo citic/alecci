@@ -1,20 +1,43 @@
-// DeepRace POSIX/with_datarace: 11_mutex.c
-// Two threads compete to sell 100 tickets. Each thread locks the mutex,
-// checks tickets > 0, decrements and prints, then unlocks.
-// Ground truth: data_race (original dataset). TSan may miss — all accesses
-// in the Alecci translation are inside the critical section.
-
-procedure seller(thread_number as int)
+// Full translation of 11_mutex.c
+// Two threads compete to sell 100 tickets: each one locks the mutex, and while
+// tickets > 0 it sleeps 500 us, prints and decrements; otherwise it unlocks and
+// leaves.
+// Ground truth in the dataset: data_race. In this translation every access to
+// tickets is inside the critical section, so TSan is not expected to report it.
+// pthread_self() is replaced by the thread id passed as the argument, and the
+// asserts on pthread_create are dropped.
+procedure thread_handle1(id as int)
     mutable running as int := 1
     while running = 1 do
         lock(m)
         if tickets > 0 then
-            print `thread {thread_number} sold ticket {tickets}`
+            sleep(500000, "ns")
+            print `thread[{id}] sale tickets {tickets}`
             tickets := tickets - 1
-            unlock(m)
         else
             unlock(m)
             running := 0
+        end if
+        if running = 1 then
+            unlock(m)
+        end if
+    end while
+end procedure
+
+procedure thread_handle2(id as int)
+    mutable running as int := 1
+    while running = 1 do
+        lock(m)
+        if tickets > 0 then
+            sleep(500000, "ns")
+            print `thread[{id}] sale tickets {tickets}`
+            tickets := tickets - 1
+        else
+            unlock(m)
+            running := 0
+        end if
+        if running = 1 then
+            unlock(m)
         end if
     end while
 end procedure
@@ -22,8 +45,8 @@ end procedure
 procedure main()
     shared mutable m       as mutex := mutex()
     shared mutable tickets as int   := 100
-    mutable t := create_threads(2, seller)
-    join_threads(t, 2)
-    print `tickets remaining = {tickets}`
-    print `ticket counter no end`
+    mutable pth1 := create_thread(thread_handle1, 1)
+    mutable pth2 := create_thread(thread_handle2, 2)
+    join_thread(pth1)
+    join_thread(pth2)
 end procedure

@@ -1,15 +1,20 @@
-// DRB075 – Thread number race: thread 0 writes numThreads, others read it concurrently
-// Race: numThreads (write by thread 0) vs numThreads (read by threads 1-3) without sync
+// DRB075 – omp_get_thread_num(): thread 0 writes numThreads while the others read it
+// Full translation of DRB075-getthreadnum-orig-yes.c; the default team of
+// "#pragma omp parallel" is modelled as 4 threads.
+// Race: numThreads (written by thread 0) vs numThreads (read by threads 1-3), no sync
 // label: Y1
 procedure main()
     shared mutable numThreads := 0
 
-    parallel for i := 0 to 4 with 4 thread do
-        if thread_number = 0 then
-            numThreads := 4
-        else
-            mutable dummy := numThreads
-            dummy := dummy + 0
-        end if
-    end parallel for
+    // #pragma omp parallel
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    if thread_number = 0 then
+        numThreads := 4
+    else
+        print `numThreads={numThreads}`
+    end if
 end procedure

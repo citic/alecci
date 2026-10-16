@@ -1,8 +1,27 @@
-// Race: parallel for, each thread increments totalPoints without mutex
-// Inspired by OMP_Critical/with_datarace/5.40_-_main.c (Monte Carlo PI, totalPoints++ no critical)
+// Full translation of 5.40_-_main.c
+// Race: the work-shared loop increments the shared totalPoints without a
+// critical section. amountOfPoints is read from stdin (monte-carlo-nolock-yes.txt).
+// rand() / 32767 becomes rand(32768) / 32767.0; srand(time(0)) is omitted.
 procedure main()
+    shared mutable amount_of_points := 0
     shared mutable total_points := 0
-    parallel for i := 0 to 10000 with 4 thread do
-        total_points := total_points + 1
+
+    print "Monte Carlo method for calculating PI(openmp with critical section)"
+    while amount_of_points <= 0 do
+        print "Amount of random Points : "
+        scan `{amount_of_points}`
+    end while
+
+    // #pragma omp parallel + #pragma omp for
+    parallel for i := 0 to amount_of_points with 4 thread do
+        mutable x as float := rand(32768) / 32767.0
+        mutable y as float := rand(32768) / 32767.0
+        if (x * x) + (y * y) <= 1 then
+            total_points := total_points + 1
+        end if
     end parallel for
+
+    mutable points as float := 4.0 * total_points
+    mutable pi as float := points / amount_of_points
+    print `The approximating value of pi for the amount of points ({amount_of_points}) is: {pi}`
 end procedure

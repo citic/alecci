@@ -1,23 +1,77 @@
-// DRB121 – Proper reduction: two sums accumulated with mutex protection
-// sum1 = 0+1+2+3+4 = 10; sum2 = 0+1+2+3+4 = 10; var = 20
-// No race: every access to sum1 and sum2 is protected by a mutex
+// DRB121 – Proper reductions: sum1, sum2 (omp for reduction) and var (parallel reduction)
+// Full translation of DRB121-reduction-orig-no.c with a team of res = 4 threads.
+// Each "omp for ... reduction(+: sum)" gives every thread a private partial sum over
+// its static block (0-1, 2, 3, 4 of the 5 iterations); the partials are combined
+// into the shared sum under a mutex and the implicit barrier at the end of the loop
+// is a barrier. Every thread then sets its private var = sum1 + sum2 (= 20) and
+// the parallel region's reduction(+: var) adds the private copies, so the final
+// var is 20 * res.
+// No race: every shared sum is combined under the mutex and read only after a barrier
 // label: N2
 procedure main()
+    shared const res = 4
     shared mutable sum1 := 0
     shared mutable sum2 := 0
+    shared mutable var := 0
     shared mutable mtx as mutex := mutex()
-    parallel for i := 0 to 5 with 4 thread do
-        lock(mtx)
-        sum1 := sum1 + i
-        unlock(mtx)
-    end parallel for
+    shared mutable loop_barrier as barrier := barrier(4)
 
-    parallel for i := 0 to 5 with 4 thread do
-        lock(mtx)
-        sum2 := sum2 + i
-        unlock(mtx)
-    end parallel for
+    // #pragma omp parallel reduction(+: var)
+    mutable threads := create_threads(res, worker)
+    join_threads(threads, 4)
 
-    mutable var := sum1 + sum2
-    print `var = {var}`
+    mutable error := 0
+    if var != 20 * res then
+        error := 1
+    end if
+    if error = 1 then
+        print `{var} {20 * res}`
+    end if
+end procedure
+
+procedure worker(thread_number as int)
+    // static schedule of the 5 iterations over 4 threads
+    mutable first := 0
+    mutable last := 0
+    if thread_number = 0 then
+        first := 0
+        last := 2
+    else if thread_number = 1 then
+        first := 2
+        last := 3
+    else if thread_number = 2 then
+        first := 3
+        last := 4
+    else
+        first := 4
+        last := 5
+    end if
+    end if
+    end if
+
+    // #pragma omp for schedule(static) reduction(+: sum1)
+    mutable partial1 := 0
+    for i := first to last do
+        partial1 := partial1 + i
+    end for
+    lock(mtx)
+    sum1 := sum1 + partial1
+    unlock(mtx)
+    barrier_wait(loop_barrier)
+
+    // #pragma omp for schedule(static) reduction(+: sum2)
+    mutable partial2 := 0
+    for i := first to last do
+        partial2 := partial2 + i
+    end for
+    lock(mtx)
+    sum2 := sum2 + partial2
+    unlock(mtx)
+    barrier_wait(loop_barrier)
+
+    // var = sum1 + sum2 on the private copy, combined by reduction(+: var)
+    mutable private_var := sum1 + sum2
+    lock(mtx)
+    var := var + private_var
+    unlock(mtx)
 end procedure

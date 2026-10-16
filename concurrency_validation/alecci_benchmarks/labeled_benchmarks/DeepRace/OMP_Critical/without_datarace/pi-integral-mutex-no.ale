@@ -1,21 +1,48 @@
-// No race: cyclic parallel sum with mutex-protected accumulation
-// Inspired by OMP_Critical/without_datarace/sync-integrate_-_main.c
-// No race: lock/unlock serializes all updates to sum
+// Full translation of sync-integrate_-_main.c (second benchmark built from the same
+// source as float-pi-syncintegrate-no; here the merge is the critical section).
+// No race: each thread accumulates a private thread_sum over a cyclic slice and
+// merges it inside the critical section (mutex). actual_num_threads is written
+// only by thread 0 and read after the join.
+// Deviations: num_steps scaled from 10000000 to 100000; omp_get_wtime timing is
+// dropped; the Threads/Result/Steps lines are printed one per line.
 procedure main()
-    shared mutable sum := 0
-    shared mutable mtx as mutex := mutex()
-    mutable threads := create_threads(4, worker)
+    shared const num_steps = 100000
+    shared const num_threads = 4
+    shared mutable step as float := 0.0
+    shared mutable sum as float := 0.0
+    shared mutable sum_mutex as mutex := mutex()
+    shared mutable actual_num_threads := 0
+
+    // omp_set_num_threads(4)
+    step := 1.0 / num_steps
+
+    // #pragma omp parallel
+    mutable threads := create_threads(num_threads, worker)
     join_threads(threads, 4)
+
+    mutable pi as float := sum * step
+    print `Threads: {actual_num_threads}`
+    print `Result: {pi}`
+    print `Steps: {num_steps}`
 end procedure
 
 procedure worker(thread_number as int)
-    mutable thread_sum := 0
-    mutable i := thread_number
-    while i < 10000 do
-        thread_sum := thread_sum + i
-        i := i + 4
+    mutable thread_sum as float := 0.0
+    mutable x as float := 0.0
+    mutable thread_id := thread_number
+    if thread_id = 0 then
+        actual_num_threads := num_threads
+    end if
+
+    mutable i := thread_id
+    while i < num_steps do
+        x := (i + 0.5) * step
+        thread_sum := thread_sum + 4.0 / (1.0 + (x * x))
+        i := i + num_threads
     end while
-    lock(mtx)
+
+    // #pragma omp critical
+    lock(sum_mutex)
     sum := sum + thread_sum
-    unlock(mtx)
+    unlock(sum_mutex)
 end procedure

@@ -1,11 +1,17 @@
-// DRB035 – True dependence via shared scalar: a[i] = tmp; tmp = a[i]+i
-// Race: tmp (write) vs tmp (read/write) across threads
+// DRB035 – True dependence through a shared scalar: a[i] = tmp; tmp = a[i] + i
+// Full translation of DRB035-truedepscalar-orig-yes.c
+// Race: tmp (read) vs tmp (write) across threads
 // label: Y1
 procedure main()
+    shared const len = 100
     shared mutable a := array(100, 0)
     shared mutable tmp := 10
-    parallel for i := 0 to 100 with 4 thread do
+
+    // #pragma omp parallel for
+    parallel for i := 0 to len with 4 thread do
         a[i] := tmp
         tmp := a[i] + i
     end parallel for
+
+    print `a[50]={a[50]}`
 end procedure

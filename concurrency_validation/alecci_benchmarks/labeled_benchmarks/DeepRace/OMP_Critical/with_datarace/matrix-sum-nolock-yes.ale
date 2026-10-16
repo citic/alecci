@@ -1,18 +1,38 @@
-// Race: parallel for accumulates flattened 2D array into shared sum without lock
-// Inspired by OMP_Critical/with_datarace/dynamic2_-_main.c (suma_parallel += a[j][i], no critical)
+// Full translation of dynamic2_-_main.c
+// Race: the parallel for accumulates "suma_parallel += a[j][i]" into a shared
+// double without a critical section.
+// Deviations: a[13][13] is flattened to a[i * 13 + j]; schedule(dynamic,2) is
+// Alecci's block distribution; the "ordered" clause (serialises the printf) and
+// omp_set_nested(1) (no nested region exists) have no Alecci equivalent, so the
+// per-element trace lines may interleave across threads.
 procedure main()
-    shared mutable a := array(169, 0)
-    shared mutable suma_parallel := 0
-    mutable i := 0
-    while i < 13 do
-        mutable j := 0
-        while j < 13 do
-            a[i * 13 + j] := i + j
-            j := j + 1
-        end while
-        i := i + 1
-    end while
-    parallel for k := 0 to 169 with 4 thread do
-        suma_parallel := suma_parallel + a[k]
+    shared mutable a := array(169, 0.0)
+    shared mutable suma_parallel := 0.0
+    shared const n = 13
+
+    for i := 0 to 13 do
+        for j := 0 to 13 do
+            a[i * 13 + j] := (1.02 * i) + (1.01 * j)
+        end for
+    end for
+
+    mutable suma := 0.0
+    for i := 0 to 13 do
+        for j := 0 to 13 do
+            suma := suma + a[i * 13 + j]
+        end for
+    end for
+    print `Suma wyrazow tablicy: {suma}`
+
+    // #pragma omp parallel for ordered shared(a, suma_parallel) private(i, j)
+    parallel for i := 0 to n with 4 thread do
+        mutable id_w := thread_number
+        for j := 0 to 13 do
+            suma_parallel := suma_parallel + a[j * 13 + i]
+            print `({i},{j})-W({id_w},{thread_number})`
+        end for
+        print ``
     end parallel for
+
+    print `Suma wyrazow tablicy rownolegle: {suma_parallel}`
 end procedure

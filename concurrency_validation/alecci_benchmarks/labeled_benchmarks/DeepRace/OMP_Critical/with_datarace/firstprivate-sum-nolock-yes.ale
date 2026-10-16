@@ -1,17 +1,32 @@
-// Race: each thread accumulates local s to 10000, then adds to shared m without lock
-// Inspired by OMP_Critical/with_datarace/datasharing_-_main.c (firstprivate(s), m += s no critical)
+// Full translation of datasharing_-_main.c
+// Race: each thread increments its firstprivate copy of s to 10000 and then does
+// "m += s" on the shared m without a critical section.
+// "#pragma omp master" (nt = omp_get_num_threads()) is executed by thread 0.
 procedure main()
+    shared mutable nt := 0
     shared mutable m := 0
-    mutable threads := create_threads(4, worker)
+    shared const num_threads = 4
+
+    // #pragma omp parallel shared(m,nt) firstprivate(s)
+    mutable threads := create_threads(num_threads, worker)
     join_threads(threads, 4)
+
+    if m = nt * 10000 then
+        print "Success!"
+    else
+        print "Fail!"
+    end if
 end procedure
 
 procedure worker(thread_number as int)
     mutable s := 0
-    mutable i := 0
-    while i < 10000 do
+    for i := 0 to 10000 do
         s := s + 1
-        i := i + 1
-    end while
+    end for
+
     m := m + s
+    // #pragma omp master
+    if thread_number = 0 then
+        nt := num_threads
+    end if
 end procedure

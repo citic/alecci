@@ -1,25 +1,45 @@
-// No race: 2 threads compute products of 2x2 matrix permanent diagonals, mutex-protected merge
-// Inspired by OMP_Critical/without_datarace/determ_-_main.c (omp critical around product and sum merge)
+// Full translation of determ_-_main.c
+// No race: the printf+product inside each "#pragma omp critical" and the merge
+// "sum_p += sum" are protected by the same mutex; the rest is thread-private.
+// m[2][2] is flattened to m[i * 2 + j]; srand(time(0)) is omitted and
+// (rand() % n) + 1 becomes rand(n) + 1. The "[j,k]" printf fragments are one
+// print per element because print always ends the line.
 procedure main()
+    shared const n = 2
     shared mutable m := array(4, 0)
     shared mutable sum_p := 0
     shared mutable mtx as mutex := mutex()
-    m[0] := 3
-    m[1] := 2
-    m[2] := 1
-    m[3] := 4
-    mutable threads := create_threads(2, worker)
+
+    for i := 0 to n do
+        for j := 0 to n do
+            m[i * 2 + j] := rand(n) + 1
+        end for
+        print ` {m[i * 2]} {m[i * 2 + 1]}`
+    end for
+
+    // #pragma omp parallel num_threads(n)
+    mutable threads := create_threads(n, worker)
     join_threads(threads, 2)
+
+    print `Suma posi: {sum_p}`
 end procedure
 
 procedure worker(thread_number as int)
     mutable sum := 1
-    mutable j := 0
-    while j < 2 do
-        sum := sum * m[j * 2 + (j + thread_number) mod 2]
-        j := j + 1
-    end while
+    mutable i := thread_number
+    for j := 0 to n do
+        // #pragma omp critical
+        lock(mtx)
+        const col = (j + i) mod n
+        print `[{j},{col}]`
+        sum := sum * m[j * 2 + col]
+        unlock(mtx)
+    end for
+
+    // #pragma omp critical
     lock(mtx)
     sum_p := sum_p + sum
     unlock(mtx)
+
+    print `Thread() {i} Suma:{sum} `
 end procedure

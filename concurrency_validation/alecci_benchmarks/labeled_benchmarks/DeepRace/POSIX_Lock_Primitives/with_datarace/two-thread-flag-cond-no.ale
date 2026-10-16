@@ -1,48 +1,40 @@
-// Two-thread flag alternation using condition variable and broadcast.
-// Both threads use lock before accessing flag; no data race.
-// Note: uses 'if' instead of 'while' for condition check (original does too).
-// Source: TwoThreadLoop.c (DeepRace POSIX/with_datarace). Ground truth: data_race.
-// TSan may miss — the Alecci translation holds the lock on every flag access.
-
+// Full translation of TwoThreadLoop.c
+// The worker thread prints a row of 10 'A' and main a row of 100 'B', taking
+// turns through flag, a mutex and a condition variable (both sides use "if", not
+// "while", exactly as in the C source).
+// Ground truth in the dataset: data_race. In this translation every access to
+// flag is under the lock, so TSan is not expected to report it.
+// The printf loops that print one character at a time are one print of the whole
+// row, since print always ends the line.
 procedure thread_func()
-    mutable i := 0
-    while i < 50 do
+    for i := 0 to 50 do
         lock(lk)
         if flag != 0 then
             cond_wait(ready, lk)
         end if
-        mutable j := 0
-        while j < 10 do
-            print("A")
-            j := j + 1
-        end while
+        print `AAAAAAAAAA`
         flag := flag + 1
         unlock(lk)
         cond_broadcast(ready)
-        i := i + 1
-    end while
+    end for
 end procedure
 
 procedure main()
     shared mutable lk    as mutex   := mutex()
     shared mutable ready as condvar := condvar()
     shared mutable flag := 0
-    mutable t := create_thread(thread_func)
-    mutable i := 0
-    while i < 50 do
+    mutable tid := create_thread(thread_func)
+
+    for i := 0 to 50 do
         lock(lk)
         if flag != 1 then
             cond_wait(ready, lk)
         end if
-        mutable j := 0
-        while j < 100 do
-            print("B")
-            j := j + 1
-        end while
+        print `BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB`
         flag := flag - 1
         unlock(lk)
         cond_broadcast(ready)
-        i := i + 1
-    end while
-    join_thread(t)
+    end for
+
+    join_thread(tid)
 end procedure

@@ -1,12 +1,21 @@
-// DRB077 – Single construct: only thread 0 increments count (simulates omp single)
-// No race: only one thread writes count; implicit barrier (join) before any subsequent read
+// DRB077 – Single construct: only one thread updates count
+// Full translation of DRB077-single-orig-no.c; "#pragma omp single" is executed by
+// thread 0 of the default team of 4 threads.
+// No race: only one thread writes count, and main reads it after the join
 // label: N1
 procedure main()
     shared mutable count := 0
 
-    parallel for i := 0 to 4 with 4 thread do
-        if thread_number = 0 then
-            count := count + 1
-        end if
-    end parallel for
+    // #pragma omp parallel shared(count)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+
+    print `count= {count}`
+end procedure
+
+procedure worker(thread_number as int)
+    // #pragma omp single
+    if thread_number = 0 then
+        count := count + 1
+    end if
 end procedure

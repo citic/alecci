@@ -1,21 +1,36 @@
-// No race: parallel for finds max among elements divisible by 7, updates max under mutex
-// Inspired by OMP_Critical/without_datarace/omp12_-_main.c (omp critical around conditional max update)
+// Full translation of omp12_-_main.c
+// No race: max is only read and written while holding max_mutex.
+// Deviation: in the C source the "max < a[i]" test sits outside the critical
+// section; here the test and the assignment are both inside the lock so that
+// the benchmark stays race free (see the matching with_datarace variant).
+// srand(time(0)) is omitted; rand() % 300 becomes rand(300).
 procedure main()
-    shared mutable a := array(100, 0)
+    shared mutable a := array(300, 0)
     shared mutable max := -1
-    shared mutable mtx as mutex := mutex()
-    mutable i := 0
-    while i < 100 do
-        a[i] := (i * 7) mod 300
-        i := i + 1
-    end while
-    parallel for i := 0 to 100 with 4 thread do
+    shared mutable max_mutex as mutex := mutex()
+    mutable base_max := -1
+
+    for i := 0 to 300 do
+        a[i] := rand(300)
+        if a[i] mod 7 = 0 and base_max < a[i] then
+            base_max := a[i]
+        end if
+    end for
+
+    // #pragma omp parallel for shared(max)
+    parallel for i := 0 to 300 with 4 thread do
         if a[i] mod 7 = 0 then
-            lock(mtx)
+            // #pragma omp critical
+            lock(max_mutex)
             if max < a[i] then
                 max := a[i]
             end if
-            unlock(mtx)
+            unlock(max_mutex)
         end if
     end parallel for
+
+    print `{max}`
+    if base_max = max then
+        print "correct"
+    end if
 end procedure

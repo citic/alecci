@@ -1,14 +1,41 @@
-// DRB065 – Pi reduction: parallel accumulation with mutex protection
-// Adapted: integer sum (Alecci has no float); simulates reduction(+:pi)
-// No race: mutex protects every update to shared sum
+// DRB065 – Classic PI calculation using a reduction
+// Full translation of DRB065-pireduction-orig-no.c: "parallel for reduction(+:pi)
+// private(x)" is modelled as 4 threads that each sum their static block of the
+// steps into a private partial pi and combine it into the shared pi under a mutex.
+// Deviation: num_steps is scaled from 200000000 to 100000 (TSan cost).
+// No race: pi is only updated under the mutex and read after the join
 // label: N7
 procedure main()
-    shared mutable sum := 0
-    shared mutable mtx as mutex := mutex()
+    shared const num_steps = 100000
+    shared mutable pi as float := 0.0
+    shared mutable interval_width as float := 0.0
+    shared mutable pi_mutex as mutex := mutex()
 
-    parallel for i := 0 to 1000 with 4 thread do
-        lock(mtx)
-        sum := sum + i
-        unlock(mtx)
-    end parallel for
+    interval_width := 1.0 / num_steps
+
+    // #pragma omp parallel for reduction(+:pi) private(x)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+
+    pi := pi * 4.0 * interval_width
+    print `PI={pi}`
+end procedure
+
+procedure worker(thread_number as int)
+    mutable partial_pi as float := 0.0
+    mutable x as float := 0.0
+    const chunk = num_steps # 4
+    const first = thread_number * chunk
+    mutable last := first + chunk
+    if thread_number = 3 then
+        last := num_steps
+    end if
+    for i := first to last do
+        x := (i + 0.5) * interval_width
+        partial_pi := partial_pi + 1.0 / (x * x + 1.0)
+    end for
+
+    lock(pi_mutex)
+    pi := pi + partial_pi
+    unlock(pi_mutex)
 end procedure

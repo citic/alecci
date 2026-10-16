@@ -1,4 +1,5 @@
 // SCTBench benchmark: concurrent-software-benchmarks/lazy01_bad.c
+// Full translation of lazy01_bad.c (thread3 runs assert(0) when data >= 3).
 // Atomicity violation: thread1 adds 1, thread2 adds 2, thread3 checks if data >= 3.
 // Bug: if thread3 runs after both thread1 and thread2, data==3 triggers assertion.
 // All accesses are under the same mutex — no data race.
@@ -18,7 +19,9 @@ end procedure
 
 procedure thread3(thread_number as int)
     lock(mtx)
-    mutable val := data
+    if data >= 3 then
+        assert 0 = 1, "assert(0): data >= 3"
+    end if
     unlock(mtx)
 end procedure
 

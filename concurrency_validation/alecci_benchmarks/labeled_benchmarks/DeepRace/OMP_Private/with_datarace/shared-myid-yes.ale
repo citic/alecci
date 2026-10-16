@@ -1,10 +1,100 @@
-// Race: all threads write their thread ID to shared scalar myid without synchronization
-// Inspired by OMP_Private/with_datarace/1.2-hello-single_-_main.c, for-work-sharing_-_main.c, single_master_-_main.c
-// In OpenMP: myid declared outside parallel — shared by default; missing private(myid) causes race
-// Race: myid (write) vs myid (read/write) across threads
+// Full translation of 1.2-hello-single_-_main.c, for-work-sharing_-_main.c and
+// single_master_-_main.c (the benchmark merges the three sources).
+// Race: in each program the thread-id variable (myid, tid, thread_num, rang) is
+// declared outside the parallel region, so it is shared and written by all
+// threads without synchronisation; "a" in single_master is shared too.
+// Deviations: the default team size of "#pragma omp parallel" is 4 threads;
+// "#pragma omp single" runs on thread 0 and its implicit barrier is a barrier;
+// "schedule(static, chunk)" is written out as cyclic chunks of 2 iterations;
+// "#pragma single copyprivate()" in the C source is a misspelt pragma that the
+// compiler ignores, so every thread runs its block; "\n\n\n" blank lines are
+// printed as empty lines; non-ASCII characters (n°, é) are written in ASCII.
 procedure main()
     shared mutable myid := 0
-    parallel for i := 0 to 100 with 4 thread do
-        myid := thread_number
-    end parallel for
+    shared mutable nthreads := 0
+    shared mutable tid := 0
+    shared const chunk = 2
+    shared const n = 10
+    shared mutable thread_num := 0
+    shared mutable a := 0
+    shared mutable rang := 0
+    shared mutable single_barrier as barrier := barrier(4)
+
+    // ---- 1.2-hello-single_-_main.c
+    // #pragma omp parallel shared(nthreads)
+    mutable hello_threads := create_threads(4, hello_worker)
+    join_threads(hello_threads, 4)
+
+    // ---- for-work-sharing_-_main.c
+    // #pragma omp parallel shared(chunk)
+    mutable for_threads := create_threads(4, for_worker)
+    join_threads(for_threads, 4)
+
+    // ---- single_master_-_main.c
+    print ``
+    print ``
+    print ``
+    mutable master_threads := create_threads(4, master_worker)
+    join_threads(master_threads, 4)
+
+    print ``
+    print ``
+    print ``
+    print "This is an example of using the directive Single"
+    mutable single_threads := create_threads(4, single_worker)
+    join_threads(single_threads, 4)
+
+    print ``
+    print ``
+    print "This is an example of the directive single and the clause copyprivate() "
+    mutable copy_threads := create_threads(4, copyprivate_worker)
+    join_threads(copy_threads, 4)
+end procedure
+
+procedure hello_worker(thread_number as int)
+    myid := thread_number
+    // #pragma omp single
+    if thread_number = 0 then
+        nthreads := 4
+    end if
+    barrier_wait(single_barrier)
+    print `{myid} of {nthreads} - hello world!`
+end procedure
+
+procedure for_worker(thread_number as int)
+    // #pragma omp for schedule(static, chunk) nowait
+    for i := 0 to n do
+        if (i # chunk) mod 4 = thread_number then
+            tid := thread_number
+            print `tid: {tid}, iter: {i}`
+        end if
+    end for
+end procedure
+
+procedure master_worker(thread_number as int)
+    thread_num := thread_number
+    print `Bonjour je suis le thread n deg {thread_num}`
+    // #pragma omp master
+    if thread_number = 0 then
+        print `Bonjour je suis le thread maitre avec le numero : {thread_number}`
+    end if
+end procedure
+
+procedure single_worker(thread_number as int)
+    rang := thread_number
+    a := 1
+    // #pragma omp single (first thread to arrive; modelled as thread 0)
+    if thread_number = 0 then
+        a := 2
+        print `je suis le premier thread ({rang}) arrive et j'ai modifie la variable a = {a}`
+    end if
+    barrier_wait(single_barrier)
+    print `je suis le thread {rang}, avec a = {a}`
+end procedure
+
+procedure copyprivate_worker(thread_number as int)
+    rang := thread_number
+    a := 1
+    a := 2
+    print `thread n deg{rang} 	 a = {a}`
 end procedure

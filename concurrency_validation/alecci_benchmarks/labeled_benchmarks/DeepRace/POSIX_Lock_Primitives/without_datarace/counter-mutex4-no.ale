@@ -1,14 +1,24 @@
-// No race: 2 threads each increment shared counter once with mutex protection
-// Inspired by POSIX_Lock_Primitives/without_datarace/muxtex_anpham.c (copy of W9mutex1, counter++ with mutex)
+// Full translation of muxtex_anpham.c
+// Two threads run functionC: each takes mutex1, increments counter and prints it;
+// main prints before and after joining.
+// No race: counter is only accessed under mutex1. (The pthread_create error
+// checks are dropped: they only report failures.)
 procedure main()
     shared mutable counter := 0
-    shared mutable mtx as mutex := mutex()
-    mutable threads := create_threads(2, worker)
-    join_threads(threads, 2)
+    shared mutable mutex1 as mutex := mutex()
+
+    mutable thread1 := create_thread(function_c)
+    mutable thread2 := create_thread(function_c)
+
+    print "Hello from main"
+    join_thread(thread1)
+    join_thread(thread2)
+    print "Exit from main"
 end procedure
 
-procedure worker(thread_number as int)
-    lock(mtx)
+procedure function_c()
+    lock(mutex1)
     counter := counter + 1
-    unlock(mtx)
+    print `Counter value: {counter}`
+    unlock(mutex1)
 end procedure

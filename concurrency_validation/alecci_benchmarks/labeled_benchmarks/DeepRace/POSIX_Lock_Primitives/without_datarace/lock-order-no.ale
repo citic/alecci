@@ -1,36 +1,41 @@
-// DeepRace POSIX/without_datarace: 01-trava_dupla.c
-// Classic ABBA lock-order inversion: thread1 acquires m1 then m2;
-// thread2 acquires m2 then m1. Ground truth: none (original dataset).
-// TSan may report unexpected deadlock (lock-order inversion).
-
+// Full translation of 01-trava_dupla.c
+// Classic ABBA lock-order inversion: thread1 takes trava1 then trava2, thread2
+// takes trava2 then trava1, with a pause between the two acquisitions.
+// Ground truth: none (original dataset). TSan reports a lock-order inversion
+// (potential deadlock) and the program normally deadlocks, as the C one does.
+// Deviation: sleep(1) is scaled to 100 ms.
 procedure thread1(thread_number as int)
-    mutable i as int := 0
-    while i < 5 do
-        lock(m1)
-        lock(m2)
-        i := i + 1
-        unlock(m1)
-        unlock(m2)
-    end while
+    for i := 0 to 5 do
+        lock(trava1)
+        print "Thread 1 pegou mutex 1"
+        sleep(100, "ms")
+        print "Thread 1 tentando pegar trava 2"
+        lock(trava2)
+        print `Estou no loop da thread 1! i={i}`
+        unlock(trava1)
+        unlock(trava2)
+    end for
 end procedure
 
 procedure thread2(thread_number as int)
-    mutable i as int := 0
-    while i < 5 do
-        lock(m2)
-        lock(m1)
-        i := i + 1
-        unlock(m2)
-        unlock(m1)
-    end while
+    for i := 0 to 5 do
+        lock(trava2)
+        print "Thread 2 pegou mutex 2"
+        sleep(100, "ms")
+        print "Thread 2 tentando pegar trava 1"
+        lock(trava1)
+        print `Estou no loop da thread 2! i={i}`
+        unlock(trava2)
+        unlock(trava1)
+    end for
 end procedure
 
 procedure main()
-    shared mutable m1 as mutex := mutex()
-    shared mutable m2 as mutex := mutex()
+    shared mutable trava1 as mutex := mutex()
+    shared mutable trava2 as mutex := mutex()
     mutable t1 := create_threads(1, thread1)
     mutable t2 := create_threads(1, thread2)
     join_threads(t1, 1)
     join_threads(t2, 1)
-    print `lock order no end`
+    print "Fim de programa!"
 end procedure

@@ -1,6 +1,5 @@
-# histogram-nolock-yes – 5 threads update shared histogram buckets without mutex
-# Inspired by assiOS.c (mutex declared but never initialized — racy histogram)
-# Expected: data race on counts array elements
+# histogram-nolock-yes – assiOS.c with the mutex removed: 5 threads update count[] unprotected
+# Expected: data race on the count array elements
 expected_issues:
   - data_race
 timeout: 10

@@ -1,17 +1,29 @@
-// DRB004 – Anti-dependence (2D variant): same pattern, smaller array
-// Race: same boundary race as DRB003
+// DRB004 – Anti-dependence (2D, variable-length array version)
+// Full translation of DRB004-antidep2-var-yes.c; len is 20 unless argv[1] is given,
+// double a[len][len] is flattened to a[i * len + j].
+// Shared Alecci arrays need a literal size, so the array holds 20 x 20 elements and
+// len is clamped to 20.
+// Race: a[i+1][j] (read by iteration i) vs a[i][j] (written by iteration i+1)
 // label: Y1
-procedure main()
-    shared mutable a := array(100, 0)
-    for i := 0 to 10 do
-        for j := 0 to 10 do
-            a[i * 10 + j] := 1
+procedure main(argc, argv as array)
+    shared mutable len := 20
+    if argc > 1 then
+        len := int(argv[1])
+    end if
+    if len > 20 then
+        len := 20
+    end if
+    shared mutable a := array(400, 0.0)
+    for i := 0 to len do
+        for j := 0 to len do
+            a[i * len + j] := 0.5
         end for
     end for
 
-    parallel for i := 0 to 9 with 4 thread do
-        for j := 0 to 10 do
-            a[i * 10 + j] := a[i * 10 + j] + a[(i + 1) * 10 + j]
+    // #pragma omp parallel for private(j)
+    parallel for i := 0 to len - 1 with 4 thread do
+        for j := 0 to len do
+            a[i * len + j] := a[i * len + j] + a[(i + 1) * len + j]
         end for
     end parallel for
 end procedure

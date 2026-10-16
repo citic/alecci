@@ -1,12 +1,25 @@
-// DRB017 – Output dependence (variant): same race, different array size
-// Race: x (write) vs x (write/read)
+// DRB017 – Output dependence (variable-length array version)
+// Full translation of DRB017-outputdep-var-yes.c; len is 100 unless argv[1] is given.
+// Shared Alecci arrays need a literal size, so the array holds 100 elements and
+// len is clamped to that capacity.
+// Race: x (read) vs x (write) and x (write) vs x (write) across threads
 // label: Y1
-procedure main()
-    shared mutable a := array(200, 0)
+procedure main(argc, argv as array)
+    shared mutable len := 100
+    if argc > 1 then
+        len := int(argv[1])
+    end if
+    if len > 100 then
+        len := 100
+    end if
+    shared mutable a := array(100, 0)
     shared mutable x := 10
 
-    parallel for i := 0 to 200 with 4 thread do
+    // #pragma omp parallel for
+    parallel for i := 0 to len with 4 thread do
         a[i] := x
         x := i
     end parallel for
+
+    print `x={x}, a[0]={a[0]}`
 end procedure

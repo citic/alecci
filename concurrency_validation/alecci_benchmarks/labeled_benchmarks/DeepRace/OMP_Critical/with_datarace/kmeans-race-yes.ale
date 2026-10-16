@@ -1,9 +1,15 @@
+// Full translation of eo_-_main.c
 // K-means clustering: 10 random 2D points assigned to 2 centroids.
-// mat[10][2] and all float arrays flattened to 1D (mat[i][j] → mat[i*2+j]).
-// Race: sum1, sum2, len1, len2 accumulated inside the parallel for without any
-// critical section; multiple threads read-modify-write the shared accumulators.
-// Source: OMP_Critical/with_datarace/eo_-_main.c
-// Ground truth: data_race (original dataset).
+// Race: sum1, sum2, len1, len2 are accumulated inside the parallel for without
+// a critical section; the braces left over from the original "#pragma omp
+// critical" are plain blocks in the C source.
+// Deviations: float mat[10][2] etc. are flattened to 1D (mat[i][j] -> mat[i*2+j]);
+// rand() * 1.0 / 32767 becomes rand(32768) / 32767.0; srand(time(0)) is omitted;
+// cV1/cV2 are uninitialised in C (undefined behaviour) and start at 0.0 here.
+// As in C, dis1 and dis2 are ints, so the sqrt distances are truncated.
+function dist(x1 as float, y1 as float, x2 as float, y2 as float)
+    return sqrt(pow(x1 - x2, 2.0) + pow(y1 - y2, 2.0))
+end function
 
 procedure main()
     shared mutable mat := array(20, 0.0)
@@ -15,35 +21,41 @@ procedure main()
     shared mutable sum2 := array(2, 0.0)
     shared mutable len1 as int := 0
     shared mutable len2 as int := 0
+
+    // #pragma omp parallel for
     parallel for i := 0 to 10 with 4 thread do
-        mat[i * 2] := rand(32767) / 32767.0
-        mat[i * 2 + 1] := rand(32767) / 32767.0
+        mat[i * 2] := rand(32768) / 32767.0
+        mat[i * 2 + 1] := rand(32768) / 32767.0
     end parallel for
-    c1[0] := rand(32767) / 32767.0
-    c1[1] := rand(32767) / 32767.0
-    c2[0] := rand(32767) / 32767.0
-    c2[1] := rand(32767) / 32767.0
-    mutable converged as int := 0
-    while converged = 0 do
+
+    c1[0] := rand(32768) / 32767.0
+    c1[1] := rand(32768) / 32767.0
+    c2[0] := rand(32768) / 32767.0
+    c2[1] := rand(32768) / 32767.0
+
+    while dist(c1[0], c1[1], cV1[0], cV1[1]) > 0.0001 or dist(c2[0], c2[1], cV2[0], cV2[1]) > 0.0001 do
         sum1[0] := 0.0
         sum1[1] := 0.0
         sum2[0] := 0.0
         sum2[1] := 0.0
         len1 := 0
         len2 := 0
+
+        // #pragma omp parallel for private(i,j)
         parallel for i := 0 to 10 with 4 thread do
-            mutable d1 as float := sqrt(pow(c1[0] - mat[i * 2], 2.0) + pow(c1[1] - mat[i * 2 + 1], 2.0))
-            mutable d2 as float := sqrt(pow(c2[0] - mat[i * 2], 2.0) + pow(c2[1] - mat[i * 2 + 1], 2.0))
-            if d1 < d2 then
-                sum1[0] := sum1[0] + mat[i * 2]        // race: no critical section
-                sum1[1] := sum1[1] + mat[i * 2 + 1]    // race
-                len1 := len1 + 1                         // race
+            mutable dis1 as int := int(dist(c1[0], c1[1], mat[i * 2], mat[i * 2 + 1]))
+            mutable dis2 as int := int(dist(c2[0], c2[1], mat[i * 2], mat[i * 2 + 1]))
+            if dis1 < dis2 then
+                sum1[0] := sum1[0] + mat[i * 2]
+                sum1[1] := sum1[1] + mat[i * 2 + 1]
+                len1 := len1 + 1
             else
-                sum2[0] := sum2[0] + mat[i * 2]         // race
-                sum2[1] := sum2[1] + mat[i * 2 + 1]     // race
-                len2 := len2 + 1                          // race
+                sum2[0] := sum2[0] + mat[i * 2]
+                sum2[1] := sum2[1] + mat[i * 2 + 1]
+                len2 := len2 + 1
             end if
         end parallel for
+
         cV1[0] := c1[0]
         cV1[1] := c1[1]
         cV2[0] := c2[0]
@@ -56,16 +68,14 @@ procedure main()
             c2[0] := sum2[0] / len2
             c2[1] := sum2[1] / len2
         end if
-        mutable dist1 as float := sqrt(pow(c1[0] - cV1[0], 2.0) + pow(c1[1] - cV1[1], 2.0))
-        mutable dist2 as float := sqrt(pow(c2[0] - cV2[0], 2.0) + pow(c2[1] - cV2[1], 2.0))
-        if dist1 < 0.0001 and dist2 < 0.0001 then
-            converged := 1
-        end if
+
+        print "====== "
+        print `C1({c1[0]},{c1[1]}) CV1({cV1[0]},{cV1[1]})`
+        print `C2({c2[0]},{c2[1]}) CV2({cV2[0]},{cV2[1]})`
     end while
-    mutable c1x as float := c1[0]
-    mutable c1y as float := c1[1]
-    mutable c2x as float := c2[0]
-    mutable c2y as float := c2[1]
-    print `C1=({c1x},{c1y})`
-    print `C2=({c2x},{c2y})`
+
+    print ``
+    print "== FINAL == "
+    print `C1({c1[0]},{c1[1]})`
+    print `C2({c2[0]},{c2[1]})`
 end procedure

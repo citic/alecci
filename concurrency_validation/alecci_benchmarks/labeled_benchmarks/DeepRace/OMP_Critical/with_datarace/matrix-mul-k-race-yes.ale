@@ -1,29 +1,61 @@
-// Matrix multiply a[4][2] * b[2][6] = c[4][6] (arrays flattened to 1D).
-// Race: shared variable k used as inner-loop counter — all parallel threads
-// interfere with each other's k, producing wrong partial sums.
-// Source: OMP_Critical/with_datarace/104_-_main.c
-// Ground truth: data_race (original dataset).
-
+// Full translation of 104_-_main.c
+// Matrix multiply a[4][2] * b[2][6] = c[4][6].
+// Race: the inner-loop counter k and the scratch variable tid are shared (only
+// i, j via collapse(2), and sum via private(sum), are private), so all threads
+// interfere with each other's k.
+// Deviations: 2D arrays are flattened (a[i][j] -> a[i*n+j]); collapse(2) over
+// (i, j) becomes one parallel for over i*q+j; schedule(dynamic,3) is Alecci's
+// block distribution; private sum is uninitialised in C (undefined behaviour)
+// and starts at 0 here; srand(time) and the n != p check (never true for
+// n = p = 2) are omitted; printf rows are printed one line per row.
 procedure main()
+    shared const m = 4
+    shared const n = 2
+    shared const p = 2
+    shared const q = 6
     shared mutable a := array(8, 0)
     shared mutable b := array(12, 0)
     shared mutable c := array(24, 0)
     shared mutable k as int := 0
-    for i := 0 to 8 do
-        a[i] := rand(10)
+    shared mutable tid as int := 0
+
+    // #pragma omp parallel for num_threads(3) schedule(dynamic,3) collapse(2)
+    parallel for ij := 0 to m * n with 3 thread do
+        a[ij] := rand(10)
+    end parallel for
+
+    print ``
+    for i := 0 to m do
+        print `{a[i * 2]} {a[i * 2 + 1]}`
     end for
-    for i := 0 to 12 do
-        b[i] := rand(10)
+
+    // #pragma omp parallel for num_threads(3) schedule(dynamic,3) collapse(2)
+    parallel for ij := 0 to p * q with 3 thread do
+        b[ij] := rand(10)
+    end parallel for
+
+    print ``
+    for i := 0 to p do
+        print `{b[i * 6]} {b[i * 6 + 1]} {b[i * 6 + 2]} {b[i * 6 + 3]} {b[i * 6 + 4]} {b[i * 6 + 5]}`
     end for
-    parallel for i := 0 to 24 with 3 thread do
-        mutable row := i / 6
-        mutable col := i mod 6
+
+    // #pragma omp parallel for num_threads(3) schedule(dynamic,3) collapse(2) private(sum)
+    parallel for ij := 0 to m * q with 3 thread do
+        const i = ij # q
+        const j = ij mod q
         mutable sum := 0
         k := 0
-        while k < 2 do
-            sum := sum + a[row * 2 + k] * b[k * 6 + col]
+        while k < p do
+            sum := sum + a[i * n + k] * b[k * q + j]
             k := k + 1
         end while
-        c[i] := sum
+        c[ij] := sum
+        tid := thread_number
+        print `thread {tid} has calculated the number {sum}`
     end parallel for
+
+    print ``
+    for i := 0 to m do
+        print `   {c[i * 6]}    {c[i * 6 + 1]}    {c[i * 6 + 2]}    {c[i * 6 + 3]}    {c[i * 6 + 4]}    {c[i * 6 + 5]}`
+    end for
 end procedure

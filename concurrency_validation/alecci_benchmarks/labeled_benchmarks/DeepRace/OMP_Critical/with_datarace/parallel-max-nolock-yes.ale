@@ -1,25 +1,29 @@
-// Race: parallel max over a fixed array without atomic protection
-// Adapted from OMP_Critical/without_datarace/omp12_-_main.c
-// (outer check and inner assignment are separate — classic TOCTOU; atomic missing entirely here)
-// Race: max_val (write) vs max_val (read) across threads
+// Full translation of omp12_-_main.c with the "#pragma omp critical" removed
+// (race-injected variant of the without_datarace benchmark).
+// Race: max < a[i] is tested and max = a[i] is written by several threads with
+// no synchronisation at all.
+// srand(time(0)) is omitted; rand() % 300 becomes rand(300).
 procedure main()
-    shared mutable a := array(10, 0)
-    a[0] := 5
-    a[1] := 12
-    a[2] := 3
-    a[3] := 18
-    a[4] := 7
-    a[5] := 2
-    a[6] := 11
-    a[7] := 4
-    a[8] := 9
-    a[9] := 6
+    shared mutable a := array(300, 0)
+    shared mutable max := -1
+    mutable base_max := -1
 
-    shared mutable max_val := 0
+    for i := 0 to 300 do
+        a[i] := rand(300)
+        if a[i] mod 7 = 0 and base_max < a[i] then
+            base_max := a[i]
+        end if
+    end for
 
-    parallel for i := 0 to 10 with 4 thread do
-        if a[i] > max_val then
-            max_val := a[i]
+    // #pragma omp parallel for shared(max)
+    parallel for i := 0 to 300 with 4 thread do
+        if a[i] mod 7 = 0 and max < a[i] then
+            max := a[i]
         end if
     end parallel for
+
+    print `{max}`
+    if base_max = max then
+        print "correct"
+    end if
 end procedure

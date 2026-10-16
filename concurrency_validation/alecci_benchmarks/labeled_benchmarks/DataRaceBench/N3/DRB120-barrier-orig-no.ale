@@ -1,25 +1,58 @@
-// DRB120 – Proper barrier: two-phase update of a shared variable
-// Phase 1: thread 0 increments var; barrier; Phase 2: thread 1 increments var
-// Mutex + conditional ensures only one thread executes each phase; barrier orders them
-// No race: explicit synchronization prevents concurrent access
+// DRB120 – Explicit barrier between two "single" updates of a shared variable
+// Full translation of DRB120-barrier-orig-no.c: a parallel region of 4 threads where
+// the first thread to arrive at each "omp single" does var++ (the winner is chosen
+// with a flag under a mutex), the implicit barrier of each single and the explicit
+// "#pragma omp barrier" are barriers.
+// No race: the barrier orders the two updates, so the winner of the second single sees
+// the first one's write
 // label: N3
 procedure main()
     shared mutable var := 0
-    shared mutable mtx as mutex := mutex()
+    shared mutable single1_taken := 0
+    shared mutable single2_taken := 0
+    shared mutable pick as mutex := mutex()
     shared mutable b as barrier := barrier(4)
-    parallel for i := 0 to 4 with 4 thread do
-        if thread_number = 0 then
-            lock(mtx)
-            var := var + 1
-            unlock(mtx)
-        end if
 
-        barrier_wait(b)
+    // #pragma omp parallel shared(var)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
 
-        if thread_number = 1 then
-            lock(mtx)
-            var := var + 1
-            unlock(mtx)
-        end if
-    end parallel for
+    if var != 2 then
+        print `{var}`
+    end if
+    mutable error := 0
+    if var != 2 then
+        error := 1
+    end if
+end procedure
+
+procedure worker(thread_number as int)
+    // #pragma omp single
+    mutable winner1 := 0
+    lock(pick)
+    if single1_taken = 0 then
+        single1_taken := 1
+        winner1 := 1
+    end if
+    unlock(pick)
+    if winner1 = 1 then
+        var := var + 1
+    end if
+    barrier_wait(b)
+
+    // #pragma omp barrier
+    barrier_wait(b)
+
+    // #pragma omp single
+    mutable winner2 := 0
+    lock(pick)
+    if single2_taken = 0 then
+        single2_taken := 1
+        winner2 := 1
+    end if
+    unlock(pick)
+    if winner2 = 1 then
+        var := var + 1
+    end if
+    barrier_wait(b)
 end procedure

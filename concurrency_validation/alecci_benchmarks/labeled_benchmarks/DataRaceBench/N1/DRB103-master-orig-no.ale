@@ -1,12 +1,20 @@
-// DRB103 – Master construct: only thread 0 accesses num_threads (simulates omp master)
-// No race: only thread 0 reads/writes num_threads; no other thread touches it
+// DRB103 – Master construct: only thread 0 accesses k
+// Full translation of DRB103-master-orig-no.c; k = omp_get_num_threads() is the team
+// size of 4 threads.
+// No race: only the master thread reads or writes k
 // label: N1
 procedure main()
-    shared mutable num_threads := 0
+    shared mutable k := 0
 
-    parallel for i := 0 to 4 with 4 thread do
-        if thread_number = 0 then
-            num_threads := 4
-        end if
-    end parallel for
+    // #pragma omp parallel
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    // #pragma omp master
+    if thread_number = 0 then
+        k := 4
+        print `Number of Threads requested = {k}`
+    end if
 end procedure

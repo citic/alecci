@@ -3,4 +3,5 @@
 # gives each thread a distinct c[row][j] cell to write.
 expected_issues:
   - none
+stdin_file: matrix2loops_-_main.txt
 timeout: 60

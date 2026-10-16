@@ -1,15 +1,25 @@
-// DRB023 – Concurrent writes race: two threads write to shared i without sync
-// Adapted from sections pattern: 2-thread parallel for, each thread writes i
-// Race: i (write by thread 0) vs i (write by thread 1)
+// DRB023 – Two sections without synchronisation write the shared i
+// Full translation of DRB023-sections1-orig-yes.c (the source file behind this
+// benchmark): "#pragma omp parallel sections" with two sections, modelled as two
+// threads, one per section.
+// Race: i (written by section 1) vs i (written by section 2)
 // label: Y2
 procedure main()
     shared mutable i := 0
 
-    parallel for k := 0 to 2 with 2 thread do
-        if thread_number = 0 then
-            i := 1
-        else
-            i := 2
-        end if
-    end parallel for
+    // #pragma omp parallel sections
+    mutable threads := create_threads(2, worker)
+    join_threads(threads, 2)
+
+    print `i={i}`
+end procedure
+
+procedure worker(thread_number as int)
+    if thread_number = 0 then
+        // #pragma omp section
+        i := 1
+    else
+        // #pragma omp section
+        i := 2
+    end if
 end procedure

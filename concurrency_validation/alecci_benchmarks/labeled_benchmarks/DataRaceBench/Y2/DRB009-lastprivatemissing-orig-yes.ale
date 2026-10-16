@@ -1,9 +1,15 @@
-// DRB009 – Missing lastprivate: all threads write to shared x without synchronization
+// DRB009 – Missing lastprivate: all threads write the shared x
+// Full translation of DRB009-lastprivatemissing-orig-yes.c
 // Race: x (write) vs x (write) across threads
 // label: Y2
 procedure main()
+    shared const len = 10000
     shared mutable x := 0
-    parallel for i := 0 to 10000 with 4 thread do
+
+    // #pragma omp parallel for private(i)
+    parallel for i := 0 to len with 4 thread do
         x := i
     end parallel for
+
+    print `x={x}`
 end procedure

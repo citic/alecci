@@ -1,4 +1,4 @@
-# flag-nolock-yes – 2 threads write to shared flag without any synchronization
+# flag-nolock-yes – TwoThreadLoop.c with mutex/condvar removed: both threads modify flag unprotected
 # Expected: data race on flag
 expected_issues:
   - data_race

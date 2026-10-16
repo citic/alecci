@@ -1,36 +1,31 @@
 // SCTBench benchmark: concurrent-software-benchmarks/sync01_ok.c
-// Classic 1-slot bounded buffer: producer and consumer coordinate via two
-// condition variables (empty, full). The producer waits on 'empty' when the
-// slot is occupied; the consumer waits on 'full' when the slot is empty.
-// All accesses to num are under the mutex — no data race.
+// Full translation of sync01_ok.c: classic 1-slot buffer. thread1 (producer) waits on
+// 'empty' while the slot is occupied, fills it and signals 'full'; thread2 (consumer)
+// waits on 'full' while the slot is empty, empties it, prints "consume ...." and
+// signals 'empty'. Each thread does a single pass (the C source has no loop; the macro N
+// is unused).
+// All accesses to num are under the mutex: no data race.
 // Expected: no data race.
 
-procedure producer(thread_number as int)
-    mutable i := 0
-    while i < 2 do
-        lock(m)
-        while num > 0 do
-            cond_wait(empty, m)
-        end while
-        num := num + 1
-        unlock(m)
-        cond_signal(full)
-        i := i + 1
+procedure thread1(thread_number as int)
+    lock(m)
+    while num > 0 do
+        cond_wait(empty, m)
     end while
+    num := num + 1
+    unlock(m)
+    cond_signal(full)
 end procedure
 
-procedure consumer(thread_number as int)
-    mutable j := 0
-    while j < 2 do
-        lock(m)
-        while num = 0 do
-            cond_wait(full, m)
-        end while
-        num := num - 1
-        unlock(m)
-        cond_signal(empty)
-        j := j + 1
+procedure thread2(thread_number as int)
+    lock(m)
+    while num = 0 do
+        cond_wait(full, m)
     end while
+    num := num - 1
+    print "consume ...."
+    unlock(m)
+    cond_signal(empty)
 end procedure
 
 procedure main()
@@ -38,8 +33,8 @@ procedure main()
     shared mutable empty as condvar := condvar()
     shared mutable full  as condvar := condvar()
     shared mutable num := 0
-    mutable t1 := create_threads(1, producer)
-    mutable t2 := create_threads(1, consumer)
+    mutable t1 := create_threads(1, thread1)
+    mutable t2 := create_threads(1, thread2)
     join_threads(t1, 1)
     join_threads(t2, 1)
 end procedure

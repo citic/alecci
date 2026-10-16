@@ -1,9 +1,11 @@
-// No race: parallel for, myid is a local variable; result[i] written at unique index per iteration
-// Inspired by OMP_Private/without_datarace/hello_for_-_main.c (private(myid, num_thds) in omp parallel for)
+// Full translation of hello_for_-_main.c
+// No race: myid and num_thds are private to each iteration.
+// The default team size of "#pragma omp parallel for" is modelled as 4 threads.
 procedure main()
-    shared mutable result := array(16, 0)
+    // #pragma omp parallel for private(myid, num_thds)
     parallel for i := 0 to 16 with 4 thread do
         mutable myid := thread_number
-        result[i] := myid
+        mutable num_thds := 4
+        print `i = {i}. Executed by thread {myid} out of {num_thds} threads.`
     end parallel for
 end procedure

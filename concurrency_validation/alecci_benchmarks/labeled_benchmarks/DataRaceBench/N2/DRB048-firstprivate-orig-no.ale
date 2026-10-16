@@ -1,10 +1,16 @@
-// DRB048 – Firstprivate: g is a constant passed to each thread (private copy)
-// In Alecci the parallel-for body is a separate function, so any non-shared
-// value used as a literal is inherently private. No race.
+// DRB048 – Firstprivate: every thread adds its private copy of g to a[i]
+// Full translation of DRB048-firstprivate-orig-no.c; foo(a, 100, 7) is inlined in main
+// (a is the global int a[100], n = 100, g = 7). g is a read-only constant, which is
+// what firstprivate(g) amounts to.
+// No race: each iteration writes a distinct element a[i]
 // label: N2
 procedure main()
+    shared const n = 100
+    shared const g = 7
     shared mutable a := array(100, 0)
-    parallel for i := 0 to 100 with 4 thread do
-        a[i] := a[i] + 7
+
+    // #pragma omp parallel for firstprivate(g)
+    parallel for i := 0 to n with 4 thread do
+        a[i] := a[i] + g
     end parallel for
 end procedure

@@ -1,10 +1,10 @@
 // SCTBench benchmark: concurrent-software-benchmarks/arithmetic_prog_ok.c
-// Producer-consumer with accumulation: the consumer sums j=0..N-1 into total.
-// Two condition variables coordinate a 1-slot buffer over N=4 iterations.
-// All accesses to num and total are under the mutex — no data race.
-// (The original C code also has a final total+=N and assert outside the lock,
-// which are omitted here since Alecci has no assert and those accesses race with
-// nothing at that point.)
+// Full translation of arithmetic_prog_ok.c: producer-consumer with accumulation over N = 4
+// iterations. Two condition variables coordinate a 1-slot buffer; the consumer adds
+// j = 0..N-1 to total under the mutex, then (outside the lock, as in C) adds the final j
+// and sets flag; main asserts total == N*(N+1)/2 after the joins.
+// No data race: the post-loop accesses belong to the consumer only and main reads them
+// after the join.
 // Expected: no data race.
 
 procedure producer(thread_number as int)
@@ -15,6 +15,7 @@ procedure producer(thread_number as int)
             cond_wait(empty, m)
         end while
         num := num + 1
+        print `produce ....{i}`
         unlock(m)
         cond_signal(full)
         i := i + 1
@@ -29,11 +30,16 @@ procedure consumer(thread_number as int)
             cond_wait(full, m)
         end while
         total := total + j
+        print `total ....{total}`
         num := num - 1
+        print `consume ....{j}`
         unlock(m)
         cond_signal(empty)
         j := j + 1
     end while
+    total := total + j
+    print `total ....{total}`
+    flag := 1
 end procedure
 
 procedure main()
@@ -42,8 +48,12 @@ procedure main()
     shared mutable full  as condvar := condvar()
     shared mutable num   := 0
     shared mutable total := 0
+    shared mutable flag  := 0
     mutable t1 := create_threads(1, producer)
     mutable t2 := create_threads(1, consumer)
     join_threads(t1, 1)
     join_threads(t2, 1)
+    if flag = 1 then
+        assert total = (4 * (4 + 1)) # 2, "total == N*(N+1)/2"
+    end if
 end procedure

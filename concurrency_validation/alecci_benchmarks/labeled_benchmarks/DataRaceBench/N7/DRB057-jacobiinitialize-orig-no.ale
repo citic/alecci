@@ -1,14 +1,30 @@
-// DRB057 – Jacobi initialization: parallel initialization of 2D arrays u and f
-// No race: outer i parallel, inner j sequential; each (i,j) written by exactly one thread
+// DRB057 – Jacobi initialization: parallel initialisation of u and f
+// Full translation of DRB057-jacobiinitialize-orig-no.c: MSIZE = 200, n = m = 200,
+// alpha = 0.0543, double u[200][200], f[200][200] flattened to x[i * 200 + j].
+// xx and yy are ints in C, so (int)(-1.0 + dx * (i - 1)) truncates towards zero.
+// No race: i, j, xx and yy are private and every (i, j) is written by one thread
 // label: N7
 procedure main()
-    shared mutable u := array(400, 0)
-    shared mutable f := array(400, 0)
+    shared const n = 200
+    shared const m = 200
+    shared mutable u := array(40000, 0.0)
+    shared mutable f := array(40000, 0.0)
+    shared mutable dx as float := 0.0
+    shared mutable dy as float := 0.0
+    shared mutable alpha as float := 0.0543
 
-    parallel for i := 0 to 20 with 4 thread do
-        for j := 0 to 20 do
-            u[i * 20 + j] := 0
-            f[i * 20 + j] := 0
+    // initialize()
+    dx := 2.0 / (n - 1)
+    dy := 2.0 / (m - 1)
+
+    // Initialize initial condition and RHS
+    // #pragma omp parallel for private(i,j,xx,yy)
+    parallel for i := 0 to n with 4 thread do
+        for j := 0 to m do
+            mutable xx as int := int(-1.0 + dx * (i - 1))
+            mutable yy as int := int(-1.0 + dy * (j - 1))
+            u[i * 200 + j] := 0.0
+            f[i * 200 + j] := -1.0 * alpha * (1.0 - xx * xx) * (1.0 - yy * yy) - 2.0 * (1.0 - xx * xx) - 2.0 * (1.0 - yy * yy)
         end for
     end parallel for
 end procedure

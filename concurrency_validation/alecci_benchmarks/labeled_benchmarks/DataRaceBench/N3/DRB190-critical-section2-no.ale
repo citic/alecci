@@ -1,9 +1,18 @@
-// DRB190 – Producer-consumer: single shared atomic do serialises both producer and consumer
-// No race: one global mutex prevents concurrent size modifications
-// Source: DRB190-critical-section2-no.c (single omp critical covers both sections)
+// DRB190 – Single producer, single consumer, one unnamed critical section
+// Full translation of DRB190-critical-section2-no.c: two sections (producer, consumer)
+// each with a firstprivate copy of packages = 1000 and of r; both update size under
+// the same unnamed critical section, so they exclude each other. Each section loops
+// until its own package count reaches zero, burning time between attempts (r loop of
+// 1000 iterations for the producer, 1500 for the consumer).
+// fflush(stdout) has no equivalent.
+// No race: every access to size is inside the critical section
 // label: N3
 procedure main()
     shared mutable size := 0
+    shared const cap = 10
+    shared mutable crit as mutex := mutex()
+
+    // #pragma omp parallel sections shared(size, cap) firstprivate(r, packages) num_threads(2)
     mutable t_prod := create_thread(producer)
     mutable t_cons := create_thread(consumer)
     join_thread(t_prod)
@@ -11,21 +20,37 @@ procedure main()
 end procedure
 
 procedure producer()
-    for i := 0 to 100 do
-        atomic do
-            if size < 10 then
-                size := size + 1
-            end if
-        end atomic
-    end for
+    mutable r := 0
+    mutable packages := 1000
+    while packages != 0 do
+        // #pragma omp critical
+        lock(crit)
+        if size < cap then
+            size := size + 1
+            packages := packages - 1
+            print `Produced! size={size}`
+        end if
+        unlock(crit)
+        for i := 0 to 1000 do
+            r := (r + 1) mod 10
+        end for
+    end while
 end procedure
 
 procedure consumer()
-    for i := 0 to 100 do
-        atomic do
-            if size > 0 then
-                size := size - 1
-            end if
-        end atomic
-    end for
+    mutable r := 0
+    mutable packages := 1000
+    while packages != 0 do
+        // #pragma omp critical
+        lock(crit)
+        if size > 0 then
+            size := size - 1
+            packages := packages - 1
+            print `Consumed! size={size}`
+        end if
+        unlock(crit)
+        for i := 0 to 1500 do
+            r := (r + 1) mod 10
+        end for
+    end while
 end procedure

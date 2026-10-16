@@ -3,5 +3,6 @@
 # Expected: data race on total_points
 expected_issues:
   - data_race
+stdin_file: monte-carlo-nolock-yes.txt
 timeout: 10
 max_runs: 20

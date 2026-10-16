@@ -1,4 +1,4 @@
-# counter-nolock-yes – 4 threads increment counter without mutex
+# counter-nolock-yes – muxtex_anpham.c with the mutex removed: 2 threads run counter++ unprotected
 # Expected: data race on counter
 expected_issues:
   - data_race

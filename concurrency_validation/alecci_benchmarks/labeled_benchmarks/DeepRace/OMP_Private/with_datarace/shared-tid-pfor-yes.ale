@@ -1,8 +1,26 @@
-// Race: parallel for, shared tid := thread_number without mutex across iterations
-// Inspired by OMP_Private/with_datarace/for-work-sharing_-_main.c (tid = omp_get_thread_num() shared)
+// Full translation of for-work-sharing_-_main.c
+// Race: tid is declared outside the parallel region, so it is shared; every
+// thread writes it (omp_get_thread_num) and reads it back for the printf
+// without synchronisation.
+// Deviations: the default team size of "#pragma omp parallel" is 4 threads;
+// "schedule(static, chunk) nowait" is written out as cyclic chunks of 2
+// iterations (thread t runs chunks t, t+4, ...).
 procedure main()
     shared mutable tid := 0
-    parallel for i := 0 to 10 with 4 thread do
-        tid := thread_number
-    end parallel for
+    shared const chunk = 2
+    shared const n = 10
+
+    // #pragma omp parallel shared(chunk)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    // #pragma omp for schedule(static, chunk) nowait
+    for i := 0 to n do
+        if (i # chunk) mod 4 = thread_number then
+            tid := thread_number
+            print `tid: {tid}, iter: {i}`
+        end if
+    end for
 end procedure

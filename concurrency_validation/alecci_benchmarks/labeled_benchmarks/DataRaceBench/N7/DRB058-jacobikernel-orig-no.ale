@@ -1,38 +1,97 @@
-// DRB058 – Jacobi 2D stencil: copy-phase and update-phase parallel fors separated by barrier
-// u[M][M], f[M][M], uold[M][M] flattened: a[i][j] → a[i*20+j], M=20 (reduced from 200)
-// No race: implicit barrier after copy-for ensures uold is fully updated before stencil-for reads it;
-//          stencil-for threads each write to distinct u[i*20+j] rows; error accumulation under mutex
-// Source: DataRaceBench DRB058-jacobikernel-orig-no.c (MSIZE 200→20, mits 1000→10)
+// DRB058 – Jacobi kernel: two work-shared loops in one parallel region, with a reduction
+// Full translation of DRB058-jacobikernel-orig-no.c: initialize() (sequential) and
+// jacobi(), whose iteration loop starts a parallel region with an "omp for" that
+// copies u to uold, followed by an "omp for ... reduction(+:error) nowait" that applies
+// the stencil. The region is 4 threads: the implicit barrier after the copy loop is a
+// barrier, the reduction is a private partial error per thread combined under a mutex.
+// Deviations: MSIZE is scaled from 200 to 20 and mits from 1000 to 10 (the original
+// runs about 80 million stencil updates, too slow under ThreadSanitizer); matrices
+// are flattened to x[i * 20 + j]; xx and yy are ints as in C.
+// No race: the barrier separates the copy from the stencil, every u[i][j] is written
+// by one thread and error is combined under a mutex
 // label: N7
 procedure main()
+    shared const n = 20
+    shared const m = 20
+    shared const mits = 10
     shared mutable u := array(400, 0.0)
     shared mutable f := array(400, 0.0)
     shared mutable uold := array(400, 0.0)
-    shared mutable error as float := 0.0
-    shared mutable mtx as mutex := mutex()
-    shared mutable ax as float := 90.25
-    shared mutable ay as float := 90.25
-    shared mutable b as float := 0.0 - 361.0543
+    shared mutable dx as float := 0.0
+    shared mutable dy as float := 0.0
+    shared mutable alpha as float := 0.0543
     shared mutable omega as float := 1.0
-    mutable k as int := 1
-    while k <= 10 do
+    shared mutable ax as float := 0.0
+    shared mutable ay as float := 0.0
+    shared mutable b as float := 0.0
+    shared mutable error as float := 0.0
+    shared mutable err_mutex as mutex := mutex()
+    shared mutable copy_barrier as barrier := barrier(4)
+
+    // initialize()
+    dx := 2.0 / (n - 1)
+    dy := 2.0 / (m - 1)
+    for i := 0 to n do
+        for j := 0 to m do
+            mutable xx as int := int(-1.0 + dx * (i - 1))
+            mutable yy as int := int(-1.0 + dy * (j - 1))
+            u[i * 20 + j] := 0.0
+            f[i * 20 + j] := -1.0 * alpha * (1.0 - xx * xx) * (1.0 - yy * yy) - 2.0 * (1.0 - xx * xx) - 2.0 * (1.0 - yy * yy)
+        end for
+    end for
+
+    // jacobi()
+    ax := 1.0 / (dx * dx)
+    ay := 1.0 / (dy * dy)
+    b := -2.0 / (dx * dx) - 2.0 / (dy * dy) - alpha
+    mutable k := 1
+    while k <= mits do
         error := 0.0
-        parallel for i := 0 to 20 with 4 thread do
-            for j := 0 to 20 do
-                uold[i * 20 + j] := u[i * 20 + j]
-            end for
-        end parallel for
-        parallel for i := 1 to 19 with 4 thread do
-            for j := 1 to 19 do
-                mutable resid as float := (ax * (uold[(i - 1) * 20 + j] + uold[(i + 1) * 20 + j]) + ay * (uold[i * 20 + j - 1] + uold[i * 20 + j + 1]) + b * uold[i * 20 + j] - f[i * 20 + j]) / b
-                u[i * 20 + j] := uold[i * 20 + j] - omega * resid
-                lock(mtx)
-                error := error + resid * resid
-                unlock(mtx)
-            end for
-        end parallel for
-        error := sqrt(error) / 400.0
+        // #pragma omp parallel
+        mutable threads := create_threads(4, worker)
+        join_threads(threads, 4)
         k := k + 1
+        error := sqrt(error) / (n * m)
     end while
-    print `done k={k}`
+
+    print `Total Number of Iterations:{k}`
+    print `Residual:{error}`
+end procedure
+
+procedure worker(thread_number as int)
+    // static block of rows for both loops
+    const chunk = 20 # 4
+    const first = thread_number * chunk
+    const last = first + chunk
+
+    // #pragma omp for private(i,j): copy u to uold
+    for i := first to last do
+        for j := 0 to 20 do
+            uold[i * 20 + j] := u[i * 20 + j]
+        end for
+    end for
+    barrier_wait(copy_barrier)
+
+    // #pragma omp for private(i,j,resid) reduction(+:error) nowait: rows 1 .. n-2
+    mutable first2 := first
+    mutable last2 := last
+    if first2 < 1 then
+        first2 := 1
+    end if
+    if last2 > 19 then
+        last2 := 19
+    end if
+    mutable partial_error as float := 0.0
+    mutable resid as float := 0.0
+    for i := first2 to last2 do
+        for j := 1 to 19 do
+            resid := (ax * (uold[(i - 1) * 20 + j] + uold[(i + 1) * 20 + j]) + ay * (uold[i * 20 + j - 1] + uold[i * 20 + j + 1]) + b * uold[i * 20 + j] - f[i * 20 + j]) / b
+            u[i * 20 + j] := uold[i * 20 + j] - omega * resid
+            partial_error := partial_error + resid * resid
+        end for
+    end for
+
+    lock(err_mutex)
+    error := error + partial_error
+    unlock(err_mutex)
 end procedure

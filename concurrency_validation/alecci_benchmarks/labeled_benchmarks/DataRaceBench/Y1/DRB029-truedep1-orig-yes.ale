@@ -1,13 +1,18 @@
 // DRB029 – True dependence: a[i+1] = a[i] + 1
-// Race: a[i+1] (write by iteration i) vs a[i] (read by iteration i+1 = a[i+1])
+// Full translation of DRB029-truedep1-orig-yes.c
+// Race: a[i+1] (write by iteration i) vs a[i] (read by iteration i+1)
 // label: Y1
 procedure main()
+    shared const len = 100
     shared mutable a := array(100, 0)
-    for i := 0 to 100 do
+    for i := 0 to len do
         a[i] := i
     end for
 
-    parallel for i := 0 to 99 with 4 thread do
-        a[i+1] := a[i] + 1
+    // #pragma omp parallel for
+    parallel for i := 0 to len - 1 with 4 thread do
+        a[i + 1] := a[i] + 1
     end parallel for
+
+    print `a[50]={a[50]}`
 end procedure

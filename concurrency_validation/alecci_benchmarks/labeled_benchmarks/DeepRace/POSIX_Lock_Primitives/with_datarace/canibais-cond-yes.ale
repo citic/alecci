@@ -1,21 +1,30 @@
-// Cannibals problem — data race on porcoes
-// Cook writes porcoes := 10 outside the acordar mutex while cannibals
-// may be reading/writing porcoes under that mutex.
-// Source: 130024902_problema_canibais.c (DeepRace POSIX/with_datarace)
-
+// Full translation of 130024902_problema_canibais.c (cannibals and cook)
+// Race: the cook writes porcoes := 10 outside the acordar mutex while the
+// cannibals read and write porcoes under that mutex.
+// Deviations: the C program loops forever (while TRUE) and only exits when the
+// process is killed, so every cannibal stops after 3 meals and the last one
+// tells the cook to finish (done counter); sleep(1) is scaled to 100 ms and
+// sleep(5) to 500 ms (same ratio); the cook thread gets no argument; "\n" inside the printf strings
+// becomes separate print calls.
 procedure canibal(thread_number as int)
-    mutable i := 0
-    while i < 3 do
+    mutable i := thread_number
+    for meal := 0 to 3 do
         lock(acordar)
-        while porcoes < 1 do
+        if porcoes < 1 then
             cond_signal(cozinhar)
             cond_wait(comida, acordar)
-        end while
+        end if
         porcoes := porcoes - 1
-        unlock(acordar)
+        print `Canibal {i} pegou uma porcao`
+        print `porcao: {porcoes}`
         sleep(100, "ms")
-        i := i + 1
-    end while
+        unlock(acordar)
+
+        lock(porcao)
+        sleep(100, "ms")
+        unlock(porcao)
+    end for
+
     lock(acordar)
     done := done + 1
     if done = 5 then
@@ -25,24 +34,30 @@ procedure canibal(thread_number as int)
 end procedure
 
 procedure cozinheiro()
-    lock(acordar)
-    while done < 5 do
+    mutable running := 1
+    while running = 1 do
+        lock(acordar)
         while porcoes > 0 and done < 5 do
+            cond_broadcast(comida)
             cond_wait(cozinhar, acordar)
         end while
-        if done < 5 then
-            unlock(acordar)
-            sleep(100, "ms")
+        unlock(acordar)
+
+        if done >= 5 then
+            running := 0
+        else
+            print "------ COZINHEIRO ------"
+            print "Preparando comida "
+            sleep(500, "ms")
             porcoes := 10
-            lock(acordar)
-            cond_broadcast(comida)
+            print `{porcoes} porcoes preparadas`
         end if
     end while
-    unlock(acordar)
 end procedure
 
 procedure main()
     shared mutable acordar  as mutex   := mutex()
+    shared mutable porcao   as mutex   := mutex()
     shared mutable cozinhar as condvar := condvar()
     shared mutable comida   as condvar := condvar()
     shared mutable porcoes := 10

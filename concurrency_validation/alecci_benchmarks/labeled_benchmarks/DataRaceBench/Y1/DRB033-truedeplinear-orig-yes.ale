@@ -1,5 +1,6 @@
-// DRB033 – True dependence with non-unit stride: a[2*i+1] = a[i] + 1
-// Race: a[2*i+1] (write) vs a[i] (read from another thread where a[i] = a[2*k+1])
+// DRB033 – True dependence with a linear subscript: a[2*i+1] = a[i] + 1
+// Full translation of DRB033-truedeplinear-orig-yes.c
+// Race: a[2*i+1] (write by iteration i) vs a[i] (read by another iteration)
 // label: Y1
 procedure main()
     shared mutable a := array(2000, 0)
@@ -7,7 +8,10 @@ procedure main()
         a[i] := i
     end for
 
+    // #pragma omp parallel for
     parallel for i := 0 to 1000 with 4 thread do
-        a[2*i+1] := a[i] + 1
+        a[2 * i + 1] := a[i] + 1
     end parallel for
+
+    print `a[1001]={a[1001]}`
 end procedure

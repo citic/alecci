@@ -1,16 +1,21 @@
-// Race: 4 threads increment shared counter 1000 times each without mutex
-// Inspired by POSIX_Lock_Primitives/with_datarace patterns (e.g., muxtex_anpham.c base pattern)
-// Race: counter (write) vs counter (read/write) across threads
+// Full translation of muxtex_anpham.c with the mutex removed
+// (race-injected variant of counter-mutex4-no).
+// Race: the two threads run counter++ and read it for the printf without
+// mutex1, which the C source takes around the increment.
+// The pthread_create error checks are dropped (they only report failures).
 procedure main()
     shared mutable counter := 0
-    mutable threads := create_threads(4, worker)
-    join_threads(threads, 4)
+
+    mutable thread1 := create_thread(function_c)
+    mutable thread2 := create_thread(function_c)
+
+    print "Hello from main"
+    join_thread(thread1)
+    join_thread(thread2)
+    print "Exit from main"
 end procedure
 
-procedure worker(thread_number as int)
-    mutable i := 0
-    while i < 1000 do
-        counter := counter + 1
-        i := i + 1
-    end while
+procedure function_c()
+    counter := counter + 1
+    print `Counter value: {counter}`
 end procedure

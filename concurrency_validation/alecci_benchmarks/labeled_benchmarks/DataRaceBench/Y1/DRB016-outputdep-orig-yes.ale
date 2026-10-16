@@ -1,12 +1,17 @@
-// DRB016 – Output dependence: a[i] = x; x = i (race on shared scalar x)
-// Race: x (write) vs x (write/read) across threads; no protection
+// DRB016 – Output dependence: a[i] = x; x = i (race on the shared scalar x)
+// Full translation of DRB016-outputdep-orig-yes.c
+// Race: x (read) vs x (write) and x (write) vs x (write) across threads; no protection
 // label: Y1
 procedure main()
+    shared const len = 100
     shared mutable a := array(100, 0)
     shared mutable x := 10
 
-    parallel for i := 0 to 100 with 4 thread do
+    // #pragma omp parallel for
+    parallel for i := 0 to len with 4 thread do
         a[i] := x
         x := i
     end parallel for
+
+    print `x={x}`
 end procedure

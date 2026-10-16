@@ -1,17 +1,27 @@
-// Two sequential parallel fors with an implicit barrier between them.
-// First pfor fills a[9] := i; second pfor fills b[9] := 2 * a[i].
-// No race: each iteration writes to a unique index; the barrier after the
-// first pfor guarantees a[] is fully populated before b[] is computed.
-// Source: OMP_Private/without_datarace/fig4.12-two-for-loops_-_main.c
-// Ground truth: none (original dataset).
-
+// Full translation of fig4.12-two-for-loops_-_main.c
+// Two work-shared loops with an implicit barrier between them: the first fills
+// a[i] = i, the second b[i] = 2 * a[i].
+// No race: each iteration writes a distinct element, and the barrier after the
+// first loop guarantees a[] is complete before b[] is computed.
+// In the C source omp_get_num_threads()/omp_get_thread_num() were replaced by the
+// constants 1 and 0, so the messages print those constants; the "#pragma omp
+// single" prints are done once, before each loop, by the main thread.
 procedure main()
+    shared const n = 9
     shared mutable a := array(9, 0)
     shared mutable b := array(9, 0)
-    parallel for i := 0 to 9 with 4 thread do
+
+    print `First for-loop: number of threads is 1`
+    // #pragma omp for schedule(runtime)
+    parallel for i := 0 to n with 4 thread do
+        print `Thread 0 executes loop iteration {i}`
         a[i] := i
     end parallel for
-    parallel for i := 0 to 9 with 4 thread do
+
+    print `Second for-loop: number of threads is 1`
+    // #pragma omp for schedule(runtime)
+    parallel for i := 0 to n with 4 thread do
+        print `Thread 0 executes loop iteration {i}`
         b[i] := 2 * a[i]
     end parallel for
 end procedure

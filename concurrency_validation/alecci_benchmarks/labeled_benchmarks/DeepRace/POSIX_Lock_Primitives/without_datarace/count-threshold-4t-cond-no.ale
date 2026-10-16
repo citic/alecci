@@ -1,27 +1,46 @@
-// 3 incrementer threads count to 12; 1 watcher waits under mutex and adds 125.
-// All shared accesses are properly under count_mutex — no data race.
-// Source: thread_with_conditions.c (DeepRace POSIX/without_datarace)
-
+// Full translation of thread_with_conditions.c
+// NUM_THREADS = 4: three threads run inc_count (TOTAL_COUNT = 10 increments of
+// count each) and one runs watch_count, which waits until COUNT_LIMIT = 12 is
+// reached, then adds 125. count is only touched under count_mutex.
+// Deviations: sleep(1) is scaled to 200 ms; pthread_attr_*, pthread_exit and the
+// *_destroy calls have no Alecci equivalent; thread ids are the C values t1..t4.
 procedure inc_count(thread_number as int)
-    mutable i := 0
-    while i < 10 do
+    mutable my_id := thread_number + 2
+    for i := 0 to 10 do
         lock(count_mutex)
         count := count + 1
+
+        // Check the value of count and signal waiting thread when
+        // condition is reached. Note that this occurs while mutex is locked.
         if count = 12 then
+            print `inc_count(): thread {my_id}, count = {count}  Threshold reached. Just sent signal.`
             cond_signal(count_threshold_cv)
         end if
+        print `inc_count(): thread {my_id}, count = {count}, unlocking mutex`
         unlock(count_mutex)
+
+        // Do some work so threads can alternate on mutex lock
         sleep(200, "ms")
-        i := i + 1
-    end while
+    end for
 end procedure
 
 procedure watch_count(thread_number as int)
+    mutable my_id := 1
+
+    print `watch_count(): thread {my_id}`
+
+    // Lock mutex and wait for signal. If COUNT_LIMIT is reached before this
+    // routine runs, the loop is skipped so cond_wait cannot block forever.
     lock(count_mutex)
     while count < 12 do
+        print `watch_count(): thread {my_id} Count= {count}. Going into wait...`
         cond_wait(count_threshold_cv, count_mutex)
+        print `watch_count(): thread {my_id} Condition signal received. Count= {count}`
     end while
+    print `watch_count(): thread {my_id} Updating the value of count...`
     count := count + 125
+    print `watch_count(): thread {my_id} count now = {count}.`
+    print `watch_count(): thread {my_id} Unlocking mutex.`
     unlock(count_mutex)
 end procedure
 
@@ -29,8 +48,12 @@ procedure main()
     shared mutable count_mutex        as mutex   := mutex()
     shared mutable count_threshold_cv as condvar := condvar()
     shared mutable count := 0
+
     mutable t_watch := create_threads(1, watch_count)
     mutable t_inc   := create_threads(3, inc_count)
+
+    // Wait for all threads to complete
     join_threads(t_watch)
     join_threads(t_inc)
+    print `main(): waited and joined with 4 threads. Final value of count = {count}. Done.`
 end procedure

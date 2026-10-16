@@ -1,29 +1,64 @@
-// Element-wise matrix add A[6][10] + B[6][10] = C[6][10] (arrays flattened to 1D).
-// 6 threads, each assigned one row via shared id/sid/eid variables.
-// Race: id, sid, eid are shared — all 6 threads write them without synchronisation,
-// so threads may compute wrong row ranges and corrupt each other's slots.
-// Source: OMP_Private/with_datarace/ex6_-_main.c
-// Ground truth: data_race (original dataset).
-
+// Full translation of ex6_-_main.c
+// Element-wise matrix add A[6][10] + B[6][10] = C[6][10] (arrays flattened to
+// a[i * 10 + j]), one row per thread.
+// Race: id, Sid, Eid, Nid and the loop counters i, j are declared outside the
+// parallel region and are shared, so all 6 threads write them without
+// synchronisation and may compute wrong row ranges.
 procedure main()
     shared mutable a := array(60, 0)
     shared mutable b := array(60, 0)
     shared mutable c := array(60, 0)
-    shared mutable id as int := 0
-    shared mutable sid as int := 0
-    shared mutable eid as int := 0
-    for i := 0 to 60 do
-        a[i] := i
-        b[i] := i * 2
+    shared mutable i := 0
+    shared mutable j := 0
+    shared mutable id := 0
+    shared mutable sid := 0
+    shared mutable eid := 0
+    shared mutable nid := 0
+    shared const t = 6
+
+    for k := 0 to 6 do
+        for l := 0 to 10 do
+            a[k * 10 + l] := k + l
+            b[k * 10 + l] := (k * 2) + (l * 2)
+        end for
     end for
-    parallel for t := 0 to 6 with 6 thread do
-        id := thread_number
-        sid := id
-        eid := sid + 1
-        mutable j := 0
+
+    nid := 6 # t
+    // omp_set_num_threads(T); #pragma omp parallel
+    mutable threads := create_threads(t, worker)
+    join_threads(threads, 6)
+
+    mutable result := 1
+    for k := 0 to 6 do
+        if result = 0 then
+            break for
+        end if
+        for l := 0 to 10 do
+            if c[k * 10 + l] != a[k * 10 + l] + b[k * 10 + l] then
+                result := 0
+                break for
+            end if
+        end for
+    end for
+
+    if result = 1 then
+        print "True"
+    else
+        print "False"
+    end if
+end procedure
+
+procedure worker(thread_number as int)
+    id := thread_number
+    sid := nid * id
+    eid := sid + nid
+    i := sid
+    while i < eid do
+        j := 0
         while j < 10 do
-            c[sid * 10 + j] := a[sid * 10 + j] + b[sid * 10 + j]
+            c[i * 10 + j] := a[i * 10 + j] + b[i * 10 + j]
             j := j + 1
         end while
-    end parallel for
+        i := i + 1
+    end while
 end procedure

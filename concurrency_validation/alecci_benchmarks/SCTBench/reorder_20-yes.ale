@@ -1,6 +1,9 @@
 // SCTBench benchmark: concurrent-software-benchmarks/reorder_20_bad.c
-// Set threads write a and b without synchronization; check threads read them.
-// Uses 10 set threads + 10 check threads (iSet=10, iCheck=10).
+// Full translation of reorder_20_bad.c: iSet = 10 set threads write a = 1; b = -1 and
+// iCheck = 10 check threads assert that (a, b) is either (0, 0) or (1, -1), all without synchronisation.
+// Bug: memory reorder / data race between setThread and checkThread.
+// The optional command line parameters (iSet, iCheck) are read as in C; the usage
+// message and the exit(-1) error paths of pthread_create/pthread_join are not modelled.
 // Expected: data race on variables a and b.
 
 procedure set_worker(thread_number as int)
@@ -9,15 +12,25 @@ procedure set_worker(thread_number as int)
 end procedure
 
 procedure check_worker(thread_number as int)
-    mutable x := a
-    mutable y := b
+    if not ((a = 0 and b = 0) or (a = 1 and b = -1)) then
+        print "Bug found!"
+        assert 0 = 1, "Bug found!"
+    end if
 end procedure
 
-procedure main()
+procedure main(argc, argv as array)
+    shared mutable iSet := 10
+    shared mutable iCheck := 10
     shared mutable a := 0
     shared mutable b := 0
-    mutable t_set := create_threads(10, set_worker)
-    mutable t_check := create_threads(10, check_worker)
-    join_threads(t_set, 10)
-    join_threads(t_check, 10)
+
+    if argc = 3 then
+        iSet := int(argv[1])
+        iCheck := int(argv[2])
+    end if
+
+    mutable t_set := create_threads(iSet, set_worker)
+    mutable t_check := create_threads(iCheck, check_worker)
+    join_threads(t_set, iSet)
+    join_threads(t_check, iCheck)
 end procedure

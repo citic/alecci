@@ -1,24 +1,59 @@
-// No race: 4 threads compute block-partitioned PI sums locally, merge with mutex
-// Inspired by OMP_Critical/without_datarace/helloWorldParallel_Atomic_-_main.c (per-thread block sum, critical merge)
+// Full translation of helloWorldParallel_Atomic_-_main.c
+// No race: the serial pass runs on the main thread only; in the parallel pass each
+// thread writes only its private threadSum and merges with "sum += threadSum"
+// inside the critical section (mutex).
+// Deviations: num_steps scaled from 40000000 to 400000 (TSan cost); omp_get_wtime timings are dropped. The unused sums[4]
+// array is kept. "Steps per thread" and "NumThreads" are printed by every thread.
 procedure main()
+    shared const num_steps = 400000
+    shared const num_threads = 4
+    shared mutable step as float := 0.0
     shared mutable sum as float := 0.0
-    shared mutable mtx as mutex := mutex()
-    mutable threads := create_threads(4, worker)
+    shared mutable sum_mutex as mutex := mutex()
+    mutable sums := array(4, 0.0)
+    mutable x as float := 0.0
+    mutable pi as float := 0.0
+
+    step := 1.0 / num_steps
+    for i := 0 to num_steps do
+        x := (i + 0.5) * step
+        sum := sum + (3.0 / (1.0 + (x * x)))
+    end for
+
+    pi := step * sum
+    print `Pi: ({pi})`
+    print "Calculation Time (Single Thread): (not measured)"
+
+    sum := 0.0
+    // omp_set_num_threads(4)
+    sums[0] := 0.0
+    sums[1] := 0.0
+    sums[2] := 0.0
+    sums[3] := 0.0
+
+    // #pragma omp parallel
+    mutable threads := create_threads(num_threads, worker)
     join_threads(threads, 4)
+
+    pi := step * sum
+    print `Pi: ({pi})`
+    print "Calculation Time (Parallel): (not measured)"
 end procedure
 
 procedure worker(thread_number as int)
-    mutable step as float := 0.000005
-    mutable steps_per_thread := 50000
-    mutable start := steps_per_thread * thread_number
-    mutable thread_sum as float := 0.0
-    mutable i := start
-    while i < start + steps_per_thread do
-        mutable x as float := i * step + step * 0.5
-        thread_sum := thread_sum + 3.0 / (1.0 + (x * x))
-        i := i + 1
-    end while
-    lock(mtx)
-    sum := sum + thread_sum
-    unlock(mtx)
+    mutable stepsPerThread := num_steps # num_threads
+    print `Steps per thread: ({stepsPerThread})`
+    print `NumThreads: ({num_threads})`
+    mutable id := thread_number
+    mutable threadSum as float := 0.0
+    mutable localX as float := 0.0
+    for localI := stepsPerThread * id to stepsPerThread * (id + 1) do
+        localX := (localI + 0.5) * step
+        threadSum := threadSum + (3.0 / (1.0 + (localX * localX)))
+    end for
+
+    // #pragma omp critical
+    lock(sum_mutex)
+    sum := sum + threadSum
+    unlock(sum_mutex)
 end procedure

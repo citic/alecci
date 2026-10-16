@@ -1,12 +1,19 @@
-// DRB094 – DOALL2 ordered: parallel outer, sequential inner; each element independent
-// No race: each thread owns its row-slice; inner j sequential per thread
+// DRB094 – DOALL2 with ordered(2): every element a[i][j] is incremented independently
+// Full translation of DRB094-doall2-ordered-orig-no.c: int a[100][100] (global, zero)
+// flattened to a[i * 100 + j].
+// Deviation: the "ordered depend(sink: i-1,j) depend(sink: i,j-1)" / "depend(source)"
+// pair only orders the printf calls; Alecci has no doacross construct, so the
+// "test i=.. j=.." lines are printed by whichever thread reaches them first.
+// No race: each iteration writes a distinct element
 // label: N2
 procedure main()
     shared mutable a := array(10000, 0)
 
+    // #pragma omp parallel for ordered(2)
     parallel for i := 0 to 100 with 4 thread do
         for j := 0 to 100 do
             a[i * 100 + j] := a[i * 100 + j] + 1
+            print `test i={i} j={j}`
         end for
     end parallel for
 end procedure

@@ -1,12 +1,19 @@
-// DRB191 – Producer-consumer: named critical sections (A for producer, B for consumer)
-// Race: different mutexes allow concurrent size modifications
-// Source: DRB191-critical-section2-yes.c (omp critical(A) vs omp critical(B))
-// Race: size (write) vs size (write) across producer and consumer
+// DRB191 – Race due to different critical section names
+// Full translation of DRB191-critical-section2-yes.c: two sections (producer,
+// consumer) update size under critical(A) and critical(B), which are two different
+// locks, so they do not exclude each other. r is firstprivate (a local here) and
+// only burns time between the critical sections.
+// Deviation: both C sections loop forever (while (1)); here each runs 100 iterations
+// so that the program terminates. fflush(stdout) has no equivalent.
+// Race: size (write by producer) vs size (write by consumer)
 // label: Y2
 procedure main()
     shared mutable size := 0
-    shared mutable mtx_prod as mutex := mutex()
-    shared mutable mtx_cons as mutex := mutex()
+    shared const cap = 10
+    shared mutable mtx_a as mutex := mutex()
+    shared mutable mtx_b as mutex := mutex()
+
+    // #pragma omp parallel sections shared(size, cap) firstprivate(r) num_threads(2)
     mutable t_prod := create_thread(producer)
     mutable t_cons := create_thread(consumer)
     join_thread(t_prod)
@@ -14,21 +21,33 @@ procedure main()
 end procedure
 
 procedure producer()
-    for i := 0 to 100 do
-        lock(mtx_prod)
-        if size < 10 then
+    mutable r := 0
+    for n := 0 to 100 do
+        // #pragma omp critical(A)
+        lock(mtx_a)
+        if size < cap then
             size := size + 1
+            print `Produced! size={size}`
         end if
-        unlock(mtx_prod)
+        unlock(mtx_a)
+        for i := 0 to 1000 do
+            r := (r + 1) mod 10
+        end for
     end for
 end procedure
 
 procedure consumer()
-    for i := 0 to 100 do
-        lock(mtx_cons)
+    mutable r := 0
+    for n := 0 to 100 do
+        // #pragma omp critical(B)
+        lock(mtx_b)
         if size > 0 then
             size := size - 1
+            print `Consumed! size={size}`
         end if
-        unlock(mtx_cons)
+        unlock(mtx_b)
+        for i := 0 to 1000 do
+            r := (r + 1) mod 10
+        end for
     end for
 end procedure

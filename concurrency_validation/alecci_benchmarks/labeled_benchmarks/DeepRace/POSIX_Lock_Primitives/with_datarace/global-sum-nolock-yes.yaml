@@ -1,5 +1,5 @@
-# global-sum-nolock-yes – 4 threads merge local sums into total without mutex
-# Expected: data race on total
+# global-sum-nolock-yes – 02_printf_g_thread.c with the mutex removed: g_num++/g_num-- unprotected
+# Expected: data race on g_num
 expected_issues:
   - data_race
 timeout: 10

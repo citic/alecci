@@ -1,15 +1,48 @@
-// Race: threads update global maximum without critical section
-// Inspired by OMP_Critical/with_datarace/global_max_-_main.c
-// Race: global_max (read/write) vs global_max (read/write) across threads
+// Full translation of global_max_-_main.c
+// Race: after the work-shared loop each thread does "if globalMax < localMax then
+// globalMax = localMax" (and reads globalMax to print it) without a critical
+// section, so the shared globalMax is read and written concurrently.
+// init(data, 10) is not part of the extracted C source; it is assumed to fill
+// data with rand() % 100. localMax is private (uninitialised in C), starts at 0.
 procedure main()
-    shared mutable data := array(100, 0)
+    shared const n = 10
+    shared const num_threads = 4
+    shared mutable data := array(10, 0)
     shared mutable global_max := 0
-    for i := 0 to 100 do
-        data[i] := i * 3
+
+    for i := 0 to n do
+        data[i] := rand(100)
     end for
-    parallel for i := 0 to 100 with 4 thread do
-        if data[i] > global_max then
-            global_max := data[i]
+    global_max := data[0]
+
+    // #pragma omp parallel private(localMax, tid) shared(data, globalMax)
+    mutable threads := create_threads(num_threads, worker)
+    join_threads(threads, 4)
+
+    print `Global max: {global_max}`
+end procedure
+
+procedure worker(thread_number as int)
+    mutable tid := thread_number
+    mutable local_max := 0
+
+    // #pragma omp for: static block distribution of the iterations
+    const chunk = n # num_threads
+    const first = thread_number * chunk
+    mutable last := first + chunk
+    if thread_number = num_threads - 1 then
+        last := n
+    end if
+    for i := first to last do
+        print `Thread {tid}: {i}`
+        if local_max < data[i] then
+            local_max := data[i]
         end if
-    end parallel for
+    end for
+
+    print `Thread {tid} - max {local_max}`
+    print `Thread {tid}: local max: {local_max}, global max: {global_max}`
+    if global_max < local_max then
+        global_max := local_max
+    end if
 end procedure

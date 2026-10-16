@@ -1,8 +1,117 @@
-// Race: parallel for accumulates isum := isum + i without mutex (missing private/reduction)
-// Inspired by OMP_Private/with_datarace/data_range2_-_main.c (isum = isum + i, no reduction clause)
+// Full translation of data_range2_-_main.c
+// Ten parallel-for variants that all sum 0..1000 into isum.
+// Race: block 1 is a plain "parallel for" on a shared isum, so all threads
+// read-modify-write it without synchronisation. The other blocks use
+// firstprivate/lastprivate or reduction and are race free; reduction(+:isum)
+// is modelled as a private partial sum combined under a mutex.
+// Deviations: the schedule clauses (static/dynamic/guided/runtime, chunk 100)
+// all use Alecci's static block distribution; "ordered" (which only orders the
+// printf calls) has no equivalent, so the numbers may print out of order;
+// "if (800 <= n)" is true for n = 800, so block 9 runs in parallel.
+function range_start(t as int)
+    return t * 250
+end function
+
+function range_end(t as int)
+    if t = 3 then
+        return 1001
+    end if
+    return (t + 1) * 250
+end function
+
 procedure main()
     shared mutable isum := 0
-    parallel for i := 0 to 1001 with 4 thread do
-        isum := isum + i
+    shared mutable isum_mutex as mutex := mutex()
+    // 1: #pragma omp parallel for
+    isum := 0
+    mutable threads1 := create_threads(4, region1)
+    join_threads(threads1, 4)
+    print `isum={isum}`
+
+    // 2: #pragma omp parallel for firstprivate(isum) lastprivate(isum)
+    isum := 0
+    mutable threads2 := create_threads(4, region2)
+    join_threads(threads2, 4)
+    print `isum={isum}`
+
+    // 3: reduction(+:isum)
+    isum := 0
+    mutable threads3 := create_threads(4, region_reduction)
+    join_threads(threads3, 4)
+    print `isum={isum}`
+
+    // 4: reduction(+:isum) schedule(static)
+    isum := 0
+    mutable threads4 := create_threads(4, region_reduction)
+    join_threads(threads4, 4)
+    print `isum={isum}`
+
+    // 5: reduction(+:isum) schedule(static, 100)
+    isum := 0
+    mutable threads5 := create_threads(4, region_reduction)
+    join_threads(threads5, 4)
+    print `isum={isum}`
+
+    // 6: reduction(+:isum) schedule(dynamic, 100)
+    isum := 0
+    mutable threads6 := create_threads(4, region_reduction)
+    join_threads(threads6, 4)
+    print `isum={isum}`
+
+    // 7: reduction(+:isum) schedule(guided, 100)
+    isum := 0
+    mutable threads7 := create_threads(4, region_reduction)
+    join_threads(threads7, 4)
+    print `isum={isum}`
+
+    // 8: reduction(+:isum) schedule(runtime)
+    isum := 0
+    mutable threads8 := create_threads(4, region_reduction)
+    join_threads(threads8, 4)
+    print `isum={isum}`
+
+    // 9: reduction(+:isum) schedule(runtime) if (800 <= n)
+    isum := 0
+    mutable threads9 := create_threads(4, region_reduction)
+    join_threads(threads9, 4)
+    print `isum={isum}`
+
+    // 10: #pragma omp parallel for ordered (twice)
+    parallel for i := 0 to 11 with 4 thread do
+        print `{i} `
     end parallel for
+    print ``
+    parallel for i := 0 to 11 with 4 thread do
+        print `{i} `
+    end parallel for
+end procedure
+
+// plain parallel for: every thread updates the shared isum
+procedure region1(thread_number as int)
+    for i := range_start(thread_number) to range_end(thread_number) do
+        isum := isum + i
+    end for
+end procedure
+
+// firstprivate(isum) lastprivate(isum): private copy starts at the shared value,
+// the thread that ran the last iteration (i = 1000) copies its value back
+procedure region2(thread_number as int)
+    mutable local_isum := isum
+    for i := range_start(thread_number) to range_end(thread_number) do
+        local_isum := local_isum + i
+    end for
+    if thread_number = 3 then
+        isum := local_isum
+    end if
+end procedure
+
+// reduction(+:isum): private partial sum combined under a mutex
+procedure region_reduction(thread_number as int)
+    mutable local_isum := 0
+    for i := range_start(thread_number) to range_end(thread_number) do
+        local_isum := local_isum + i
+    end for
+    lock(isum_mutex)
+    isum := isum + local_isum
+    unlock(isum_mutex)
 end procedure

@@ -1,24 +1,27 @@
 // SCTBench benchmark: concurrent-software-benchmarks/din_phil6_unsat.c
-// 6 dining philosophers. Each philosopher acquires right fork then left fork,
-// both while holding a global esbmc_m mutex (serialising the fork operations).
-// TSan sees different acquisition orders for fork pairs across threads and
-// reports a lock-order-inversion warning.
+// Full translation of din_phil6_unsat.c: 6 dining philosophers. Each thread takes the
+// right fork and then the left fork (x[right], x[left]) between __ESBMC_atomic_begin()
+// and __ESBMC_atomic_end(), which common.inc defines as lock/unlock of the global
+// esbmc_mutex (esbmc_m here).
+// TSan sees different acquisition orders for the fork mutexes across the threads
+// and reports a lock-order inversion although esbmc_m serialises the whole block.
 // Expected: deadlock warning from TSan (lock-order inversion on fork mutexes).
 
-procedure philosopher(thread_number as int)
-    mutable left  := thread_number
-    mutable right := (thread_number + 1) % 6
+procedure thread1(thread_number as int)
+    mutable id := thread_number
+    mutable left := id
+    mutable right := (id + 1) % 6
     lock(esbmc_m)
-    lock(forks[right])
-    lock(forks[left])
-    unlock(forks[left])
-    unlock(forks[right])
+    lock(x[right])
+    lock(x[left])
+    unlock(x[left])
+    unlock(x[right])
     unlock(esbmc_m)
 end procedure
 
 procedure main()
     shared mutable esbmc_m as mutex := mutex()
-    shared mutable forks := array(6, mutex())
-    mutable threads := create_threads(6, philosopher)
-    join_threads(threads, 6)
+    shared mutable x := array(6, mutex())
+    mutable trd_id := create_threads(6, thread1)
+    join_threads(trd_id, 6)
 end procedure

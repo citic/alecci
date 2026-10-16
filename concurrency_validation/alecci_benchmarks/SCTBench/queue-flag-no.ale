@@ -1,11 +1,17 @@
 // SCTBench benchmark: concurrent-software-benchmarks/queue_bad.c
-// Atomicity violation: a 20-slot circular queue (head/tail/amount as a record)
-// is shared between a producer and a consumer. The producer enqueues 0..19 when
-// enqueue_flag=1; the consumer dequeues when dequeue_flag=1. Both threads advance
-// their own loop counters regardless of whether they acted. Bug: consumer's index
-// into stored_elements diverges from the dequeue sequence — assertion fires.
-// All shared accesses are protected by a single mutex — no data race.
-// TSan cannot detect this class of atomicity-violation bug.
+// Full translation of queue_bad.c.
+// Atomicity violation: a 20-slot circular queue (head/tail/amount) is shared between a
+// producer t1 and a consumer t2. t1 enqueues 0..19 when enqueue_flag is set and t2
+// dequeues when dequeue_flag is set; both advance their loop counters regardless of
+// whether they acted. Bug: t2's index into stored_elements diverges from the dequeue
+// sequence, so assert(queue_dequeue(&queue) == stored_elements[i]) can fail.
+// All shared accesses are under a single mutex: no data race, TSan cannot detect this
+// class of bug.
+// QType is a record (head/tail/amount); the element array is a separate shared array
+// because Alecci does not support record.field[index]. The QType * parameters of the C
+// helpers are the global queue, and init/empty/full/enqueue/dequeue are renamed
+// queue_init/queue_empty/queue_full/queue_enqueue/queue_dequeue because enqueue and
+// dequeue are Alecci built-ins.
 
 record QType of
     head   as int
@@ -13,7 +19,32 @@ record QType of
     amount as int
 end record
 
-procedure enqueue_item(x as int)
+function queue_init()
+    q.head := 0
+    q.tail := 0
+    q.amount := 0
+    return 0
+end function
+
+function queue_empty()
+    if q.head = q.tail then
+        print "queue is empty"
+        return -1
+    else
+        return 0
+    end if
+end function
+
+function queue_full()
+    if q.amount = 20 then
+        print "queue is full"
+        return -2
+    else
+        return 0
+    end if
+end function
+
+function queue_enqueue(x as int)
     q_elements[q.tail] := x
     q.amount := q.amount + 1
     if q.tail = 20 then
@@ -21,9 +52,10 @@ procedure enqueue_item(x as int)
     else
         q.tail := q.tail + 1
     end if
-end procedure
+    return 0
+end function
 
-function dequeue_item()
+function queue_dequeue()
     mutable x := q_elements[q.head]
     q.amount := q.amount - 1
     if q.head = 20 then
@@ -34,58 +66,53 @@ function dequeue_item()
     return x
 end function
 
-procedure producer(thread_number as int)
+procedure t1(thread_number as int)
+    mutable value := 0
     lock(m)
-    enqueue_item(0)
-    stored_elements[0] := 0
+    value := 0
+    assert queue_enqueue(value) = 0, "!queue_enqueue(&queue, value)"
+    stored_elements[0] := value
+    assert queue_empty() = 0, "!queue_empty(&queue)"
     unlock(m)
-    mutable i     as int := 0
-    mutable value as int := 0
-    while i < 19 do
+    for i := 0 to 19 do
         lock(m)
         if enqueue_flag = 1 then
             value := value + 1
-            enqueue_item(value)
+            queue_enqueue(value)
             stored_elements[i + 1] := value
             enqueue_flag := 0
             dequeue_flag := 1
         end if
         unlock(m)
-        i := i + 1
-    end while
+    end for
 end procedure
 
-procedure consumer(thread_number as int)
-    mutable i as int := 0
-    while i < 20 do
+procedure t2(thread_number as int)
+    for i := 0 to 20 do
         lock(m)
         if dequeue_flag = 1 then
-            last_removed := dequeue_item()
-            // Bug: stored_elements[i] may not equal last_removed because i
-            // advanced past skipped iterations before this dequeue occurred.
-            assert last_removed = stored_elements[i], "dequeued element should match stored"
+            assert queue_dequeue() = stored_elements[i], "queue_dequeue(&queue) == stored_elements[i]"
             dequeue_flag := 0
             enqueue_flag := 1
         end if
         unlock(m)
-        i := i + 1
-    end while
+    end for
 end procedure
 
 procedure main()
-    shared mutable m               as mutex          := mutex()
-    shared mutable q               as QType          := {0, 0, 0}
-    shared mutable q_elements      as array       := array(20, 0)
-    shared mutable stored_elements as array       := array(20, 0)
-    shared mutable enqueue_flag    as int            := 1
-    shared mutable dequeue_flag    as int            := 0
-    shared mutable last_removed                      := -1
-    mutable t1 := create_threads(1, producer)
-    mutable t2 := create_threads(1, consumer)
-    join_threads(t1, 1)
-    join_threads(t2, 1)
-    print `q.head = {q.head}`
-    print `q.amount = {q.amount}`
-    print `last_removed = {last_removed}`
-    print `queue flag no end`
+    shared mutable m               as mutex  := mutex()
+    shared mutable q               as QType  := {0, 0, 0}
+    shared mutable q_elements      as array  := array(20, 0)
+    shared mutable stored_elements as array  := array(20, 0)
+    shared mutable enqueue_flag    as int    := 0
+    shared mutable dequeue_flag    as int    := 0
+
+    enqueue_flag := 1
+    dequeue_flag := 0
+    queue_init()
+    assert queue_empty() = -1, "queue_empty(&queue) == EMPTY"
+    mutable id1 := create_threads(1, t1)
+    mutable id2 := create_threads(1, t2)
+    join_threads(id1, 1)
+    join_threads(id2, 1)
 end procedure

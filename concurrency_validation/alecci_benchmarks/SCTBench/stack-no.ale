@@ -1,32 +1,64 @@
 // SCTBench benchmark: concurrent-software-benchmarks/stack_bad.c
-// Atomicity violation: t1 pushes items onto a shared array stack; t2 pops if flag is set.
-// Bug: t2 may see flag=1 but pop from an empty stack (assertion failure).
-// All accesses are under the same mutex — no data race.
-// TSan cannot detect this class of bug.
+// Full translation of stack_bad.c.
+// Atomicity violation: t1 pushes 0..9 onto a shared 10-slot stack (assert(push(arr, i) !=
+// OVERFLOW)) and sets flag; t2 pops whenever flag is set (assert(pop(arr) != UNDERFLOW)),
+// so it can pop from an empty stack when it runs ahead of t1.
+// All accesses are under the same mutex: no data race, TSan cannot detect this class of
+// bug.
+// The stack_empty() helper of the C source has no return statement and is never called,
+// so it is not translated.
+
+procedure inc_top()
+    top := top + 1
+end procedure
+
+procedure dec_top()
+    top := top - 1
+end procedure
+
+function get_top()
+    return top
+end function
+
+function push(x as int)
+    if top = 10 then
+        print "stack overflow"
+        return -1
+    else
+        arr[get_top()] := x
+        inc_top()
+    end if
+    return 0
+end function
+
+function pop()
+    if get_top() = 0 then
+        print "stack underflow"
+        return -2
+    else
+        dec_top()
+        return arr[get_top()]
+    end if
+    return 0
+end function
 
 procedure t1(thread_number as int)
-    mutable i := 0
-    while i < 10 do
+    for i := 0 to 10 do
         lock(m)
-        arr[top] := i
-        top := top + 1
+        assert push(i) != -1, "push(arr, i) != OVERFLOW"
         flag := 1
         unlock(m)
-        i := i + 1
-    end while
+    end for
 end procedure
 
 procedure t2(thread_number as int)
-    mutable i := 0
-    while i < 10 do
+    for i := 0 to 10 do
         lock(m)
         if flag = 1 then
-            top := top - 1
-            mutable val := arr[top]
+            assert pop() != -2, "pop(arr) != UNDERFLOW"
         end if
         unlock(m)
-        i := i + 1
-    end while
+    end for
 end procedure
 
 procedure main()
@@ -34,8 +66,8 @@ procedure main()
     shared mutable arr := array(10, 0)
     shared mutable top := 0
     shared mutable flag := 0
-    mutable th1 := create_threads(1, t1)
-    mutable th2 := create_threads(1, t2)
-    join_threads(th1, 1)
-    join_threads(th2, 1)
+    mutable id1 := create_threads(1, t1)
+    mutable id2 := create_threads(1, t2)
+    join_threads(id1, 1)
+    join_threads(id2, 1)
 end procedure

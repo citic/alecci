@@ -1,17 +1,59 @@
-// DRB140 – Missing barrier before reduction: thread 0 sets a=0 without barrier,
-//   other threads may read/write a via reduction before thread 0 finishes
-// Race: a (write by thread 0, unprotected) vs a (write/read by other threads via mutex)
+// DRB140 – Missing barrier between "master: a = 0" and the reduction
+// Full translation of DRB140-reduction-barrier-orig-yes.c: a parallel region of 4
+// threads where thread 0 (omp master) sets a = 0 with no barrier after it, then an
+// "omp for reduction(+:a)" sums 0..9 and an "omp single" prints the sum.
+// The reduction clause is modelled as a private partial sum per thread combined
+// into a under a mutex; the static schedule gives iterations 0-2, 3-5, 6-7, 8-9 to
+// threads 0-3; the implicit barrier at the end of "omp for" is a barrier, and the
+// "single" is thread 0.
+// Race: a (written by the master without synchronisation) vs a (updated by the
+// reduction combine of the other threads)
 // label: Y3
 procedure main()
     shared mutable a := 0
-    shared mutable mtx as mutex := mutex()
+    shared mutable a_mutex as mutex := mutex()
+    shared mutable for_barrier as barrier := barrier(4)
 
-    parallel for i := 0 to 4 with 4 thread do
-        if thread_number = 0 then
-            a := 0
-        end if
-        lock(mtx)
-        a := a + i
-        unlock(mtx)
-    end parallel for
+    // #pragma omp parallel shared(a) private(i)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    // #pragma omp master
+    if thread_number = 0 then
+        a := 0
+    end if
+
+    // #pragma omp for reduction(+:a)
+    mutable first := 0
+    mutable last := 0
+    if thread_number = 0 then
+        first := 0
+        last := 3
+    else if thread_number = 1 then
+        first := 3
+        last := 6
+    else if thread_number = 2 then
+        first := 6
+        last := 8
+    else
+        first := 8
+        last := 10
+    end if
+    end if
+    end if
+    mutable partial := 0
+    for i := first to last do
+        partial := partial + i
+    end for
+    lock(a_mutex)
+    a := a + partial
+    unlock(a_mutex)
+    barrier_wait(for_barrier)
+
+    // #pragma omp single
+    if thread_number = 0 then
+        print `Sum is {a}`
+    end if
 end procedure

@@ -1,33 +1,44 @@
-// Writer increments n0; every 3rd increment signals reader via cond1.
-// Race: both threads check 'n0 < 200' in the outer while without the mutex.
-// Source: zuoye3.c (DeepRace POSIX/with_datarace)
-
+// Full translation of zuoye3.c (one reader thread, one writer thread)
+// The writer increments num[0]; every 3rd increment it bumps num[1], sets
+// num[2] = 1 and signals the reader through cond1; the reader prints and signals
+// the writer back through cond2.
+// Race: both threads test "num[0] < 200" in their while condition without
+// holding the mutex, while the writer updates num[0] under it.
+// Deviations: num[] is three separate shared variables (n0, n1, n2); sleep(0.5)
+// is converted to 0 seconds by the C compiler, here it is a 20 ms pause so the
+// reader cannot block forever on the lost wake-up after the writer finishes;
+// pthread_exit and the *_destroy calls have no Alecci equivalent.
 procedure myread()
     while n0 < 200 do
         lock(mtx)
-        while n2 = 0 do
+
+        if n2 = 0 then
             cond_wait(cond1, mtx)
-        end while
+        end if
+
         n2 := 0
-        print `n0={n0} n1={n1}`
+        print `num[0] = {n0},num[1] = {n1}`
+
         cond_signal(cond2)
         unlock(mtx)
-        sleep(500, "ms")
+        sleep(20, "ms")
     end while
 end procedure
 
 procedure mywrite()
     while n0 < 200 do
         lock(mtx)
-        while n2 = 1 do
+        if n2 = 1 then
             cond_wait(cond2, mtx)
-        end while
+        end if
+
         n0 := n0 + 1
-        if n0 % 3 = 0 then
+        if n0 mod 3 = 0 then
             n1 := n1 + 1
             n2 := 1
             cond_signal(cond1)
         end if
+
         unlock(mtx)
     end while
 end procedure

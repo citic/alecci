@@ -1,12 +1,34 @@
-// DRB022 – Missing reduction (variant): same race, nested loop over flattened 2D array
-// Race: sum (write) vs sum (write/read)
+// DRB022 – Missing reduction (argv version): sum is accumulated without synchronisation
+// Full translation of DRB022-reductionmissing-var-yes.c; len is 100 unless argv[1]
+// is given; float u[len][len] is flattened to u[i * len + j]. Shared Alecci arrays
+// need a literal size, so the array holds 100 x 100 elements and len is clamped to 100.
+// Race: sum (write) vs sum (write) and sum (write) vs sum (read) across threads
 // label: Y2
-procedure main()
-    shared mutable u := array(10000, 1)
-    shared mutable sum := 0
-    parallel for i := 0 to 100 with 4 thread do
-        for j := 0 to 100 do
-            sum := sum + u[i * 100 + j]
+procedure main(argc, argv as array)
+    shared mutable len := 100
+    shared mutable sum as float := 0.0
+    if argc > 1 then
+        len := int(argv[1])
+    end if
+    if len > 100 then
+        len := 100
+    end if
+    shared mutable u := array(10000, 0.0)
+
+    for i := 0 to len do
+        for j := 0 to len do
+            u[i * len + j] := 0.5
+        end for
+    end for
+
+    // #pragma omp parallel for private(temp, i, j)
+    parallel for i := 0 to len with 4 thread do
+        mutable temp as float := 0.0
+        for j := 0 to len do
+            temp := u[i * len + j]
+            sum := sum + temp * temp
         end for
     end parallel for
+
+    print `sum = {sum}`
 end procedure

@@ -1,42 +1,63 @@
-// Circular buffer (4 slots): producer puts 20 items then a -1 sentinel;
-// consumer reads until sentinel. Two condvars prevent overflow and underflow.
-// Source: ThreadSynCondition.c (DeepRace POSIX/without_datarace)
-
+// Full translation of ThreadSynCondition.c
+// Circular buffer (SIZE = 4): the producer puts 0..19 followed by the OVER = -1
+// sentinel and the consumer reads until it sees the sentinel. Two condition
+// variables (notempty, notfull) and one lock protect rpos, wpos and the buffer.
+// The struct producer fields are separate shared variables, Init() is the
+// initialisation in main, and pthread_join's return value is not used.
 procedure put_item(data as int)
     lock(buf_lock)
-    while (wpos + 1) % 4 = rpos do
+
+    while (wpos + 1) mod 4 = rpos do
         cond_wait(notfull, buf_lock)
     end while
+
     buf[wpos] := data
-    wpos := (wpos + 1) % 4
+    wpos := wpos + 1
+
+    if wpos >= 4 then
+        wpos := 0
+    end if
+
     cond_signal(notempty)
     unlock(buf_lock)
 end procedure
 
-procedure producer()
-    mutable n := 0
-    while n < 20 do
-        put_item(n)
-        n := n + 1
+function get_item()
+    lock(buf_lock)
+
+    while wpos = rpos do
+        cond_wait(notempty, buf_lock)
     end while
-    put_item(999)
+
+    mutable data := buf[rpos]
+    rpos := rpos + 1
+
+    if rpos >= 4 then
+        rpos := 0
+    end if
+
+    cond_signal(notfull)
+    unlock(buf_lock)
+
+    return data
+end function
+
+procedure producer()
+    for n := 0 to 20 do
+        print `Producer:{n}-->`
+        put_item(n)
+    end for
+    put_item(-1)
 end procedure
 
 procedure consumer()
     mutable running := 1
     while running = 1 do
-        lock(buf_lock)
-        while wpos = rpos do
-            cond_wait(notempty, buf_lock)
-        end while
-        mutable d := buf[rpos]
-        rpos := (rpos + 1) % 4
-        cond_signal(notfull)
-        unlock(buf_lock)
-        if d = 999 then
+        mutable d := get_item()
+        if d = -1 then
             running := 0
         else
-            print `consumed {d}`
+            print `Consumer:-->{d}`
         end if
     end while
 end procedure
@@ -48,8 +69,9 @@ procedure main()
     shared mutable buf_lock  as mutex   := mutex()
     shared mutable notempty  as condvar := condvar()
     shared mutable notfull   as condvar := condvar()
-    mutable t_prod := create_thread(producer)
-    mutable t_cons := create_thread(consumer)
-    join_thread(t_prod)
-    join_thread(t_cons)
+
+    mutable tha := create_thread(producer)
+    mutable thb := create_thread(consumer)
+    join_thread(tha)
+    join_thread(thb)
 end procedure

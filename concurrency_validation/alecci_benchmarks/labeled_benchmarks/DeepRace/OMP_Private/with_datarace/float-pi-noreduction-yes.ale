@@ -1,20 +1,53 @@
-// Race: 4 threads compute PI partial sums and add directly to shared sum without lock
-// Inspired by OMP_Private/with_datarace/PiReduction_-_main.c (missing reduction clause on sum)
+// Full translation of PiReduction_-_main.c
+// Race: only sum has a reduction clause; id, ini, fin, x and i are declared
+// outside the parallel region and are therefore shared by all threads, which
+// all write them without synchronisation.
+// The reduction(+:sum) clause is modelled as a private partial sum per thread,
+// combined under a mutex when the thread finishes.
+// NH is defined outside the extracted C source; 6 is assumed (ini = id * n / 6).
+// n is read from stdin (float-pi-noreduction-yes.txt); omp_get_wtime timing is
+// dropped; the 9-decimal printf formats become print's default float format.
 procedure main()
+    shared const nh = 6
+    shared mutable n as int := 0
+    shared mutable h as float := 0.0
     shared mutable sum as float := 0.0
-    mutable threads := create_threads(4, worker)
-    join_threads(threads, 4)
+    shared mutable sum_mutex as mutex := mutex()
+    shared mutable i := 0
+    shared mutable id := 0
+    shared mutable ini := 0
+    shared mutable fin := 0
+    shared mutable x as float := 0.0
+    mutable pi16ds as float := 3.1415926535897932
+
+    print "Introduce la precision del calculo (numero de intervalos > 0): "
+    scan `{n}`
+    h := 1.0 / n
+
+    // #pragma omp parallel num_threads(NH) reduction(+:sum)
+    mutable threads := create_threads(nh, worker)
+    join_threads(threads, 6)
+
+    mutable pi as float := sum * h
+    mutable err as float := abs(pi - pi16ds)
+    print ``
+    print `El valor aproximado de PI es {pi} con un error de {err}`
 end procedure
 
 procedure worker(thread_number as int)
-    mutable h as float := 0.0001
-    mutable chunk := 2500
-    mutable ini := thread_number * chunk
-    mutable fin := ini + chunk
-    mutable i := ini
-    while i < fin do
-        mutable x as float := i * h + h * 0.5
-        sum := sum + 4.0 / (1.0 + (x * x))
-        i := i + 1
-    end while
+    mutable local_sum as float := 0.0
+    id := thread_number
+    ini := (id * n) # 6
+    fin := ((id + 1) * n) # 6
+    x := h * (0.5 + ini)
+    for k := ini to fin do
+        i := k
+        local_sum := local_sum + 4.0 / (1.0 + (x * x))
+        x := x + h
+    end for
+
+    // reduction(+:sum): combine the private copies
+    lock(sum_mutex)
+    sum := sum + local_sum
+    unlock(sum_mutex)
 end procedure

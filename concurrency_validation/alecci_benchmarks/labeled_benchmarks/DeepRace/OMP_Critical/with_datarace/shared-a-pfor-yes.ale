@@ -1,8 +1,72 @@
-// Race: parallel for writes i+1 to shared scalar a without mutex
-// Inspired by OMP_Critical/with_datarace/exemple_OMP_22_-_main.c (shared a = i+1 in omp parallel for)
+// Full translation of exemple_OMP_22_-_main.c
+// Tests multiple OpenMP parallel regions with shared/private variables
+// Race: shared scalar 'a' written by multiple threads without synchronization
+
 procedure main()
     shared mutable a := 0
-    parallel for i := 0 to 8 with 4 thread do
+    mutable b := 0
+    mutable tid := 0
+    mutable k := 0
+    shared const n = 8
+    shared const m = 8
+    mutable x as float := 0.0
+
+    print "1st Parallel Region:"
+
+    // #pragma omp parallel private(b,tid) shared(a,x)
+    mutable threads1 := create_threads(4, worker1)
+    join_threads(threads1, 4)
+
+    print "************************************"
+    print "Master thread doing serial work here"
+    print "************************************"
+    print "2nd Parallel Region:"
+
+    // #pragma omp parallel private(tid,i) shared(n) with nested loops
+    mutable threads2 := create_threads(3, worker2)
+    join_threads(threads2, 3)
+
+    print "************************************"
+    print "Master thread doing serial work here"
+    print "************************************"
+
+    // omp_set_num_threads(4);
+    // #pragma omp parallel for private(i,a)
+    parallel for i := 0 to n with 4 thread do
         a := i + 1
+        print `Thread {thread_number} has a value of a = {a} for i = {i}`
     end parallel for
+
+    a := 0
+    print "++++++++++++++++++++++++++++++++++++++++++++++++"
+
+    // #pragma omp parallel for private(i) shared(a)
+    parallel for i := 0 to n with 4 thread do
+        a := i + 1
+        print `Thread {thread_number} has a value of a = {a} for i = {i}`
+    end parallel for
+
+    print " ********************************"
+    // omp_get_nested / omp_set_nested not available in Alecci — skip nested parallelism test
+    print " Nested parallelism test skipped (omp_get_nested not supported)"
+    print " ********************************"
+end procedure
+
+procedure worker1(thread_number as int)
+    mutable tid := thread_number
+    mutable b := thread_number
+    a := tid
+    mutable x as float := 1.1 * thread_number + 1.0
+    print `Thread {tid}:   a,b,x= {a} {b} {x}`
+end procedure
+
+procedure worker2(thread_number as int)
+    for i := 0 to n do
+        print `THREAD {thread_number}:    i =  {i}`
+        for k := 0 to m do
+            mutable tid := thread_number
+            print `Thread {tid}:   i, k = {i} {k}`
+        end for
+        print `****  End of k loop: {k} i= {i}  Thread: {thread_number} ************`
+    end for
 end procedure

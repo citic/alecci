@@ -1,14 +1,24 @@
-// No race: parallel for x[i] := 0 - y[i], each index independent
-// Inspired by OMP_Private/without_datarace/looptest_1_-_main.c (omp parallel for, x[i] = -1 * y[i])
+// Full translation of looptest_1_-_main.c
+// No race: x[i] = -1 * y[i] writes a distinct element per iteration; the "#"
+// progress line is printed by the thread that ran the iteration.
 procedure main()
+    shared const n = 10
     shared mutable y := array(10, 0)
     shared mutable x := array(10, 0)
-    mutable i := 0
-    while i < 10 do
+
+    for i := 0 to n do
         y[i] := i * 2
-        i := i + 1
-    end while
-    parallel for i := 0 to 10 with 4 thread do
-        x[i] := 0 - y[i]
+    end for
+
+    // #pragma omp parallel default(none) shared(x,y,n) private(i)  +  #pragma omp for
+    parallel for i := 0 to n with 4 thread do
+        x[i] := (-1) * y[i]
+        print "#"
     end parallel for
+
+    for i := 0 to n do
+        print `x({x[i]}) <--> y({y[i]})`
+    end for
+
+    print "All Done"
 end procedure

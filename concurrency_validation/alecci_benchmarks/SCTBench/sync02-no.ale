@@ -1,4 +1,5 @@
 // SCTBench benchmark: concurrent-software-benchmarks/sync02_ok.c
+// Full translation of sync02_ok.c (the produce/consume printf calls included).
 // 1-slot producer-consumer with N=20 iterations.
 // Producer waits on 'empty' when the slot is occupied; consumer waits on 'full'
 // when the slot is empty. All accesses to num are under the mutex — no data race.
@@ -12,6 +13,7 @@ procedure producer(thread_number as int)
             cond_wait(empty, m)
         end while
         num := num + 1
+        print `produce ....{i}`
         unlock(m)
         cond_signal(full)
         i := i + 1
@@ -26,6 +28,7 @@ procedure consumer(thread_number as int)
             cond_wait(full, m)
         end while
         num := num - 1
+        print `consume ....{j}`
         unlock(m)
         cond_signal(empty)
         j := j + 1

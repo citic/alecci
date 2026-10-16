@@ -1,71 +1,130 @@
-// Unisex bathroom problem — data race on espera_mujeres and espera_hombres.
-// Each counter is incremented with its own mutex but decremented with bano_mutex.
-// Source: universidad.c (DeepRace POSIX/with_datarace)
-
-procedure mujer(thread_number as int)
+// Full translation of universidad.c (unisex bathroom)
+// Race: espera_mujeres / espera_hombres are incremented under their own mutexes
+// (mujer_mutex / hombre_mutex) but decremented under bano_mutex, so the two
+// critical sections do not exclude each other.
+// Deviations: sleep(3), sleep(2) and sleep(5) are scaled to 600 ms, 400 ms and
+// 1000 ms (divided by 5); the 8 late arrivals are 8 threads that choose their sex
+// with rand(2) when they start (the C main chooses it before pthread_create);
+// estado uses the C values VACIO = 0, MUJERES = 1, HOMBRES = 2; pthread_exit and
+// free have no Alecci equivalent.
+procedure mujer_quiere_entrar()
     lock(mujer_mutex)
     espera_mujeres := espera_mujeres + 1
+    print `Llega una mujer ({espera_mujeres} en espera)`
     unlock(mujer_mutex)
     mutable listo := 0
+
     while listo = 0 do
         lock(bano_mutex)
+
         if estado = 2 then
             cond_wait(mujer_cond, bano_mutex)
         end if
+
         if estado = 0 then
             estado := 1
             espera_mujeres := espera_mujeres - 1
+            print `Entra una mujer ({espera_mujeres} en espera)`
             personas_dentro := personas_dentro + 1
+            print "Bano ocupado por mujeres"
             listo := 1
         else if estado = 1 then
             espera_mujeres := espera_mujeres - 1
+            print `Entra una mujer ({espera_mujeres} en espera)`
             personas_dentro := personas_dentro + 1
             listo := 1
         end if
         end if
+
         unlock(bano_mutex)
     end while
-    sleep(3000, "ms")
+end procedure
+
+procedure mujer_sale()
     lock(bano_mutex)
+    print "Sale una mujer"
     personas_dentro := personas_dentro - 1
     if personas_dentro = 0 then
         estado := 0
         cond_broadcast(hombre_cond)
+        print "Sanitario vacio"
     end if
     unlock(bano_mutex)
 end procedure
 
-procedure hombre(thread_number as int)
+procedure mujer_run()
+    mujer_quiere_entrar()
+    sleep(600, "ms")
+    mujer_sale()
+end procedure
+
+procedure hombre_quiere_entrar()
     lock(hombre_mutex)
     espera_hombres := espera_hombres + 1
+    print `Llega un hombre ({espera_hombres} en espera)`
     unlock(hombre_mutex)
+
     mutable listo := 0
+
     while listo = 0 do
         lock(bano_mutex)
+
         if estado = 1 then
             cond_wait(hombre_cond, bano_mutex)
         end if
+
         if estado = 0 then
             estado := 2
             espera_hombres := espera_hombres - 1
+            print `Entra un hombre ({espera_hombres} en espera)`
             personas_dentro := personas_dentro + 1
+            print "Bano ocupado por hombres"
             listo := 1
         else if estado = 2 then
             espera_hombres := espera_hombres - 1
+            print `Entra un hombre ({espera_hombres} en espera)`
             personas_dentro := personas_dentro + 1
             listo := 1
         end if
         end if
+
         unlock(bano_mutex)
     end while
-    sleep(2000, "ms")
+end procedure
+
+procedure hombre_sale()
     lock(bano_mutex)
     personas_dentro := personas_dentro - 1
+    print "Sale un hombre"
     if personas_dentro = 0 then
         estado := 0
         cond_broadcast(mujer_cond)
+        print "Sanitario vacio"
     end if
     unlock(bano_mutex)
+end procedure
+
+procedure hombre_run()
+    hombre_quiere_entrar()
+    sleep(400, "ms")
+    hombre_sale()
+end procedure
+
+procedure mujer(thread_number as int)
+    mujer_run()
+end procedure
+
+procedure hombre(thread_number as int)
+    hombre_run()
+end procedure
+
+procedure random_person(thread_number as int)
+    mutable sexo := rand(2)
+    if sexo = 0 then
+        mujer_run()
+    else
+        hombre_run()
+    end if
 end procedure
 
 procedure main()
@@ -78,8 +137,16 @@ procedure main()
     shared mutable espera_mujeres  := 0
     shared mutable espera_hombres  := 0
     shared mutable estado := 0
-    mutable mujeres := create_threads(4, mujer)
-    mutable hombres := create_threads(4, hombre)
-    join_threads(mujeres)
-    join_threads(hombres)
+
+    print "Sanitario vacio"
+    mutable mujeres_t := create_threads(4, mujer)
+    mutable hombres_t := create_threads(4, hombre)
+
+    // Al rato van a llegar mas personas
+    sleep(1000, "ms")
+    mutable random_t := create_threads(8, random_person)
+
+    join_threads(hombres_t)
+    join_threads(mujeres_t)
+    join_threads(random_t)
 end procedure

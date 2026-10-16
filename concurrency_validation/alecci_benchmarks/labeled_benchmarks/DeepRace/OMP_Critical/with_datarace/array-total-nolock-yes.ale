@@ -1,17 +1,42 @@
-// Race: threads compute local sums of array, merge into shared total without critical
-// Inspired by OMP_Critical/with_datarace/array_total_-_main.c
-// Race: total (write) vs total (read/write) across threads
+// Full translation of array_total_-_main.c
+// Race: each thread sums its share of the array into a private my_sum, then
+// merges it with "total += my_sum" without a critical section.
+// Deviations: array size scaled from 20000000 to 20000 doubles (TSan cost);
+// omp_get_wtime timing is dropped, so the run time column is not printed.
 procedure main()
-    shared mutable a := array(1000, 1)
-    shared mutable total := 0
-    parallel for k := 0 to 4 with 4 thread do
-        mutable my_sum := 0
-        mutable start := thread_number * 250
-        mutable i := 0
-        while i < 250 do
-            my_sum := my_sum + a[start + i]
-            i := i + 1
-        end while
-        total := total + my_sum
-    end parallel for
+    shared const size = 20000
+    shared mutable a := array(20000, 0.0)
+    shared mutable total := 0.0
+    shared mutable nthreads := 1
+
+    // array(n, v) does not apply the initial value, so fill explicitly
+    for i := 0 to size do
+        a[i] := 1.0
+    end for
+
+    print "total nthreads"
+    for j := 1 to 17 do
+        nthreads := j
+        total := 0.0
+        // #pragma omp parallel (with omp_set_num_threads(j))
+        mutable threads := create_threads(j, worker)
+        join_threads(threads, j)
+        print `{total} {j}`
+    end for
+end procedure
+
+procedure worker(thread_number as int)
+    mutable my_sum := 0.0
+    // #pragma omp for: static block distribution of the iterations
+    const chunk = size # nthreads
+    const first = thread_number * chunk
+    mutable last := first + chunk
+    if thread_number = nthreads - 1 then
+        last := size
+    end if
+    for i := first to last do
+        my_sum := my_sum + a[i]
+    end for
+
+    total := total + my_sum
 end procedure

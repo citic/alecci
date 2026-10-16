@@ -2,4 +2,4 @@
 # Expected: no race
 expected_issues:
   - none
-timeout: 10
+timeout: 30

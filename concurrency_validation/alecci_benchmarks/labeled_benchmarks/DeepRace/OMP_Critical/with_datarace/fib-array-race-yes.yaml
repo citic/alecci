@@ -3,5 +3,6 @@
 # Expected: data race on fib array elements
 expected_issues:
   - data_race
+stdin_file: fib-array-race-yes.txt
 timeout: 10
 max_runs: 20

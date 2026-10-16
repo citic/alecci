@@ -1,24 +1,55 @@
-// No race: parallel for computes array values and updates three shared scalars inside one mutex
-// Inspired by OMP_Critical/without_datarace/lab2_openmp_-_main.c
-// No race: entire block (min, max, avg update) is serialized by a single mutex
+// Full translation of lab2_openmp_-_main.c
+// No race: array_a/b/c[i] are written at distinct indices; smallest, largest and
+// the running average sum are updated inside one critical section (mutex).
+// Deviations: omp for schedule(dynamic) is Alecci's block distribution;
+// srand(time(0) + 1) is omitted and rand() % 10 becomes rand(10); print_array is
+// not part of the extracted source, it is modelled as the title followed by one
+// element per line; the "if (!1)" debug prints are dead code and are dropped.
 procedure main()
-    shared mutable c := array(10, 0)
-    shared mutable smallest := 100
-    shared mutable largest := 0
-    shared mutable total := 0
+    shared mutable array_a := array(10, 0)
+    shared mutable array_b := array(10, 0)
+    shared mutable array_c := array(10, 0)
+    shared mutable smallest_value := 10
+    shared mutable largest_value := -1
+    shared mutable average_value := 0
     shared mutable mtx as mutex := mutex()
-    for i := 0 to 10 do
-        c[i] := (i * 7) mod 10
-    end for
+
+    // omp_set_num_threads(4); #pragma omp parallel + #pragma omp for
     parallel for i := 0 to 10 with 4 thread do
+        mutable tid := thread_number
+        mutable nthreads := 0
+        if tid = 0 then
+            nthreads := 4
+        end if
+
+        array_a[i] := rand(10)
+        array_b[i] := rand(10)
+        array_c[i] := (array_a[i] + array_b[i]) # 2
+        // #pragma omp critical
         lock(mtx)
-        if c[i] < smallest then
-            smallest := c[i]
+        if array_c[i] < smallest_value then
+            smallest_value := array_c[i]
         end if
-        if c[i] > largest then
-            largest := c[i]
+        if array_c[i] > largest_value then
+            largest_value := array_c[i]
         end if
-        total := total + c[i]
+        average_value := average_value + array_c[i]
         unlock(mtx)
     end parallel for
+
+    print "Array A"
+    for i := 0 to 10 do
+        print `{array_a[i]}`
+    end for
+    print "Array B"
+    for i := 0 to 10 do
+        print `{array_b[i]}`
+    end for
+    print "Array C"
+    for i := 0 to 10 do
+        print `{array_c[i]}`
+    end for
+
+    average_value := average_value # 10
+    print `Smallest: {smallest_value}, Largest: {largest_value}, Average: {average_value}`
 end procedure

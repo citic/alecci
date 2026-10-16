@@ -1,18 +1,51 @@
-// No race: threads update global maximum with mutex-protected critical section
-// Inspired by OMP_Critical/without_datarace/global_max_-_main.c (corrected version)
-// No race: mutex serializes all global_max reads and writes
+// Full translation of global_max_-_main.c with the missing critical section
+// restored (race-free variant of the with_datarace benchmark).
+// No race: the compare/print/update of globalMax is inside one mutex.
+// init(data, 10) is not part of the extracted C source; it is assumed to fill
+// data with rand() % 100. localMax is private (uninitialised in C), starts at 0.
 procedure main()
-    shared mutable data := array(100, 0)
+    shared const n = 10
+    shared const num_threads = 4
+    shared mutable data := array(10, 0)
     shared mutable global_max := 0
-    shared mutable mtx as mutex := mutex()
-    for i := 0 to 100 do
-        data[i] := i * 3
+    shared mutable max_mutex as mutex := mutex()
+
+    for i := 0 to n do
+        data[i] := rand(100)
     end for
-    parallel for i := 0 to 100 with 4 thread do
-        lock(mtx)
-        if data[i] > global_max then
-            global_max := data[i]
+    global_max := data[0]
+
+    // #pragma omp parallel private(localMax, tid) shared(data, globalMax)
+    mutable threads := create_threads(num_threads, worker)
+    join_threads(threads, 4)
+
+    print `Global max: {global_max}`
+end procedure
+
+procedure worker(thread_number as int)
+    mutable tid := thread_number
+    mutable local_max := 0
+
+    // #pragma omp for: static block distribution of the iterations
+    const chunk = n # num_threads
+    const first = thread_number * chunk
+    mutable last := first + chunk
+    if thread_number = num_threads - 1 then
+        last := n
+    end if
+    for i := first to last do
+        print `Thread {tid}: {i}`
+        if local_max < data[i] then
+            local_max := data[i]
         end if
-        unlock(mtx)
-    end parallel for
+    end for
+
+    print `Thread {tid} - max {local_max}`
+    // #pragma omp critical
+    lock(max_mutex)
+    print `Thread {tid}: local max: {local_max}, global max: {global_max}`
+    if global_max < local_max then
+        global_max := local_max
+    end if
+    unlock(max_mutex)
 end procedure

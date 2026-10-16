@@ -1,15 +1,28 @@
-// Ping and pong alternate 5 times using one mutex and one condition variable.
-// g_ready signals that ping is ready; pong wakes ping, then they take turns.
-// Source: ping_pong.c (DeepRace POSIX/without_datarace)
+// Full translation of ping_pong.c
+// Ping and pong alternate MAX_COUNT = 5 times using one mutex and one condition
+// variable; g_ready (PING_INIT / PING_READY / PONG_READY) tells pong that ping is
+// waiting. Pong takes the lock in a polling loop until ping has set g_ready.
+// No race: g_ready is only read and written under thr_cond_lock.
+// Deviations: "ping(%d) -> " and "pong(%d)" are separate lines because print
+// always ends the line; pthread_exit return values and the pthread_join result
+// are not used.
+enum READY of
+    PING_INIT,
+    PING_READY,
+    PONG_READY
+end enum
 
 procedure thread_ping()
     mutable i := 0
+
+    // wait for pong
     lock(thr_cond_lock)
-    g_ready := 1
+    g_ready := PING_READY
     cond_wait(thr_cond, thr_cond_lock)
+
     while 1 = 1 do
         i := i + 1
-        print `ping({i})`
+        print `ping({i}) -> `
         cond_signal(thr_cond)
         if i = 5 then
             unlock(thr_cond_lock)
@@ -21,18 +34,21 @@ procedure thread_ping()
 end procedure
 
 procedure thread_pong()
-    mutable ready := 0
-    while ready = 0 do
+    mutable i := 0
+    mutable waiting := 1
+
+    // wait for ping and wake up ping
+    while waiting = 1 do
         lock(thr_cond_lock)
-        if g_ready = 1 then
+        if g_ready = PING_READY then
             cond_signal(thr_cond)
             cond_wait(thr_cond, thr_cond_lock)
-            ready := 1
+            waiting := 0
         else
             unlock(thr_cond_lock)
         end if
     end while
-    mutable i := 0
+
     while 1 = 1 do
         i := i + 1
         print `pong({i})`
@@ -49,9 +65,11 @@ end procedure
 procedure main()
     shared mutable thr_cond_lock as mutex   := mutex()
     shared mutable thr_cond      as condvar := condvar()
-    shared mutable g_ready := 0
-    mutable t_pong := create_thread(thread_pong)
-    mutable t_ping := create_thread(thread_ping)
-    join_thread(t_ping)
-    join_thread(t_pong)
+    shared mutable g_ready := PING_INIT
+
+    mutable pthread_pong := create_thread(thread_pong)
+    mutable pthread_ping := create_thread(thread_ping)
+
+    join_thread(pthread_ping)
+    join_thread(pthread_pong)
 end procedure

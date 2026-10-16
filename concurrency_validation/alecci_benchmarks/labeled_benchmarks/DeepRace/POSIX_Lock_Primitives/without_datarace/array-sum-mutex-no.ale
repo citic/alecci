@@ -1,26 +1,75 @@
-// No race: 4 threads compute partial array sums, merge into global sum with mutex
-// Inspired by POSIX_Lock_Primitives/without_datarace/010_mutex_array_sum.c
-// No race: each thread owns a separate array segment; mutex guards global merge
+// Full translation of 010_mutex_array_sum.c
+// 5 threads each process 100 consecutive elements of a 500-element array (the
+// start/end indices come from the params_t struct in C: sindex = 100 * t,
+// eindex = sindex + 99), compute a local sum, max and min, and merge them into
+// the globals under three separate mutexes (mut1 for sum, mut2 for min, mut3 for
+// max).
+// No race: every access to sum, min and max is under its mutex.
 procedure main()
     shared mutable arr := array(500, 0)
     shared mutable sum := 0
-    shared mutable mtx as mutex := mutex()
+    shared mutable g_max := 0
+    shared mutable g_min := 0
+    shared mutable mut1 as mutex := mutex()
+    shared mutable mut2 as mutex := mutex()
+    shared mutable mut3 as mutex := mutex()
+
+    // fill array
     for i := 0 to 500 do
-        arr[i] := i
+        if i = 203 then
+            arr[i] := 1000
+        else if i = 440 then
+            arr[i] := -1
+        else
+            arr[i] := i
+        end if
+        end if
     end for
-    mutable threads := create_threads(4, worker)
-    join_threads(threads, 4)
+
+    // create threads
+    mutable tid := create_threads(5, func)
+
+    // join threads
+    join_threads(tid, 5)
+
+    print `Sum of all array elements: {sum}`
+    print `Greatest number of all: {g_max}`
+    print `Lowest number of all: {g_min}`
 end procedure
 
-procedure worker(thread_number as int)
+procedure func(thread_number as int)
+    const sindex = thread_number * 100
+    const eindex = sindex + 99
     mutable local_sum := 0
-    mutable start := thread_number * 125
-    mutable i := 0
-    while i < 125 do
-        local_sum := local_sum + arr[start + i]
-        i := i + 1
-    end while
-    lock(mtx)
+    mutable local_max := 0
+    mutable local_min := 0
+
+    for i := sindex to eindex + 1 do
+        local_sum := local_sum + arr[i]
+
+        if arr[i] > local_max then
+            local_max := arr[i]
+        end if
+
+        if arr[i] < local_min then
+            local_min := arr[i]
+        end if
+    end for
+
+    // access global variables
+    lock(mut1)
     sum := sum + local_sum
-    unlock(mtx)
+    unlock(mut1)
+
+    lock(mut2)
+    if local_min < g_min then
+        g_min := local_min
+    end if
+    unlock(mut2)
+
+    lock(mut3)
+    if local_max > g_max then
+        g_max := local_max
+    end if
+    unlock(mut3)
 end procedure

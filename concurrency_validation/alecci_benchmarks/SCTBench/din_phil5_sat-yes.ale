@@ -1,27 +1,37 @@
 // SCTBench benchmark: concurrent-software-benchmarks/din_phil5_sat.c
-// 5 dining philosophers with a shared counter 'phil' (unprotected).
-// Each philosopher increments 'phil' after releasing the forks — no lock held.
-// BUG: concurrent unprotected increments of 'phil' are a data race.
-// Also: TSan detects lock-order inversion on fork mutexes (deadlock warning).
-// Expected: data race on 'phil' + deadlock warning from TSan.
+// Full translation of din_phil5_sat.c: 5 dining philosophers with a shared counter 'phil'.
+// Each thread takes the right fork and then the left fork (x[right], x[left]) between
+// __ESBMC_atomic_begin()/end() (lock/unlock of esbmc_m), then ++phil and
+// "if (phil == N) assert(0)".
+// In this variant ++phil and the phil == N check are inside a second
+// __ESBMC_atomic_begin()/end() pair (a lock/unlock of esbmc_m), so 'phil' itself is
+// protected; the bug is the assertion failure reached when all 5 philosophers ran.
+// TSan also reports a lock-order inversion on the fork mutexes (deadlock warning).
+// Expected: bug per the SCTBench ground truth.
 
-procedure philosopher(thread_number as int)
-    mutable left  := thread_number
-    mutable right := (thread_number + 1) % 5
+procedure thread1(thread_number as int)
+    mutable id := thread_number
+    mutable left := id
+    mutable right := (id + 1) % 5
     lock(esbmc_m)
-    lock(forks[right])
-    lock(forks[left])
-    unlock(forks[left])
-    unlock(forks[right])
+    lock(x[right])
+    lock(x[left])
+    unlock(x[left])
+    unlock(x[right])
     unlock(esbmc_m)
+    // second __ESBMC_atomic_begin() / __ESBMC_atomic_end() pair
+    lock(esbmc_m)
     phil := phil + 1
-    // original: if (phil == N) assert(0); — omitted (Alecci has no assert)
+    if phil = 5 then
+        assert 0 = 1, "assert(0): all 5 philosophers have eaten"
+    end if
+    unlock(esbmc_m)
 end procedure
 
 procedure main()
     shared mutable esbmc_m as mutex := mutex()
-    shared mutable forks := array(5, mutex())
+    shared mutable x := array(5, mutex())
     shared mutable phil := 0
-    mutable threads := create_threads(5, philosopher)
-    join_threads(threads, 5)
+    mutable trd_id := create_threads(5, thread1)
+    join_threads(trd_id, 5)
 end procedure

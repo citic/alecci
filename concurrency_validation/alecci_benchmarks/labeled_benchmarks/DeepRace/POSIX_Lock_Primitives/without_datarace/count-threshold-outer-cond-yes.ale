@@ -1,26 +1,39 @@
-// 2 incrementer threads signal when count < 7; watcher loops checking count.
-// watch_count's outer 'while count < 7' reads count outside the mutex.
-// Source: 11-14UseConditionVariable.c (DeepRace POSIX/without_datarace).
-// Ground truth: none. TSan may report unexpected data_race on count.
-
+// Full translation of 11-14UseConditionVariable.c
+// Two threads run inc_count (TCOUNT = 5 increments each, signalling while
+// count < COUNT_LIMIT = 7) and one runs watch_count.
+// watch_count's loop condition "count < 7" reads count outside the mutex, so TSan
+// may report a data race on count even though the dataset label is none.
+// Main joins the incrementers, signals the watcher once more and then joins it.
+// Deviations: sleep(1) is scaled to 100 ms; pthread_attr_*, pthread_exit and the
+// *_destroy calls have no Alecci equivalent; thread ids are the C values t1..t3.
 procedure inc_count(thread_number as int)
-    mutable i := 0
-    while i < 5 do
+    mutable my_id := thread_number + 2
+    for i := 0 to 5 do
         lock(count_mutex)
         count := count + 1
+
         if count < 7 then
+            print `inc_count(): thread {my_id}, count = {count} Threshold reached. Just sent signal.`
             cond_signal(count_threshold_cv)
         end if
+
+        print `inc_count() : thread {my_id}, count = {count}, unlocking muext.`
         unlock(count_mutex)
+
         sleep(100, "ms")
-        i := i + 1
-    end while
+    end for
 end procedure
 
 procedure watch_count(thread_number as int)
+    mutable my_id := 1
+    print `Starting watch_count(): thread {my_id}.`
     while count < 7 do
         lock(count_mutex)
+        print `watch_count(): thread {my_id} go inot wait...`
         cond_wait(count_threshold_cv, count_mutex)
+        print `watch_count():thread {my_id} Condition signal received.`
+
+        print `watch_count():thread {my_id} count now = {count}.`
         unlock(count_mutex)
     end while
 end procedure
@@ -29,9 +42,13 @@ procedure main()
     shared mutable count_mutex        as mutex   := mutex()
     shared mutable count_threshold_cv as condvar := condvar()
     shared mutable count := 0
+
     mutable t_watch := create_threads(1, watch_count)
     mutable t_inc   := create_threads(2, inc_count)
+
     join_threads(t_inc)
+
     cond_signal(count_threshold_cv)
     join_threads(t_watch)
+    print `Main():Waited on 3 theaads, final value of ocunt = {count}.Done`
 end procedure

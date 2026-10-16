@@ -1,17 +1,19 @@
-// Race: parallel for finds max of arr[] without mutex (if max < arr[i] then max := arr[i])
-// Inspired by OMP_Critical/with_datarace/a_-_main.c (parallel for schedule(static), no critical)
+// Full translation of a_-_main.c
+// Race: parallel for finds max of arr[] without a critical section
+// (if max < arr[i] then max := arr[i]). rand() % 100 becomes rand(100).
 procedure main()
     shared mutable arr := array(10, 0)
-    shared mutable max := 0
-    mutable i := 0
-    while i < 10 do
-        arr[i] := (i * 7 + 3) mod 100
-        i := i + 1
-    end while
-    max := arr[0]
+    shared mutable max := -1
+    for i := 0 to 10 do
+        arr[i] := rand(100)
+    end for
+
+    // #pragma omp parallel for schedule(static)
     parallel for i := 0 to 10 with 4 thread do
         if max < arr[i] then
             max := arr[i]
         end if
     end parallel for
+
+    print `{max} is max`
 end procedure

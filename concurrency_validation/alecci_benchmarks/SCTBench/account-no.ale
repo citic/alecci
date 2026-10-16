@@ -1,5 +1,8 @@
 // SCTBench benchmark: concurrent-software-benchmarks/account_ok.c
-// Three threads (deposit, withdraw, check_result) share one mutex protecting balance.
+// Full translation of account_ok.c: three threads (deposit, withdraw, check_result) share
+// one mutex protecting balance. With x = 1, y = 2, z = 4 and balance = x, check_result
+// asserts balance == (x + y) - z once both the deposit and the withdrawal are done.
+// The C main returns without joining the threads; the Alecci main joins them.
 // Expected: no data race.
 
 procedure deposit(thread_number as int)
@@ -18,22 +21,30 @@ end procedure
 
 procedure check_result(thread_number as int)
     lock(m)
-    mutable dd := deposit_done
-    mutable wd := withdraw_done
+    if deposit_done = 1 and withdraw_done = 1 then
+        assert balance = (x + y) - z, "balance == (x + y) - z"
+    end if
     unlock(m)
 end procedure
 
 procedure main()
     shared mutable m as mutex := mutex()
-    shared mutable balance := 100
-    shared mutable y := 10
-    shared mutable z := 20
+    shared mutable x := 0
+    shared mutable y := 0
+    shared mutable z := 0
+    shared mutable balance := 0
     shared mutable deposit_done := 0
     shared mutable withdraw_done := 0
+
+    x := 1
+    y := 2
+    z := 4
+    balance := x
+
+    mutable t3 := create_threads(1, check_result)
     mutable t1 := create_threads(1, deposit)
     mutable t2 := create_threads(1, withdraw)
-    mutable t3 := create_threads(1, check_result)
+    join_threads(t3, 1)
     join_threads(t1, 1)
     join_threads(t2, 1)
-    join_threads(t3, 1)
 end procedure

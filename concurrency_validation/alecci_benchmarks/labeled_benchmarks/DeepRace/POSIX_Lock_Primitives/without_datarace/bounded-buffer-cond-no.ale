@@ -1,38 +1,94 @@
-// Classic bounded buffer: producer fills 30 items into a circular buffer of
-// size 4; consumer drains them. Two condition variables prevent overflow/underflow.
-// Source: 05bounded.c (DeepRace POSIX/without_datarace)
-
+// Full translation of 05bounded.c
+// Classic bounded buffer: the producer sends the 30 characters of
+// "IT'S A SMALL WORLD, AFTER ALL." through a circular buffer of size 4 and the
+// consumer prints them; mutex + two condition variables prevent overflow and
+// underflow.
+// Deviations: Alecci has no char arrays, so the characters are stored (and
+// printed by the consumer) as their ASCII codes; the buffer fields (occupied,
+// nextin, nextout, buf, mutex, more, less) are separate shared variables; the
+// "\n" at the start of the final printf and pthread_exit are dropped.
 procedure producer()
-    mutable i := 0
-    while i < 30 do
+    mutable item := array(30, 0)
+    item[0] := 73   // 'I'
+    item[1] := 84   // 'T'
+    item[2] := 39   // '''
+    item[3] := 83   // 'S'
+    item[4] := 32   // ' '
+    item[5] := 65   // 'A'
+    item[6] := 32   // ' '
+    item[7] := 83   // 'S'
+    item[8] := 77   // 'M'
+    item[9] := 65   // 'A'
+    item[10] := 76   // 'L'
+    item[11] := 76   // 'L'
+    item[12] := 32   // ' '
+    item[13] := 87   // 'W'
+    item[14] := 79   // 'O'
+    item[15] := 82   // 'R'
+    item[16] := 76   // 'L'
+    item[17] := 68   // 'D'
+    item[18] := 44   // ','
+    item[19] := 32   // ' '
+    item[20] := 65   // 'A'
+    item[21] := 70   // 'F'
+    item[22] := 84   // 'T'
+    item[23] := 69   // 'E'
+    item[24] := 82   // 'R'
+    item[25] := 32   // ' '
+    item[26] := 65   // 'A'
+    item[27] := 76   // 'L'
+    item[28] := 76   // 'L'
+    item[29] := 46   // '.'
+
+    print "producer started."
+
+    for i := 0 to 30 do
+        // produce an item, one character from item[]
         lock(buf_mutex)
+
+        if occupied >= 4 then
+            print "producer waiting."
+        end if
         while occupied >= 4 do
             cond_wait(less, buf_mutex)
         end while
-        buf[nextin] := i
-        nextin := (nextin + 1) % 4
+        print "producer executing."
+
+        buf[nextin] := item[i]
+        nextin := nextin + 1
+        nextin := nextin mod 4
         occupied := occupied + 1
+
         cond_signal(more)
         unlock(buf_mutex)
-        i := i + 1
-    end while
+    end for
+    print "producer exiting."
 end procedure
 
 procedure consumer()
-    mutable i := 0
-    while i < 30 do
+    print "consumer started."
+
+    for i := 0 to 30 do
         lock(buf_mutex)
+
+        if occupied <= 0 then
+            print "consumer waiting."
+        end if
         while occupied <= 0 do
             cond_wait(more, buf_mutex)
         end while
+        print "consumer executing."
+
         mutable item := buf[nextout]
-        nextout := (nextout + 1) % 4
+        nextout := nextout + 1
+        print `{item}`
+        nextout := nextout mod 4
         occupied := occupied - 1
+
         cond_signal(less)
         unlock(buf_mutex)
-        print `consumed {item}`
-        i := i + 1
-    end while
+    end for
+    print "consumer exiting."
 end procedure
 
 procedure main()
@@ -43,8 +99,11 @@ procedure main()
     shared mutable buf_mutex as mutex   := mutex()
     shared mutable more      as condvar := condvar()
     shared mutable less      as condvar := condvar()
-    mutable t_prod := create_thread(producer)
+
     mutable t_cons := create_thread(consumer)
+    mutable t_prod := create_thread(producer)
     join_thread(t_prod)
     join_thread(t_cons)
+
+    print `main() reporting that all 2 threads have terminated`
 end procedure

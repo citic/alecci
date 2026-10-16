@@ -1,33 +1,61 @@
-// DeepRace OMP_Private/without_datarace: matrix_part1
-// Matrix multiply C=A×B; outer loop (i) parallelized, inner j and k serial.
-// A[2000][1000] → array(200, 0) N1=20,N2=10; B[1000][2500] → array(250, 0) N2=10,N3=25;
-// C[2000][2500] → array(500, 0) N1=20,N3=25.
-// Original uses omp_get_thread_num()/omp_get_num_threads() manual partitioning;
-// replaced with parallel for i which distributes rows automatically.
-// No race: each thread writes distinct rows of C (c[i*25+j] unique per i).
-// Source: DeepRace OMP_Private/without_datarace/matrix_part1_-_main.c
+// Full translation of matrix_part1_-_main.c
+// Matrix multiply C = A x B with manual row partitioning: thread 0 does no
+// multiplication, the other threads split the rows of A (the last one also takes
+// the remainder).
+// No race: threads write distinct rows of C and id, part, offset, sum, i, j, k
+// are private (locals of the worker).
+// Deviations: A[2000][1000], B[1000][2500] and C are scaled to A[20][10],
+// B[10][25] and C[20][25] and flattened (x[i][j] -> x[i * cols + j]); the
+// default team of "#pragma omp parallel" is 4 threads; the C source prints with
+// the invalid format "%ll", here the values A[i][0] are printed.
 procedure main()
     shared mutable a := array(200, 0)
     shared mutable b := array(250, 0)
     shared mutable c := array(500, 0)
+
     for i := 0 to 20 do
         for j := 0 to 10 do
             a[i * 10 + j] := i * j
         end for
     end for
+
     for i := 0 to 10 do
         for j := 0 to 25 do
             b[i * 25 + j] := i * j
         end for
     end for
-    parallel for i := 0 to 20 with 4 thread do
-        for j := 0 to 25 do
-            mutable sum as int := 0
-            for k := 0 to 10 do
-                sum := sum + a[i * 10 + k] * b[k * 25 + j]
+
+    for i := 0 to 500 do
+        c[i] := 0
+    end for
+
+    // #pragma omp parallel shared(A,B,C) private(i,j,k,l,sum,numb_proc,id,part,offset)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+
+    for i := 0 to 20 do
+        print `{a[i * 10]}`
+    end for
+end procedure
+
+procedure worker(thread_number as int)
+    mutable id := thread_number
+    mutable numb_proc := 4
+    mutable part := 20 # (numb_proc - 1)
+    mutable offset := part * (id - 1)
+    if id = numb_proc - 1 then
+        part := part + 20 mod (numb_proc - 1)
+    end if
+
+    if id != 0 then
+        for i := offset to part + offset do
+            for j := 0 to 25 do
+                mutable sum := 0
+                for k := 0 to 10 do
+                    sum := sum + a[i * 10 + k] * b[k * 25 + j]
+                end for
+                c[i * 25 + j] := sum
             end for
-            c[i * 25 + j] := sum
         end for
-    end parallel for
-    print `c[5][10]={c[5 * 25 + 10]}`
+    end if
 end procedure

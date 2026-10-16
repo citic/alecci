@@ -1,12 +1,21 @@
-// Race: 5 threads each write their thread ID to shared i without mutex
-// Inspired by OMP_Critical/with_datarace/hola_-_main.c (shared(i), i = thread_id)
+// Full translation of hola_-_main.c
+// Race: 5 threads each write their thread id to the shared i and then read it
+// back for the printf, with no critical section.
 procedure main()
     shared mutable i := 0
+
+    // #pragma omp parallel num_threads(5) shared(i)
     mutable threads := create_threads(5, worker)
     join_threads(threads, 5)
+
+    print ``
+    print "Fin de EJECUACION"
+    print `varlor final de i: {i}`
+    print ``
 end procedure
 
 procedure worker(thread_number as int)
     mutable id := thread_number
     i := id
+    print `La var fue mod por {id}, nuevo i: {i}`
 end procedure

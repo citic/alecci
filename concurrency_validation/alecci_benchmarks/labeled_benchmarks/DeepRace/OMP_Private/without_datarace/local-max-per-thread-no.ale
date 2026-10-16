@@ -1,21 +1,58 @@
-// No race: each thread updates local_max[thread_number], each slot written by exactly one thread
-// Inspired by OMP_Private/without_datarace/examQuestion_-_main.c (local_max[thread] per-thread arrays)
+// Full translation of examQuestion_-_main.c
+// No race: thread t only touches local_max[t] / local_min[t]; initialized is
+// private to each thread (uninitialised in C, so it starts at 0 here); the
+// global reduction runs after the join.
+// array is static in C, so elements 5..99 are zero.
 procedure main()
-    shared mutable data := array(100, 0)
+    shared mutable array_data := array(100, 0)
     shared mutable local_max := array(4, 0)
-    mutable i := 0
-    while i < 100 do
-        if i < 5 then
-            data[i] := (i + 1) * 30
+    shared mutable local_min := array(4, 0)
+
+    for i := 0 to 100 do
+        array_data[i] := 0
+    end for
+    array_data[0] := 10
+    array_data[1] := 170
+    array_data[2] := 150
+    array_data[3] := -6
+    array_data[4] := 5
+
+    mutable global_max := array_data[0]
+    mutable global_min := array_data[0]
+
+    // omp_set_num_threads(4); #pragma omp parallel
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+
+    for i := 0 to 4 do
+        if global_max < local_max[i] then
+            global_max := local_max[i]
+        end if
+        if global_min > local_min[i] then
+            global_min := local_min[i]
+        end if
+    end for
+
+    print `The maximum value: {global_max}`
+    print `The minimum value: {global_min}`
+end procedure
+
+procedure worker(thread_number as int)
+    mutable initialized := 0
+    mutable tid := thread_number
+    // #pragma omp for private(initialized): static blocks of 25 iterations
+    for i := tid * 25 to (tid + 1) * 25 do
+        if initialized = 0 then
+            local_max[tid] := array_data[i]
+            local_min[tid] := array_data[i]
+            initialized := 1
         else
-            data[i] := i
+            if array_data[i] > local_max[tid] then
+                local_max[tid] := array_data[i]
+            end if
+            if array_data[i] < local_min[tid] then
+                local_min[tid] := array_data[i]
+            end if
         end if
-        i := i + 1
-    end while
-    parallel for i := 0 to 100 with 4 thread do
-        mutable t := thread_number
-        if data[i] > local_max[t] then
-            local_max[t] := data[i]
-        end if
-    end parallel for
+    end for
 end procedure

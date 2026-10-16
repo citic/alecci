@@ -1,9 +1,18 @@
-// No race: parallel for fills a[i] with thread_number; each thread owns distinct indices
-// Inspired by OMP_Private/without_datarace/fill_-_main.c (a[i] = tid with private i)
-// No race: each iteration writes to a unique index → no two threads share an element
+// Full translation of fill_-_main.c
+// No race: tid and i are private; each iteration fills a distinct element of
+// the 32-element array with the number of the thread that ran it.
+// The default team size of "#pragma omp parallel" is modelled as 4 threads, and
+// a is declared as a float array because it is double* in C.
 procedure main()
-    shared mutable a := array(100, 0)
-    parallel for i := 0 to 100 with 4 thread do
-        a[i] := thread_number
+    shared mutable a := array(32, 0.0)
+
+    // #pragma omp parallel private(i, tid)  +  #pragma omp for
+    parallel for i := 0 to 32 with 4 thread do
+        mutable tid := thread_number
+        a[i] := tid
     end parallel for
+
+    for i := 0 to 32 do
+        print `{a[i]}`
+    end for
 end procedure

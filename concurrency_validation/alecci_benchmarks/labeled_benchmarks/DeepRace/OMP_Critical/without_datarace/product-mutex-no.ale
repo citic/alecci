@@ -1,12 +1,23 @@
-// No race: each thread multiplies shared s by (thread_number + 1) inside a critical section
-// Inspired by OMP_Critical/without_datarace/VarCompPrivModificado_-_main.c
-// No race: mutex serializes all reads and writes to s
+// Full translation of VarCompPrivModificado_-_main.c
+// No race: s *= (id + 1), the timing and both printf calls are inside the
+// critical section (mutex); b, y and id are private to each thread.
+// omp_get_wtime timing is dropped, so the "T. h." line only reports the thread.
 procedure main()
     shared mutable s := 1
     shared mutable mtx as mutex := mutex()
-    parallel for k := 0 to 4 with 4 thread do
-        lock(mtx)
-        s := s * (thread_number + 1)
-        unlock(mtx)
-    end parallel for
+
+    // omp_set_num_threads(4); #pragma omp parallel private(b,y)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
+end procedure
+
+procedure worker(thread_number as int)
+    mutable id := thread_number
+    // #pragma omp critical
+    lock(mtx)
+    s := s * (id + 1)
+    print `Hebra {id} = {s}`
+    print `T. h. {id} = (not measured) s.`
+    print ``
+    unlock(mtx)
 end procedure

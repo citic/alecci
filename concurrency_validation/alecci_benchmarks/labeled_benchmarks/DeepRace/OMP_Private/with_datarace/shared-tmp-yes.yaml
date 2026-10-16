@@ -3,5 +3,5 @@
 # Expected: data race on temp
 expected_issues:
   - data_race
-timeout: 10
+timeout: 60
 max_runs: 20

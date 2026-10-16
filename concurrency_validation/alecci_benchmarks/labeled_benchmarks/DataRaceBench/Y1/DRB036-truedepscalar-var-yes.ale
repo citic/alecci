@@ -1,10 +1,22 @@
-// DRB036 – True dependence via shared scalar (variant): larger array
-// Race: tmp (write) vs tmp (read/write)
+// DRB036 – True dependence through a shared scalar (variable-length array version)
+// Full translation of DRB036-truedepscalar-var-yes.c; len is 100 unless argv[1] is
+// given. Shared Alecci arrays need a literal size, so the array holds 100 elements
+// and len is clamped to that capacity.
+// Race: tmp (read) vs tmp (write) and tmp (write) vs tmp (write) across threads
 // label: Y1
-procedure main()
-    shared mutable a := array(500, 0)
+procedure main(argc, argv as array)
+    shared mutable len := 100
     shared mutable tmp := 10
-    parallel for i := 0 to 500 with 4 thread do
+    if argc > 1 then
+        len := int(argv[1])
+    end if
+    if len > 100 then
+        len := 100
+    end if
+    shared mutable a := array(100, 0)
+
+    // #pragma omp parallel for
+    parallel for i := 0 to len with 4 thread do
         a[i] := tmp
         tmp := a[i] + i
     end parallel for

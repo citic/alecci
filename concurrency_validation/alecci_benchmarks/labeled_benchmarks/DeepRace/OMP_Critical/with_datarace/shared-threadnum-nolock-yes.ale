@@ -1,8 +1,18 @@
-// Race: parallel for, shared thread_num := thread_number without mutex
-// Inspired by OMP_Critical/with_datarace/conditional_-_main.c (shared thread_num = omp_get_thread_num())
+// Full translation of conditional_-_main.c
+// Race: the shared thread_num is written (omp_get_thread_num) and read back for
+// the printf by different threads of the parallel for, with no critical section.
+// "if (n > 10)" is always true for n = 20, so the loop runs in parallel.
+// The two printf calls ("This thread =" then the number) are one print here.
 procedure main()
     shared mutable thread_num := 0
-    parallel for i := 0 to 20 with 4 thread do
+    shared const n = 20
+    shared const nthreads = 2
+
+    // omp_set_num_threads(nthreads)
+    print `Using OpenMP with {nthreads} threads`
+    // #pragma omp parallel for if (n > 10)
+    parallel for i := 1 to n + 1 with 2 thread do
         thread_num := thread_number
+        print `This thread = {thread_num}`
     end parallel for
 end procedure

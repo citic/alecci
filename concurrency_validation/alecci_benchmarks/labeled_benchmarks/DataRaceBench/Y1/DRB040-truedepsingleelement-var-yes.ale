@@ -1,14 +1,23 @@
-// DRB040 – True dependence on single element (variant): larger array
-// Race: a[0] (read) vs a[0] (written when i=0)
+// DRB040 – True dependence on a single element (variable-length array version)
+// Full translation of DRB040-truedepsingleelement-var-yes.c; len is 1000 unless
+// argv[1] is given. Shared Alecci arrays need a literal size, so the array holds 1000
+// elements and len is clamped to that capacity. Only a[0] is set in C; the other
+// elements are uninitialised there and 0 here.
+// Race: a[0] (read by every iteration) vs a[0] (written by iteration 0)
 // label: Y1
-procedure main()
-    shared mutable a := array(500, 0)
+procedure main(argc, argv as array)
+    shared mutable len := 1000
+    if argc > 1 then
+        len := int(argv[1])
+    end if
+    if len > 1000 then
+        len := 1000
+    end if
+    shared mutable a := array(1000, 0)
     a[0] := 2
-    for i := 1 to 500 do
-        a[i] := i
-    end for
 
-    parallel for i := 0 to 500 with 4 thread do
+    // #pragma omp parallel for
+    parallel for i := 0 to len with 4 thread do
         a[i] := a[i] + a[0]
     end parallel for
 end procedure

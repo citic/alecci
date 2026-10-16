@@ -1,16 +1,31 @@
-// Race: 2 threads simultaneously write to shared flag without synchronization
-// Inspired by POSIX_Lock_Primitives/with_datarace (TwoThreadLoop.c base pattern without condvar)
-// Race: flag (write) vs flag (read/write) across threads
+// Full translation of TwoThreadLoop.c with the mutex and condition variable
+// removed (race-injected variant of two-thread-flag-cond-no).
+// Race: the worker thread and main both modify and test the shared flag with no
+// synchronisation at all, whereas the C source guards it with lock and wakes the
+// peer with pthread_cond_broadcast. Without the condition variable the
+// "if (flag != x) wait" tests are dropped, so the two threads simply alternate
+// their writes freely. The printf loops that print 10 'A's / 100 'B's one
+// character at a time are one print of the whole row.
 procedure main()
     shared mutable flag := 0
-    mutable threads := create_threads(2, worker)
-    join_threads(threads, 2)
+
+    mutable tid := create_thread(thread_func)
+
+    for i := 0 to 50 do
+        // lock(lock) / cond_wait(ready, lock) removed
+        print `BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB`
+        flag := flag - 1
+        // unlock(lock) / cond_broadcast(ready) removed
+    end for
+
+    join_thread(tid)
 end procedure
 
-procedure worker(thread_number as int)
-    mutable i := 0
-    while i < 500 do
-        flag := thread_number
-        i := i + 1
-    end while
+procedure thread_func()
+    for i := 0 to 50 do
+        // lock(lock) / cond_wait(ready, lock) removed
+        print `AAAAAAAAAA`
+        flag := flag + 1
+        // unlock(lock) / cond_broadcast(ready) removed
+    end for
 end procedure

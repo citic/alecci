@@ -22,6 +22,7 @@ end procedure
 
 procedure main()
     shared mutable ma as mutex := mutex()
+    shared mutable mb as mutex := mutex()
     shared mutable data1 := 10
     shared mutable data2 := 10
     mutable t1 := create_threads(1, thread1)

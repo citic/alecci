@@ -1,27 +1,44 @@
 // SCTBench benchmark: concurrent-software-benchmarks/wronglock_bad.c
-// funcA protects dataValue with mtx_data; funcB uses mtx_this instead.
-// Using different mutexes for the same shared variable causes a data race.
+// Full translation of wronglock_bad.c: iNum1 = 1 funcA thread and iNum2 = 7 funcB threads.
+// funcA protects dataValue with dataLock but funcB uses thisLock, so the two kinds of
+// thread race on dataValue. funcA also checks that its own increment was not lost
+// (the "Bug Found!" assertion).
+// The optional command line parameters (iNum1, iNum2) are read as in C; the usage
+// message, the pthread error checks and the lock()/unlock() wrappers around
+// pthread_mutex_lock/unlock are not modelled.
 // Expected: data race on variable data_value.
 
 procedure funcA(thread_number as int)
-    lock(mtx_data)
-    mutable x := data_value
-    data_value := data_value + 1
-    unlock(mtx_data)
+    lock(dataLock)
+    mutable x := dataValue
+    dataValue := dataValue + 1
+    if dataValue != (x + 1) then
+        print "Bug Found!"
+        assert 0 = 1, "Bug Found!"
+    end if
+    unlock(dataLock)
 end procedure
 
 procedure funcB(thread_number as int)
-    lock(mtx_this)
-    data_value := data_value + 1
-    unlock(mtx_this)
+    lock(thisLock)
+    dataValue := dataValue + 1
+    unlock(thisLock)
 end procedure
 
-procedure main()
-    shared mutable mtx_data as mutex := mutex()
-    shared mutable mtx_this as mutex := mutex()
-    shared mutable data_value := 0
-    mutable t_a := create_threads(1, funcA)
-    mutable t_b := create_threads(7, funcB)
-    join_threads(t_a, 1)
-    join_threads(t_b, 7)
+procedure main(argc, argv as array)
+    shared mutable iNum1 := 1
+    shared mutable iNum2 := 7
+    shared mutable dataLock as mutex := mutex()
+    shared mutable thisLock as mutex := mutex()
+    shared mutable dataValue := 0
+
+    if argc = 3 then
+        iNum1 := int(argv[1])
+        iNum2 := int(argv[2])
+    end if
+
+    mutable num1Pool := create_threads(iNum1, funcA)
+    mutable num2Pool := create_threads(iNum2, funcB)
+    join_threads(num1Pool, iNum1)
+    join_threads(num2Pool, iNum2)
 end procedure

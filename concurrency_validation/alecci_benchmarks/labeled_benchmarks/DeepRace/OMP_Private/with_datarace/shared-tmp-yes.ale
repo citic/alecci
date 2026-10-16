@@ -1,12 +1,49 @@
-// Race: shared mutable temp written inside parallel for (should be thread-private)
-// Inspired by OMP_Private/with_datarace/outter_-_main.c
-// In OpenMP: s_seq declared outside parallel region becomes shared; missing private(s_seq)
-// Race: temp (write) vs temp (read/write) across threads
+// Full translation of outter_-_main.c
+// Race: s_seq, sequence and aux are declared outside the parallel for, so they
+// are shared; each iteration p overwrites s_seq and the sequence/aux buffers
+// that the other threads are still using (missing private(s_seq, sequence, aux)).
+// Deviations: malloc'd buffers become
+// shared arrays of the largest size, so the final "sequence = aux = 0" (which
+// would leave a null pointer behind) is omitted; pow(2, n) is 1 << n; the clock()
+// timing is dropped; printf("%d ") fragments are one print per element.
 procedure main()
-    shared mutable a := array(1000, 0)
-    shared mutable temp := 0
-    parallel for i := 0 to 1000 with 4 thread do
-        temp := i * 2
-        a[i] := temp + 1
+    shared mutable s_seq := 0
+    shared mutable sequence := array(16384, 0)
+    shared mutable aux := array(16384, 0)
+
+    // #pragma omp parallel for
+    parallel for p := 8 to 15 with 4 thread do
+        s_seq := 1 << p
+        for k := 0 to s_seq do
+            sequence[k] := k
+            aux[k] := k
+        end for
+
+        mutable jump := 0
+        mutable a := 0
+        mutable i := 0
+        mutable j := 0
+        while (1 << jump) < s_seq do
+            if a = 0 then
+                print `numbrs of threads: {thread_number}`
+            end if
+            a := 1
+            i := s_seq - 1
+            while i > 0 do
+                j := i - (1 << jump)
+                if j >= 0 then
+                    sequence[i] := sequence[i] + sequence[j]
+                else
+                    i := 0
+                end if
+                i := i - 1
+            end while
+            jump := jump + 1
+        end while
+
+        for i2 := 0 to s_seq do
+            print `{sequence[i2]} `
+        end for
+        print ``
     end parallel for
 end procedure

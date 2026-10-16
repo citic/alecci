@@ -1,19 +1,43 @@
-// No race: parallel partial sums accumulated into sum with critical section
-// Inspired by OMP_Critical/without_datarace/pi1_-_main.c
-// No race: mutex ensures correct reduction into shared sum
+// Full translation of pi1_-_main.c (second benchmark built from the same source as
+// float-pi-partial-no; the reduction into sum is the critical section).
+// No race: x and partial_sum are private to each thread; the merge
+// "sum += partial_sum" is inside the critical section (mutex).
+// Deviations: num_intervals scaled from 1000000000 to 100000; f(x), which is not
+// in the extracted source, is the usual 4 / (1 + x * x); "omp for schedule(static)"
+// is a static block distribution over the 4 threads.
 procedure main()
-    shared mutable sum := 0
-    shared mutable mtx as mutex := mutex()
-    parallel for k := 0 to 4 with 4 thread do
-        mutable partial_sum := 0
-        mutable start := thread_number * 250
-        mutable i := 0
-        while i < 250 do
-            partial_sum := partial_sum + (start + i)
-            i := i + 1
-        end while
-        lock(mtx)
-        sum := sum + partial_sum
-        unlock(mtx)
-    end parallel for
+    shared const num_intervals = 100000
+    shared const num_threads = 4
+    shared mutable h as float := 0.0
+    shared mutable sum as float := 0.0
+    shared mutable sum_mutex as mutex := mutex()
+
+    h := 1.0 / num_intervals
+    // #pragma omp parallel private(i,x,partial_sum) num_threads(4)
+    mutable threads := create_threads(num_threads, worker)
+    join_threads(threads, 4)
+
+    mutable pi as float := h * sum
+    print `Pi is {pi}`
+end procedure
+
+procedure worker(thread_number as int)
+    mutable partial_sum as float := 0.0
+    mutable x as float := 0.0
+    // #pragma omp for schedule(static)
+    const chunk = num_intervals # num_threads
+    const first = thread_number * chunk
+    mutable last := first + chunk
+    if thread_number = num_threads - 1 then
+        last := num_intervals
+    end if
+    for i := first to last do
+        x := h * (i + 0.5)
+        partial_sum := partial_sum + 4.0 / (1.0 + (x * x))
+    end for
+
+    // #pragma omp critical
+    lock(sum_mutex)
+    sum := sum + partial_sum
+    unlock(sum_mutex)
 end procedure

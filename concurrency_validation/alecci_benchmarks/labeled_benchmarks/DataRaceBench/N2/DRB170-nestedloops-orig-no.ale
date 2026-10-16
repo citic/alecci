@@ -1,14 +1,19 @@
-// DRB170 – Nested loops with private temporary: tmp1 is local (private), no sharing
-// No race: outer i parallel; a[i*144+j*12+k] accessed by exactly one thread;
-//   tmp1 is a local variable (naturally private in Alecci)
+// DRB170 – Nested loops with a private temporary
+// Full translation of DRB170-nestedloops-orig-no.c: double a[12][12][12] is flattened
+// to a[i * 144 + j * 12 + k]; m = 3.0 is stored in an int, so m = 3 and
+// tmp1 = 6.0 / m = 2.0.
+// No race: tmp1 is private (declared inside the loop body) and every a[i][j][k] is
+// written by exactly one thread
 // label: N2
 procedure main()
-    shared mutable a := array(1728, 0)
+    shared mutable a := array(1728, 0.0)
+    shared const m = 3
 
+    // #pragma omp parallel for private(j,k,tmp1)
     parallel for i := 0 to 12 with 4 thread do
         for j := 0 to 12 do
             for k := 0 to 12 do
-                mutable tmp1 := 2
+                mutable tmp1 as float := 6.0 / m
                 a[i * 144 + j * 12 + k] := tmp1 + 4
             end for
         end for

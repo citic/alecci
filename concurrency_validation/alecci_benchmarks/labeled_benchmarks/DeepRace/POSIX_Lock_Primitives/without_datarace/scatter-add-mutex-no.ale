@@ -1,23 +1,76 @@
-// No race: 4 threads each add a scaled vector to shared result array, mutex-protected per element
-// Inspired by POSIX_Lock_Primitives/without_datarace/tp5_2.c (matrix-vector product, one column per thread)
-// No race: each result[i] update is serialized by the mutex
+// Full translation of tp5_2.c (matrix-vector product, one column per thread)
+// resultat = matrice[10][4] x vecteur[4]: thread arg adds column arg of every row,
+// scaled by vecteur[arg], into the shared result column, one lock/unlock per element.
+// No race: every update of resultat[i] is under the mutex.
+// matrice[10][4] is flattened to matrice[i * 4 + j]; the perror calls (error
+// reporting only) and the commented-out debug loop are dropped; the "\n" that
+// starts each printf is dropped because print always ends the line.
 procedure main()
-    shared mutable values := array(10, 0)
-    shared mutable result := array(10, 0)
+    shared mutable matrice := array(40, 0)
+    shared mutable vecteur := array(4, 0)
+    shared mutable resultat := array(10, 0)
     shared mutable mtx as mutex := mutex()
+
+    matrice[0] := 8
+    matrice[1] := 25
+    matrice[2] := 3
+    matrice[3] := 41
+    matrice[4] := 11
+    matrice[5] := 18
+    matrice[6] := 3
+    matrice[7] := 4
+    matrice[8] := 4
+    matrice[9] := 15
+    matrice[10] := 78
+    matrice[11] := 12
+    matrice[12] := 1
+    matrice[13] := 12
+    matrice[14] := 0
+    matrice[15] := 12
+    matrice[16] := 7
+    matrice[17] := 9
+    matrice[18] := 13
+    matrice[19] := 15
+    matrice[20] := 4
+    matrice[21] := 21
+    matrice[22] := 37
+    matrice[23] := 89
+    matrice[24] := 1
+    matrice[25] := 54
+    matrice[26] := 7
+    matrice[27] := 3
+    matrice[28] := 15
+    matrice[29] := 78
+    matrice[30] := 7
+    matrice[31] := 1
+    matrice[32] := 12
+    matrice[33] := 15
+    matrice[34] := 13
+    matrice[35] := 47
+    matrice[36] := 91
+    matrice[37] := 13
+    matrice[38] := 72
+    matrice[39] := 90
+
+    vecteur[0] := 1
+    vecteur[1] := 2
+    vecteur[2] := 3
+    vecteur[3] := 4
+
+    mutable thread_ids := create_threads(4, compute_vector)
+    join_threads(thread_ids, 4)
+
     for i := 0 to 10 do
-        values[i] := i + 1
+        print `{resultat[i]}`
     end for
-    mutable threads := create_threads(4, worker)
-    join_threads(threads, 4)
 end procedure
 
-procedure worker(thread_number as int)
-    mutable factor := thread_number + 1
+procedure compute_vector(arg as int)
+    print " SALUT ------"
     mutable i := 0
     while i < 10 do
         lock(mtx)
-        result[i] := result[i] + factor * values[i]
+        resultat[i] := resultat[i] + matrice[i * 4 + arg] * vecteur[arg]
         unlock(mtx)
         i := i + 1
     end while

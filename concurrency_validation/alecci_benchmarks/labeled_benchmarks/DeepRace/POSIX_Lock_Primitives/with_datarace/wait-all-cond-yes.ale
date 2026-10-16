@@ -1,18 +1,28 @@
-// Main thread waits for 5 workers via condition variable instead of join.
-// Workers are not joined — threads may still run when main exits.
-// Source: wait4mult.c (DeepRace POSIX/with_datarace). Ground truth: data_race.
+// Full translation of wait4mult.c
+// The main thread waits on a condition variable for 5 child threads to finish
+// their jobs (it never joins them); the last child to finish signals it.
+// Dataset label: data_race; the Alecci version is reported by TSan for the
+// threads that are never joined (thread leak).
+// Deviations: the time(NULL) based "Time consumed" line is omitted (Alecci has
+// no clock); pthread_exit and the *_destroy calls have no equivalent.
+procedure thread_body(num as int)
+    print `thread {num} starting...`
 
-procedure worker(thread_number as int)
-    if thread_number % 2 = 1 then
+    // Do some job here
+    if num mod 2 = 1 then
         sleep(2000, "ms")
     else
         sleep(3000, "ms")
     end if
+
+    print `thread {num} finishes job`
+
     lock(mtx)
     count := count + 1
     if count = 5 then
         cond_signal(cv)
     end if
+    print `thread {num} exiting...`
     unlock(mtx)
 end procedure
 
@@ -20,8 +30,13 @@ procedure main()
     shared mutable mtx   as mutex   := mutex()
     shared mutable cv    as condvar := condvar()
     shared mutable count := 0
-    create_threads(5, worker)
+
+    print "Main thread starting..."
+    create_threads(5, thread_body)
+
     lock(mtx)
     cond_wait(cv, mtx)
     unlock(mtx)
+
+    print "Main thread exiting..."
 end procedure

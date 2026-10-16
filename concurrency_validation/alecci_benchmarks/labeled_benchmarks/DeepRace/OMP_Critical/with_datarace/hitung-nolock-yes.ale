@@ -1,17 +1,28 @@
-// Race: threads compute local sums then merge into total without critical section
-// Inspired by OMP_Critical/with_datarace/hitung_-_main.c
-// Race: total (write) vs total (read/write) across threads
+// Full translation of hitung_-_main.c
+// Race: 10 threads each sum their own 10-number slice of 1..100, then do
+// "total = total + local_total" without a critical section.
 procedure main()
     shared mutable total := 0
-    parallel for k := 0 to 4 with 4 thread do
-        mutable local_total := 0
-        mutable start := thread_number * 25 + 1
-        mutable end_val := (thread_number + 1) * 25
-        mutable i := start
-        while i <= end_val do
-            local_total := local_total + i
-            i := i + 1
-        end while
-        total := total + local_total
-    end parallel for
+    shared const batas = 100
+    shared const jml_thread = 10
+
+    print "Output programnya adalah : "
+    // #pragma omp parallel num_threads(10)
+    mutable threads := create_threads(jml_thread, worker)
+    join_threads(threads, 10)
+
+    print `Hasil akhir {total}`
+end procedure
+
+procedure worker(thread_number as int)
+    mutable id_thread := thread_number
+    mutable jml_hitung_tiap_thread := batas # jml_thread
+    mutable local_total := 0
+    mutable first := id_thread * jml_hitung_tiap_thread + 1
+    mutable last := (id_thread + 1) * jml_hitung_tiap_thread
+    for i := first to last + 1 do
+        local_total := local_total + i
+    end for
+
+    total := total + local_total
 end procedure

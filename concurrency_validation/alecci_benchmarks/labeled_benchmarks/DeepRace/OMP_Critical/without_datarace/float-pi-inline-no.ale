@@ -1,12 +1,25 @@
-// No race: parallel for PI computation, each iteration updates sum inside critical section
-// Inspired by OMP_Critical/without_datarace/intel_pi_-_main.c (omp critical sum += 4/(1+x*x) per iter)
+// Full translation of intel_pi_-_main.c
+// No race: every "sum = sum + 4/(1+x*x)" runs inside the critical section.
+// Deviations: "#pragma omp parallel" followed by a plain for loop would make
+// every thread run the whole loop on a shared i and x (a race in the C source);
+// the benchmark models it as a work-shared parallel for with a private x so it
+// stays race free. num_steps is scaled from 1000000000 to 100000 and
+// omp_get_wtime timing is dropped.
 procedure main()
+    shared const num_steps = 100000
+    shared mutable step as float := 0.0
     shared mutable sum as float := 0.0
-    shared mutable mtx as mutex := mutex()
-    parallel for i := 0 to 100000 with 4 thread do
-        mutable x as float := i * 0.00001 + 0.000005
-        lock(mtx)
-        sum := sum + 4.0 / (1.0 + (x * x))
-        unlock(mtx)
+    shared mutable sum_mutex as mutex := mutex()
+
+    step := 1.0 / num_steps
+    parallel for i := 1 to num_steps + 1 with 4 thread do
+        mutable x as float := (i - 0.5) * step
+        // #pragma omp critical
+        lock(sum_mutex)
+        sum := sum + (4.0 / (1.0 + (x * x)))
+        unlock(sum_mutex)
     end parallel for
+
+    mutable pi as float := step * sum
+    print `pi with {num_steps} steps is {pi}`
 end procedure

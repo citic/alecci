@@ -1,70 +1,77 @@
 // SCTBench benchmark: concurrent-software-benchmarks/circular_buffer_ok.c
-// Correct version of the flag-based circular buffer. Producer records the
-// inserted value in 'last_inserted' before flipping the flag; consumer
-// asserts removed == last_inserted (always holds — correct synchronisation).
-// All shared accesses are under a single mutex — no data race.
-// TSan silent; assertion never fires.
+// Full translation of circular_buffer_ok.c: correct version of the flag-based circular
+// buffer. The producer t1 records the inserted value in 'value' before flipping the flags
+// and asserts i == insertLogElement(i); the consumer t2 asserts
+// removeLogElement() == value (always holds).
+// All shared accesses are under a single mutex: no data race; TSan silent and the
+// assertions never fire.
+// The char buffer is an int array; first/next are unsigned in C.
 
-procedure insert_element(b as int)
-    if buf_next < buf_size then
-        buffer[buf_next] := b
-        buf_next := (buf_next + 1) mod buf_size
+function removeLogElement()
+    assert first >= 0, "first >= 0"
+    if next > 0 and first < buffer_size then
+        first := first + 1
+        return buffer[first - 1]
+    else
+        return -1
     end if
-end procedure
-
-function remove_element()
-    if buf_next > 0 and buf_first < buf_size then
-        buf_first := buf_first + 1
-        return buffer[buf_first - 1]
-    end if
-    return -1
 end function
 
-procedure producer(thread_number as int)
-    mutable i as int := 0
-    while i < 7 do
+function insertLogElement(b as int)
+    if next < buffer_size and buffer_size > 0 then
+        buffer[next] := b
+        next := (next + 1) mod buffer_size
+        assert next < buffer_size, "next < buffer_size"
+    else
+        return -1
+    end if
+    return b
+end function
+
+procedure t1(thread_number as int)
+    for i := 0 to 7 do
         lock(m)
         if send = 1 then
-            insert_element(i)
-            last_inserted := i
+            assert i = insertLogElement(i), "i == insertLogElement(i)"
+            value := i
             send := 0
             receive := 1
         end if
         unlock(m)
-        i := i + 1
-    end while
+    end for
 end procedure
 
-procedure consumer(thread_number as int)
-    mutable i as int := 0
-    while i < 7 do
+procedure t2(thread_number as int)
+    for i := 0 to 7 do
         lock(m)
         if receive = 1 then
-            last_removed := remove_element()
-            assert last_removed = last_inserted, "consumer: removed element should equal last inserted"
+            assert removeLogElement() = value, "removeLogElement() == value"
             receive := 0
             send := 1
         end if
         unlock(m)
-        i := i + 1
-    end while
+    end for
 end procedure
 
 procedure main()
-    shared mutable m             as mutex         := mutex()
-    shared mutable buffer        as array        := array(10, 0)
-    shared mutable buf_first     as int           := 0
-    shared mutable buf_next      as int           := 0
-    shared mutable buf_size      as int           := 10
-    shared mutable send          as int           := 1
-    shared mutable receive       as int           := 0
-    shared mutable last_inserted                  := -1
-    shared mutable last_removed                   := -1
-    mutable t1 := create_threads(1, producer)
-    mutable t2 := create_threads(1, consumer)
-    join_threads(t1, 1)
-    join_threads(t2, 1)
-    print `last_inserted = {last_inserted}`
-    print `last_removed = {last_removed}`
-    print `circular buffer flag ok no end`
+    shared mutable m as mutex := mutex()
+    shared mutable buffer as array := array(10, 0)
+    shared mutable first := 0
+    shared mutable next := 0
+    shared mutable buffer_size := 0
+    shared mutable send := 0
+    shared mutable receive := 0
+    shared mutable value := 0
+
+    // initLog(10)
+    buffer_size := 10
+    first := 0
+    next := 0
+
+    send := 1
+    receive := 0
+    mutable id1 := create_threads(1, t1)
+    mutable id2 := create_threads(1, t2)
+    join_threads(id1, 1)
+    join_threads(id2, 1)
 end procedure

@@ -1,19 +1,23 @@
-// DRB037 – True dependence second dimension: b[i*100+j] = b[i*100+(j-1)], outer i sequential, inner j parallel
-// Race: thread writes b[i*100+j], next thread reads b[i*100+(j-1)] = b[i*100+chunk_boundary]
+// DRB037 – True dependence on the second dimension: b[i][j] = b[i][j-1]
+// Full translation of DRB037-truedepseconddimension-orig-yes.c; only the inner j loop
+// is a parallel for, the outer i loop is sequential. double b[1000][1000] is flattened
+// to b[i * 1000 + j]; row_i carries the
+// sequential i into the parallel for body.
+// Race: b[i][j-1] (read by iteration j) vs b[i][j-1] (written by iteration j-1)
 // label: Y1
 procedure main()
-    shared mutable b := array(10000, 0)
+    shared const n = 1000
+    shared const m = 1000
+    shared mutable b := array(1000000, 0.0)
     shared mutable row_i := 0
-    for i := 0 to 100 do
-        for j := 0 to 100 do
-            b[i * 100 + j] := i * 100 + j
-        end for
-    end for
 
-    for i := 0 to 100 do
+    for i := 0 to n do
         row_i := i
-        parallel for j := 1 to 100 with 4 thread do
-            b[row_i * 100 + j] := b[row_i * 100 + (j - 1)]
+        // #pragma omp parallel for
+        parallel for j := 1 to m with 4 thread do
+            b[row_i * 1000 + j] := b[row_i * 1000 + (j - 1)]
         end parallel for
     end for
+
+    print `b[500][500]={b[500 * 1000 + 500]}`
 end procedure

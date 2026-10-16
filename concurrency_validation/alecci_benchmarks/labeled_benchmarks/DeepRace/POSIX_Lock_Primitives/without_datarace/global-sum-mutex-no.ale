@@ -1,23 +1,41 @@
-// No race: 4 threads accumulate partial sums into total with mutex-protected merge
-// Inspired by POSIX_Lock_Primitives/without_datarace patterns
-// No race: mutex ensures atomic read-modify-write on total
+// Full translation of 02_printf_g_thread.c
+// Thread 1 does g_num++ twenty times and thread 2 does g_num-- twenty times,
+// each update (and the printf calls that read g_num) inside g_mutex.
+// No race: every access to g_num is under g_mutex.
+// Deviations: sleep(2) is scaled to 20 ms; the "\t" separating the two printf
+// calls becomes two print lines; pthread_mutex_destroy has no equivalent.
 procedure main()
-    shared mutable a := array(1000, 1)
-    shared mutable total := 0
-    shared mutable mtx as mutex := mutex()
-    mutable threads := create_threads(4, worker)
-    join_threads(threads, 4)
+    shared mutable g_num := 0
+    shared mutable g_mutex as mutex := mutex()
+
+    mutable t1 := create_thread(thread_handle0, 1)
+    mutable t2 := create_thread(thread_handle1, 2)
+
+    join_thread(t1)
+    print `thread[1] exit`
+    join_thread(t2)
+    print `thread[2] exit`
+    print "main exit!"
 end procedure
 
-procedure worker(thread_number as int)
-    mutable local_sum := 0
-    mutable start := thread_number * 250
-    mutable i := 0
-    while i < 250 do
-        local_sum := local_sum + a[start + i]
-        i := i + 1
-    end while
-    lock(mtx)
-    total := total + local_sum
-    unlock(mtx)
+procedure thread_handle0(num as int)
+    for i := 0 to 20 do
+        lock(g_mutex)
+        print `in thread[{num}] before {g_num}`
+        g_num := g_num + 1
+        print `in thread[{num}] after {g_num}`
+        unlock(g_mutex)
+        sleep(20, "ms")
+    end for
+end procedure
+
+procedure thread_handle1(num as int)
+    for i := 0 to 20 do
+        lock(g_mutex)
+        print `in thread[{num}] before {g_num}`
+        g_num := g_num - 1
+        print `in thread[{num}] after {g_num}`
+        unlock(g_mutex)
+        sleep(20, "ms")
+    end for
 end procedure

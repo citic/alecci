@@ -1,21 +1,30 @@
-// No race: 7 threads accumulate values into shared sum array, mutex-protected per access
-// Inspired by POSIX_Lock_Primitives/with_datarace/dana.c (per-bucket mutex array, sum_rest[x%10] += x)
-// Note: dana.c appears mislabeled in with_datarace — it uses proper mutex synchronization
+// Full translation of dana.c
+// 7 threads each draw 100 random numbers and add every number to the bucket
+// sum_rest[x % 10], holding the per-bucket mutex mtx[x % 10].
+// No race: every access to sum_rest[b] is under mtx[b].
+// rand() % 10000 becomes rand(10000); srand(time(NULL)) is omitted.
 procedure main()
+    shared const mod_value = 10
+    shared const t = 7
     shared mutable sum_rest := array(10, 0)
-    shared mutable mtx as mutex := mutex()
-    mutable threads := create_threads(7, worker)
+    shared mutable mtx := array(10, mutex())
+
+    mutable threads := create_threads(t, do_it)
     join_threads(threads, 7)
+
+    print "Father:"
+    for i := 0 to mod_value do
+        print `{sum_rest[i]} `
+    end for
 end procedure
 
-procedure worker(thread_number as int)
-    mutable i := 0
-    while i < 100 do
-        mutable x := (thread_number * 100 + i) mod 10000
-        mutable bucket := x mod 10
-        lock(mtx)
+procedure do_it(thread_number as int)
+    for i := 0 to 100 do
+        mutable x := rand(10000)
+        const bucket = x mod 10
+        print `Thread mod: {bucket}, nr: {x}`
+        lock(mtx[bucket])
         sum_rest[bucket] := sum_rest[bucket] + x
-        unlock(mtx)
-        i := i + 1
-    end while
+        unlock(mtx[bucket])
+    end for
 end procedure

@@ -1,28 +1,29 @@
-// DRB062 – Matrix-vector multiplication: inner loop (j) parallelized with reduction
-// a[100][100] flattened: a[i][j] → a[i*100+j]; v[100], v_out[100] as 1D float arrays
-// N reduced 1000→100 to keep array size manageable; parallel structure is identical
-// No race: outer for i is serial; inner parallel for j accumulates into sum under mutex
-// Source: DataRaceBench DRB062-matrixvector2-orig-no.c
+// DRB062 – Matrix-vector multiplication: inner-level parallelization with a reduction
+// Full translation of DRB062-matrixvector2-orig-no.c 
+// (N = 1000); double a[N][N], v[N], v_out[N] are global (zero-initialised) and
+// a[i][j] is flattened to a[i * 1000 + j]; row carries the sequential i into the
+// parallel for body.
+// reduction(+:sum) is modelled as updates of the shared sum under a mutex.
+// No race: the outer loop is sequential; the inner parallel for only touches sum
+// under the mutex
 // label: N2
 procedure main()
-    shared mutable a := array(10000, 0.0)
-    shared mutable v := array(100, 0.0)
-    shared mutable v_out := array(100, 0.0)
+    shared const n = 1000
+    shared mutable a := array(1000000, 0.0)
+    shared mutable v := array(1000, 0.0)
+    shared mutable v_out := array(1000, 0.0)
     shared mutable sum as float := 0.0
     shared mutable mtx as mutex := mutex()
     shared mutable row as int := 0
-    for i := 0 to 100 do
-        v[i] := i * 1.0
-        for j := 0 to 100 do
-            a[i * 100 + j] := (i + j) * 0.5
-        end for
-    end for
-    for i := 0 to 100 do
+
+    // mv()
+    for i := 0 to n do
         row := i
         sum := 0.0
-        parallel for j := 0 to 100 with 4 thread do
+        // #pragma omp parallel for reduction(+:sum)
+        parallel for j := 0 to n with 4 thread do
             lock(mtx)
-            sum := sum + a[row * 100 + j] * v[j]
+            sum := sum + a[row * 1000 + j] * v[j]
             unlock(mtx)
         end parallel for
         v_out[row] := sum

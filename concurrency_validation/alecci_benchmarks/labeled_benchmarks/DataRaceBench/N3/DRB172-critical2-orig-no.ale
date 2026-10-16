@@ -1,28 +1,67 @@
-// DRB172 – Critical + barrier + single: parallel init, then critical update q[9],
-//   barrier, then single correction of q[9]
-// No race: critical serializes all q[9] updates; barrier before single ensures ordering
+// DRB172 – Critical + barrier + single on q[9]
+// Full translation of DRB172-critical2-orig-no.c: a parallel region of 4 threads where
+// "omp for" adds qq[i] to q[i] (static blocks 0-2, 3-5, 6-7, 8-9), every thread adds 1.0
+// to q[9] inside the critical section (mutex), an explicit barrier follows and a
+// "single" (thread 0) subtracts 1.0 again. Main prints the two arrays.
+// No race: q[i] is written by one thread, q[9] is updated under the critical
+// section, and the barrier orders the critical updates before the single
 // label: N2, N3
 procedure main()
-    shared mutable q := array(10, 0)
-    shared mutable qq := array(10, 0)
+    shared mutable q := array(10, 0.0)
+    shared mutable qq := array(10, 0.0)
     shared mutable mtx as mutex := mutex()
-    shared mutable b as barrier := barrier(4)
+    shared mutable region_barrier as barrier := barrier(4)
+
     for i := 0 to 10 do
         qq[i] := i
+    end for
+    for i := 0 to 10 do
         q[i] := i
     end for
 
-    parallel for i := 0 to 10 with 4 thread do
-        q[i] := q[i] + qq[i]
-    end parallel for
+    // #pragma omp parallel default(shared)
+    mutable threads := create_threads(4, worker)
+    join_threads(threads, 4)
 
-    parallel for k := 0 to 4 with 4 thread do
-        lock(mtx)
-        q[9] := q[9] + 1
-        unlock(mtx)
-        barrier_wait(b)
-        if thread_number = 0 then
-            q[9] := q[9] - 1
-        end if
-    end parallel for
+    for i := 0 to 10 do
+        print `{qq[i]} {q[i]}`
+    end for
+end procedure
+
+procedure worker(thread_number as int)
+    // #pragma omp for private(i)
+    mutable first := 0
+    mutable last := 0
+    if thread_number = 0 then
+        first := 0
+        last := 3
+    else if thread_number = 1 then
+        first := 3
+        last := 6
+    else if thread_number = 2 then
+        first := 6
+        last := 8
+    else
+        first := 8
+        last := 10
+    end if
+    end if
+    end if
+    for i := first to last do
+        q[i] := q[i] + qq[i]
+    end for
+    barrier_wait(region_barrier)
+
+    // #pragma omp critical
+    lock(mtx)
+    q[9] := q[9] + 1.0
+    unlock(mtx)
+
+    // #pragma omp barrier
+    barrier_wait(region_barrier)
+
+    // #pragma omp single
+    if thread_number = 0 then
+        q[9] := q[9] - 1.0
+    end if
 end procedure

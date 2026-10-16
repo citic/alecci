@@ -1,10 +1,36 @@
-// Race: parallel for computes per-iteration soma, then pi += soma * step without lock
-// Inspired by OMP_Critical/with_datarace/Calculo_PI_em_paralelo_WorkSharing_-_main.c
+// Full translation of Calculo_PI_em_paralelo_WorkSharing_-_main.c
+// Race: "#pragma omp for" splits the loop between threads, each thread keeps a
+// private soma and then does "pi += soma * step" without a critical section.
+// Deviations: num_steps scaled from 1000000 to 100000 (TSan cost); NUM_THREADS
+// is defined outside the extracted C source, 4 is assumed.
 procedure main()
+    shared const num_steps = 100000
+    shared const num_threads = 4
     shared mutable pi as float := 0.0
-    parallel for i := 0 to 10000 with 4 thread do
-        mutable x as float := i * 0.0001 + 0.00005
-        mutable soma as float := 4.0 / (1.0 + (x * x))
-        pi := pi + soma * 0.0001
-    end parallel for
+    shared mutable step as float := 0.0
+
+    step := 1.0 / num_steps
+    // #pragma omp parallel num_threads(NUM_THREADS)
+    mutable threads := create_threads(num_threads, worker)
+    join_threads(threads, 4)
+
+    print `{pi}`
+end procedure
+
+procedure worker(thread_number as int)
+    mutable x as float := 0.0
+    mutable soma as float := 0.0
+    // #pragma omp for: static block distribution of the iterations
+    const chunk = num_steps # num_threads
+    const first = thread_number * chunk
+    mutable last := first + chunk
+    if thread_number = num_threads - 1 then
+        last := num_steps
+    end if
+    for i := first to last do
+        x := (i + 0.5) * step
+        soma := soma + 4.0 / (1.0 + (x * x))
+    end for
+
+    pi := pi + soma * step
 end procedure
